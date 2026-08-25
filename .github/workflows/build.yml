@@ -1,0 +1,260 @@
+name: Build and Publish Docker Images
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Version tag to release (e.g., v1.0.0). Promotes the current main image. Leave empty to just build."
+        required: false
+        type: string
+
+env:
+  REGISTRY: ghcr.io
+  OWNER: scottfridwin
+
+# Cancel superseded runs on the same ref (does not affect release dispatches).
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event.inputs.release_tag || 'ci' }}
+  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
+
+jobs:
+  # ----------------------------------------------------------
+  # Test: Gate the build on backend + frontend tests.
+  # ----------------------------------------------------------
+  test:
+    name: Test ${{ matrix.component }}
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        component: [backend, frontend]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7.0.1
+
+      # ---- Backend (Go) ----
+      - name: Set up Go
+        if: matrix.component == 'backend'
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+          cache-dependency-path: backend/go.sum
+
+      - name: Backend vet + unit tests with coverage gate
+        if: matrix.component == 'backend'
+        working-directory: backend
+        run: |
+          go vet ./...
+          make -C .. backend-cover
+
+      # ---- Frontend (Node) ----
+      - name: Set up Node
+        if: matrix.component == 'frontend'
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Frontend lint, test, build
+        if: matrix.component == 'frontend'
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run lint
+          npm run format:check
+          npm run test
+          npm run build
+
+  # ----------------------------------------------------------
+  # Build: Build and push multi-arch Docker images.
+  # Runs on push to main OR manual dispatch with no release_tag.
+  # ----------------------------------------------------------
+  build:
+    name: Build ${{ matrix.service }}
+    needs: test
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.event.inputs.release_tag == '')
+    permissions:
+      contents: read
+      packages: write
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - service: contacts-backend
+            context: ./backend
+          - service: contacts-frontend
+            context: ./frontend
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7.0.1
+
+      - name: Compute image tags
+        id: tags
+        run: |
+          IMAGE="${{ env.REGISTRY }}/${{ env.OWNER }}/${{ matrix.service }}"
+          SHORT_SHA=$(echo "$GITHUB_SHA" | cut -c1-7)
+          TAGS="${IMAGE}:sha-${SHORT_SHA}"
+
+          # Main branch: also tag as "main"
+          if [[ "$GITHUB_REF" == "refs/heads/main" ]]; then
+            TAGS="${TAGS},${IMAGE}:main"
+          fi
+
+          echo "tags=${TAGS}" >> "$GITHUB_OUTPUT"
+          echo "Generated tags: ${TAGS}"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up QEMU (for multi-arch)
+        uses: docker/setup-qemu-action@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Build and push
+        uses: docker/build-push-action@v7
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.context }}/Dockerfile
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: ${{ steps.tags.outputs.tags }}
+          cache-from: type=gha,scope=${{ matrix.service }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.service }}
+
+  # ----------------------------------------------------------
+  # Release: Promote the current main image with version tags.
+  # Triggered via workflow_dispatch with a version tag input.
+  # Re-tags the multi-arch manifest — no rebuild needed.
+  # ----------------------------------------------------------
+  release:
+    name: Release ${{ matrix.service }} as ${{ github.event.inputs.release_tag }}
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.release_tag != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+
+    strategy:
+      fail-fast: false
+      matrix:
+        service: [contacts-backend, contacts-frontend]
+
+    steps:
+      - name: Verify main branch
+        run: |
+          if [[ "$GITHUB_REF" != "refs/heads/main" ]]; then
+            echo "::error::Release can only be triggered from the main branch (got $GITHUB_REF)"
+            exit 1
+          fi
+
+      - name: Validate version tag format
+        run: |
+          VERSION_TAG="${{ github.event.inputs.release_tag }}"
+          if [[ ! "$VERSION_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::release_tag must be semantic version vX.Y.Z (got '$VERSION_TAG')"
+            exit 1
+          fi
+
+      - name: Checkout repository
+        uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Fail if tag already exists
+        run: |
+          VERSION_TAG="${{ github.event.inputs.release_tag }}"
+          if git rev-parse "refs/tags/${VERSION_TAG}" >/dev/null 2>&1; then
+            echo "::error::Tag ${VERSION_TAG} already exists. Bump the version to release again."
+            exit 1
+          fi
+
+      - name: Install crane
+        uses: imjasonh/setup-crane@v0.7
+
+      - name: Log in to GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | crane auth login ${{ env.REGISTRY }} -u ${{ github.actor }} --password-stdin
+
+      - name: Promote image
+        run: |
+          IMAGE="${{ env.REGISTRY }}/${{ env.OWNER }}/${{ matrix.service }}"
+          VERSION_TAG="${{ github.event.inputs.release_tag }}"
+          VERSION_NO_V="${VERSION_TAG#v}"
+
+          # Ensure the source (main) image exists before promoting.
+          if ! crane manifest "${IMAGE}:main" >/dev/null 2>&1; then
+            echo "::error::${IMAGE}:main not found. Push to main to build it before releasing."
+            exit 1
+          fi
+
+          echo "Promoting ${IMAGE}:main → ${VERSION_TAG}, ${VERSION_NO_V}, latest"
+          crane copy "${IMAGE}:main" "${IMAGE}:${VERSION_TAG}"
+          crane copy "${IMAGE}:main" "${IMAGE}:${VERSION_NO_V}"
+          crane copy "${IMAGE}:main" "${IMAGE}:latest"
+
+  # ----------------------------------------------------------
+  # Tag + release notes: create the git tag and GitHub Release
+  # once all images are promoted.
+  # ----------------------------------------------------------
+  release-notes:
+    name: Create GitHub Release
+    needs: release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Create git tag
+        run: |
+          VERSION_TAG="${{ github.event.inputs.release_tag }}"
+          git tag "$VERSION_TAG"
+          git push origin "$VERSION_TAG"
+
+      - name: Generate release notes
+        run: |
+          VERSION_TAG="${{ github.event.inputs.release_tag }}"
+          PREV_TAG=$(git tag --sort=-version:refname | grep '^v' | grep -v "^${VERSION_TAG}$" | head -1)
+          if [ -n "$PREV_TAG" ]; then
+            NOTES=$(git log --pretty=format:"- %s (%h)" "${PREV_TAG}..HEAD" | head -50)
+          else
+            NOTES="Initial release"
+          fi
+          {
+            echo "$NOTES"
+            echo ""
+            echo "## Docker Images"
+            echo ""
+            echo '```'
+            echo "docker pull ${{ env.REGISTRY }}/${{ env.OWNER }}/contacts-backend:${VERSION_TAG}"
+            echo "docker pull ${{ env.REGISTRY }}/${{ env.OWNER }}/contacts-frontend:${VERSION_TAG}"
+            echo '```'
+          } > /tmp/release-notes.md
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ github.event.inputs.release_tag }}
+          body_path: /tmp/release-notes.md
+          generate_release_notes: false

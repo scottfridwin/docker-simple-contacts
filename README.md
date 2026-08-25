@@ -145,15 +145,23 @@ Run `make help` for the full list.
 
 ## Release process
 
-- Versioning: [Semantic Versioning](https://semver.org/).
-- Releases trigger on `vX.Y.Z` tags pushed to the protected `main` branch.
-- The release workflow builds and publishes backend and frontend images to
-  GitHub Container Registry with tags: `vX.Y.Z`, `sha-<shortsha>`, and `latest`.
+Versioning follows [Semantic Versioning](https://semver.org/). The pipeline uses
+a **build-once, promote** model (workflow: `.github/workflows/build.yml`):
 
-```bash
-git tag v1.0.0
-git push origin v1.0.0
-```
+1. **Every push to `main`** builds multi-arch images and publishes them to GitHub
+   Container Registry tagged `main` and `sha-<shortsha>`:
+   - `ghcr.io/scottfridwin/contacts-backend`
+   - `ghcr.io/scottfridwin/contacts-frontend`
+2. **To cut a release**, run the *Build and Publish Docker Images* workflow
+   manually (Actions → Run workflow) from `main` with a `release_tag` like
+   `v1.0.0`. This **promotes the current `main` image** (re-tags the existing
+   manifest with `crane` — no rebuild) to `vX.Y.Z`, `X.Y.Z`, and `latest`, then
+   creates the matching git tag and a GitHub Release.
+
+Releases are intentionally decoupled from rebuilds so the exact artifact tested
+on `main` is the one shipped. Pull requests run tests only; images are never
+published from a PR.
+
 
 ## License
 

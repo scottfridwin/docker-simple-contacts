@@ -49,7 +49,7 @@ frontend/               React + Vite PWA
   nginx.conf            serves SPA + proxies /api to the backend
 api/openapi.yaml        OpenAPI 3 contract (validated in CI)
 docs/design/            authoritative design documents
-.github/workflows/      ci.yml (gates) and release.yml (tagged images)
+.github/workflows/      build.yml (test + publish + promote-based release), ci.yml (deep gates)
 ```
 
 ## Non-negotiable decisions (v1)
@@ -74,7 +74,11 @@ docs/design/            authoritative design documents
   takes precedence over `DB_PASSWORD`; if neither is set, **startup fails**.
 - **Logging**: JSON in production, human-readable in development, stdout/stderr
   only — never write log files.
-- **License**: Apache-2.0. **Versioning**: SemVer; release on `vX.Y.Z` tags.
+- **License**: Apache-2.0. **Versioning**: SemVer. CI publishes `main` and
+  `sha-<shortsha>` images on every push to `main`; releases are cut by running
+  the *Build and Publish Docker Images* workflow with a `vX.Y.Z` input, which
+  promotes (re-tags) the current `main` image to `vX.Y.Z`/`X.Y.Z`/`latest` — no
+  rebuild. See the README release section.
 - **Coverage**: CI enforces ≥ 70% on `config`, `httpapi`, `person`.
 - **Scope**: v1 only. Do NOT add auth, SSO, multi-tenancy, sync integrations,
   background queues, file attachments, or offline PWA support.

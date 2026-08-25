@@ -1,5 +1,9 @@
-name: CI
+name: CI (deep gates)
 
+# Complements build.yml. build.yml runs unit tests, coverage, lint, the
+# frontend suite, and publishes images. This workflow runs the gates that need
+# a database or extra tooling (integration, migrations, OpenAPI) plus PR-time
+# container build validation.
 on:
   push:
     branches: [main]
@@ -29,8 +33,8 @@ jobs:
           version: v1.62.2
           working-directory: backend
 
-  backend-test:
-    name: Backend test & coverage
+  backend-integration:
+    name: Backend integration (PostgreSQL)
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -60,9 +64,6 @@ jobs:
       - name: Apply migrations
         working-directory: backend
         run: migrate -path migrations -database "$DATABASE_URL" up
-      - name: Unit tests with coverage gate
-        working-directory: backend
-        run: make -C .. backend-cover
       - name: Integration tests
         working-directory: backend
         run: go test -tags=integration ./...
@@ -99,31 +100,35 @@ jobs:
           migrate -path migrations -database "$DATABASE_URL" up
           migrate -path migrations -database "$DATABASE_URL" down -all
 
-  frontend:
-    name: Frontend lint, test, build
+  frontend-e2e:
+    name: Frontend e2e (Playwright)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Start stack
+        run: docker compose up -d --build
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
           cache-dependency-path: frontend/package-lock.json
-      - name: Install
+      - name: Install frontend deps
         working-directory: frontend
         run: npm ci
-      - name: Lint
+      - name: Install Playwright browsers
         working-directory: frontend
-        run: npm run lint
-      - name: Format check
+        run: npx playwright install --with-deps chromium
+      - name: Run e2e
         working-directory: frontend
-        run: npm run format:check
-      - name: Unit tests
-        working-directory: frontend
-        run: npm run test
-      - name: Build
-        working-directory: frontend
-        run: npm run build
+        env:
+          E2E_BASE_URL: http://localhost:5173
+        run: npm run test:e2e
+      - name: Stack logs on failure
+        if: failure()
+        run: docker compose logs
+      - name: Tear down
+        if: always()
+        run: docker compose down -v
 
   openapi-validate:
     name: OpenAPI validate
@@ -138,6 +143,8 @@ jobs:
 
   container-build:
     name: Container build validation
+    # build.yml builds and pushes images on main; validate Dockerfiles on PRs.
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
