@@ -46,7 +46,11 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   }
 
   if (body === null) {
-    throw new ApiRequestError(res.status, 'invalid_response', 'The server returned a non-JSON response');
+    throw new ApiRequestError(
+      res.status,
+      'invalid_response',
+      'The server returned a non-JSON response',
+    );
   }
 
   return body as T;
