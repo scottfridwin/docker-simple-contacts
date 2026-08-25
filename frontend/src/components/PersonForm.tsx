@@ -32,6 +32,23 @@ function draftsFromPerson(person?: Person): DraftCustomField[] {
   }));
 }
 
+// Mirrors the backend's display-name derivation so the form can tell whether a
+// stored display name is a custom override or just the derived default.
+function deriveDisplayName(first: string, middles: string[], last: string): string {
+  return [first, ...middles, last]
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .join(' ');
+}
+
+// Returns the stored display name only when it is a custom override; otherwise
+// an empty string so the field stays "auto" and the backend re-derives on save.
+function initialCustomDisplayName(person?: Person): string {
+  if (!person) return '';
+  const derived = deriveDisplayName(person.first_name, person.middle_names ?? [], person.last_name);
+  return (person.display_name ?? '') === derived ? '' : (person.display_name ?? '');
+}
+
 const TYPES: CustomFieldType[] = ['string', 'number', 'boolean', 'date'];
 
 export function PersonForm({
@@ -43,7 +60,7 @@ export function PersonForm({
 }: PersonFormProps) {
   const [firstName, setFirstName] = useState(initial?.first_name ?? '');
   const [lastName, setLastName] = useState(initial?.last_name ?? '');
-  const [displayName, setDisplayName] = useState(initial?.display_name ?? '');
+  const [displayName, setDisplayName] = useState(initialCustomDisplayName(initial));
   const [middleNames, setMiddleNames] = useState((initial?.middle_names ?? []).join(', '));
   const [drafts, setDrafts] = useState<DraftCustomField[]>(draftsFromPerson(initial));
   const [errors, setErrors] = useState<Record<string, string>>({});

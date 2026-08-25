@@ -1,0 +1,7 @@
+# Redocly lint configuration.
+extends:
+  - recommended
+rules:
+  # v1 has no application-level auth by design — authentication is handled by an
+  # upstream reverse proxy (see docs/design), so operations declare no security.
+  security-defined: off
