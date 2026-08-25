@@ -1,0 +1,33 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    ":dependencyDashboard",
+    ":semanticCommits",
+    ":prConcurrentLimit10"
+  ],
+  "labels": ["dependencies"],
+  "postUpdateOptions": ["gomodTidy"],
+  "packageRules": [
+    {
+      "matchManagers": ["gomod"],
+      "addLabels": ["go"]
+    },
+    {
+      "matchManagers": ["npm"],
+      "addLabels": ["frontend"]
+    },
+    {
+      "matchManagers": ["github-actions"],
+      "addLabels": ["ci"]
+    },
+    {
+      "matchUpdateTypes": ["minor", "patch"],
+      "matchCurrentVersion": "!/^0/",
+      "automerge": false
+    }
+  ],
+  "vulnerabilityAlerts": {
+    "labels": ["security"]
+  }
+}

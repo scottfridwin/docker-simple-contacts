@@ -1,0 +1,156 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  GO_VERSION: '1.23'
+  NODE_VERSION: '20'
+
+jobs:
+  backend-lint:
+    name: Backend lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: backend/go.sum
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: v1.62.2
+          working-directory: backend
+
+  backend-test:
+    name: Backend test & coverage
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: contacts
+          POSTGRES_PASSWORD: contacts
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U contacts"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgres://contacts:contacts@localhost:5432/postgres?sslmode=disable
+      TEST_DATABASE_URL: postgres://contacts:contacts@localhost:5432/postgres?sslmode=disable
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: backend/go.sum
+      - name: Install golang-migrate
+        run: go install -tags 'postgres' github.com/golang-migrate/migrate/v4/cmd/migrate@v4.18.1
+      - name: Apply migrations
+        working-directory: backend
+        run: migrate -path migrations -database "$DATABASE_URL" up
+      - name: Unit tests with coverage gate
+        working-directory: backend
+        run: make -C .. backend-cover
+      - name: Integration tests
+        working-directory: backend
+        run: go test -tags=integration ./...
+
+  migration-check:
+    name: Migration up/down check
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: contacts
+          POSTGRES_PASSWORD: contacts
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U contacts"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgres://contacts:contacts@localhost:5432/postgres?sslmode=disable
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - name: Install golang-migrate
+        run: go install -tags 'postgres' github.com/golang-migrate/migrate/v4/cmd/migrate@v4.18.1
+      - name: Migrate up then down
+        working-directory: backend
+        run: |
+          migrate -path migrations -database "$DATABASE_URL" up
+          migrate -path migrations -database "$DATABASE_URL" down -all
+
+  frontend:
+    name: Frontend lint, test, build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install
+        working-directory: frontend
+        run: npm ci
+      - name: Lint
+        working-directory: frontend
+        run: npm run lint
+      - name: Format check
+        working-directory: frontend
+        run: npm run format:check
+      - name: Unit tests
+        working-directory: frontend
+        run: npm run test
+      - name: Build
+        working-directory: frontend
+        run: npm run build
+
+  openapi-validate:
+    name: OpenAPI validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - name: Validate spec
+        run: npx --yes @redocly/cli@1 lint api/openapi.yaml
+
+  container-build:
+    name: Container build validation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build backend image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./backend
+          push: false
+          tags: contacts-backend:ci
+      - name: Build frontend image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./frontend
+          push: false
+          tags: contacts-frontend:ci

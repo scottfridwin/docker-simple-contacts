@@ -1,0 +1,59 @@
+name: contacts
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: ${DB_USER:-contacts}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-contacts}
+      POSTGRES_DB: ${DB_NAME:-postgres}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-contacts} -d ${DB_NAME:-postgres}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  app:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    environment:
+      PORT: "8080"
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      ENV: ${ENV:-production}
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_USER: ${DB_USER:-contacts}
+      DB_PASSWORD: ${DB_PASSWORD:-contacts}
+      DB_NAME: ${DB_NAME:-postgres}
+      DB_SSLMODE: disable
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173}
+      PURGE_AFTER_DAYS: ${PURGE_AFTER_DAYS:-30}
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        # Empty base URL: the app calls /api on its own origin, which nginx
+        # reverse-proxies to the backend service (see frontend/nginx.conf).
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-}
+    ports:
+      - "5173:80"
+    depends_on:
+      - app
+    restart: unless-stopped
+
+volumes:
+  pgdata:

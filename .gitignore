@@ -1,0 +1,37 @@
+# Go
+/backend/bin/
+/backend/tmp/
+*.test
+*.out
+coverage.out
+coverage.html
+
+# Node / frontend
+node_modules/
+/frontend/dist/
+/frontend/dev-dist/
+*.local
+*.tsbuildinfo
+
+# Playwright
+/frontend/playwright-report/
+/frontend/test-results/
+/frontend/blob-report/
+
+# Env / secrets
+.env
+.env.*
+!.env.example
+secrets/
+*.secret
+*.pem
+*.key
+
+# Editor / OS
+.DS_Store
+Thumbs.db
+.idea/
+*.swp
+
+# Build / container artifacts
+*.log

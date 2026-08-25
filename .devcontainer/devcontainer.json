@@ -1,0 +1,30 @@
+{
+  "name": "Contacts Dev",
+  "image": "mcr.microsoft.com/devcontainers/go:1-1.23-bookworm",
+  "features": {
+    "ghcr.io/devcontainers/features/node:1": {
+      "version": "20"
+    },
+    "ghcr.io/devcontainers/features/docker-in-docker:2": {}
+  },
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "golang.go",
+        "dbaeumer.vscode-eslint",
+        "esbenp.prettier-vscode",
+        "editorconfig.editorconfig",
+        "redhat.vscode-yaml",
+        "ms-azuretools.vscode-docker"
+      ],
+      "settings": {
+        "go.lintTool": "golangci-lint",
+        "go.lintFlags": ["--fast"],
+        "editor.formatOnSave": true
+      }
+    }
+  },
+  "forwardPorts": [8080, 5173, 5432],
+  "postCreateCommand": "bash .devcontainer/post-create.sh",
+  "remoteUser": "vscode"
+}
