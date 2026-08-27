@@ -142,6 +142,9 @@ components:
         nickname: { type: string, nullable: true }
         pronouns: { type: string, nullable: true }
         birthdate: { type: string, format: date, nullable: true }
+        phone_numbers:
+          type: array
+          items: { type: string, maxLength: 50 }
         custom_fields:
           $ref: '#/components/schemas/CustomFields'
         created_at: { type: string, format: date-time }
@@ -162,6 +165,9 @@ components:
         nickname: { type: string, maxLength: 255 }
         pronouns: { type: string, maxLength: 255 }
         birthdate: { type: string, format: date }
+        phone_numbers:
+          type: array
+          items: { type: string, maxLength: 50 }
         custom_fields:
           $ref: '#/components/schemas/CustomFields'
     UpdatePersonInput:
@@ -175,6 +181,9 @@ components:
         nickname: { type: string, maxLength: 255 }
         pronouns: { type: string, maxLength: 255 }
         birthdate: { type: string, format: date }
+        phone_numbers:
+          type: array
+          items: { type: string, maxLength: 50 }
         custom_fields:
           $ref: '#/components/schemas/CustomFields'
     PersonListResponse:

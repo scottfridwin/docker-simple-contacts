@@ -35,13 +35,16 @@ var allowedSortFields = map[string]string{
 
 // Create inserts a new Person and returns the stored record.
 func (r *Repository) Create(ctx context.Context, p *Person) (*Person, error) {
+	if p.PhoneNumbers == nil {
+		p.PhoneNumbers = []string{}
+	}
 	const q = `
-		INSERT INTO persons (first_name, middle_names, last_name, display_name, nickname, pronouns, birthdate, custom_fields)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-		RETURNING id, first_name, middle_names, last_name, display_name, nickname, pronouns, birthdate, custom_fields,
+		INSERT INTO persons (first_name, middle_names, last_name, display_name, nickname, pronouns, birthdate, phone_numbers, custom_fields)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		RETURNING id, first_name, middle_names, last_name, display_name, nickname, pronouns, birthdate, phone_numbers, custom_fields,
 		          created_at, updated_at, deleted_at`
 	row := r.pool.QueryRow(ctx, q,
-		p.FirstName, p.MiddleNames, p.LastName, p.DisplayName, p.Nickname, p.Pronouns, p.Birthdate, p.CustomFields,
+		p.FirstName, p.MiddleNames, p.LastName, p.DisplayName, p.Nickname, p.Pronouns, p.Birthdate, p.PhoneNumbers, p.CustomFields,
 	)
 	return scanPerson(row)
 }
@@ -49,7 +52,7 @@ func (r *Repository) Create(ctx context.Context, p *Person) (*Person, error) {
 // GetByID returns a single non-deleted Person by ID.
 func (r *Repository) GetByID(ctx context.Context, id uuid.UUID) (*Person, error) {
 	const q = `
-		SELECT id, first_name, middle_names, last_name, display_name, nickname, pronouns, birthdate, custom_fields,
+		SELECT id, first_name, middle_names, last_name, display_name, nickname, pronouns, birthdate, phone_numbers, custom_fields,
 		       created_at, updated_at, deleted_at
 		FROM persons
 		WHERE id = $1 AND deleted_at IS NULL`
@@ -98,7 +101,7 @@ func (r *Repository) List(ctx context.Context, params ListParams) ([]Person, int
 
 	// Secondary sort on id keeps ordering deterministic across pages.
 	listQ := fmt.Sprintf(`
-		SELECT id, first_name, middle_names, last_name, display_name, nickname, pronouns, birthdate, custom_fields,
+		SELECT id, first_name, middle_names, last_name, display_name, nickname, pronouns, birthdate, phone_numbers, custom_fields,
 		       created_at, updated_at, deleted_at
 		FROM persons
 		WHERE %s
@@ -128,16 +131,19 @@ func (r *Repository) List(ctx context.Context, params ListParams) ([]Person, int
 
 // Update applies a patch to an existing Person and returns the updated record.
 func (r *Repository) Update(ctx context.Context, id uuid.UUID, p *Person) (*Person, error) {
+	if p.PhoneNumbers == nil {
+		p.PhoneNumbers = []string{}
+	}
 	const q = `
 		UPDATE persons
 		SET first_name = $2, middle_names = $3, last_name = $4,
 		    display_name = $5, nickname = $6, pronouns = $7, birthdate = $8,
-		    custom_fields = $9, updated_at = now()
+		    phone_numbers = $9, custom_fields = $10, updated_at = now()
 		WHERE id = $1 AND deleted_at IS NULL
-		RETURNING id, first_name, middle_names, last_name, display_name, nickname, pronouns, birthdate, custom_fields,
+		RETURNING id, first_name, middle_names, last_name, display_name, nickname, pronouns, birthdate, phone_numbers, custom_fields,
 		          created_at, updated_at, deleted_at`
 	person, err := scanPerson(r.pool.QueryRow(ctx, q,
-		id, p.FirstName, p.MiddleNames, p.LastName, p.DisplayName, p.Nickname, p.Pronouns, p.Birthdate, p.CustomFields,
+		id, p.FirstName, p.MiddleNames, p.LastName, p.DisplayName, p.Nickname, p.Pronouns, p.Birthdate, p.PhoneNumbers, p.CustomFields,
 	))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
@@ -184,13 +190,16 @@ func scanPerson(s scanner) (*Person, error) {
 	var p Person
 	if err := s.Scan(
 		&p.ID, &p.FirstName, &p.MiddleNames, &p.LastName, &p.DisplayName,
-		&p.Nickname, &p.Pronouns, &p.Birthdate,
+		&p.Nickname, &p.Pronouns, &p.Birthdate, &p.PhoneNumbers,
 		&p.CustomFields, &p.CreatedAt, &p.UpdatedAt, &p.DeletedAt,
 	); err != nil {
 		return nil, err
 	}
 	if p.MiddleNames == nil {
 		p.MiddleNames = []string{}
+	}
+	if p.PhoneNumbers == nil {
+		p.PhoneNumbers = []string{}
 	}
 	if p.CustomFields == nil {
 		p.CustomFields = map[string]any{}

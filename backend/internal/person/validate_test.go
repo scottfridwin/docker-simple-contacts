@@ -97,6 +97,29 @@ func TestValidateNewFields(t *testing.T) {
 	}
 }
 
+func TestValidatePhoneNumbers(t *testing.T) {
+	tooMany := make([]string, MaxPhoneNumbers+1)
+	for i := range tooMany {
+		tooMany[i] = "555-000"
+	}
+	if errs := ValidateCreate(CreateInput{FirstName: "A", LastName: "B", PhoneNumbers: tooMany}); !errs.HasErrors() {
+		t.Error("expected error for too many phone numbers")
+	}
+
+	if errs := ValidateCreate(CreateInput{FirstName: "A", LastName: "B", PhoneNumbers: []string{""}}); !errs.HasErrors() {
+		t.Error("expected error for empty phone number")
+	}
+
+	long := strings.Repeat("1", MaxPhoneNumberLength+1)
+	if errs := ValidateCreate(CreateInput{FirstName: "A", LastName: "B", PhoneNumbers: []string{long}}); !errs.HasErrors() {
+		t.Error("expected error for phone number exceeding max length")
+	}
+
+	if errs := ValidateCreate(CreateInput{FirstName: "A", LastName: "B", PhoneNumbers: []string{"+1-555-0100", "555-0101"}}); errs.HasErrors() {
+		t.Errorf("expected no errors for valid phone numbers, got: %s", errs.Error())
+	}
+}
+
 func TestValidateMiddleNames(t *testing.T) {
 	tooMany := make([]string, MaxMiddleNames+1)
 	for i := range tooMany {

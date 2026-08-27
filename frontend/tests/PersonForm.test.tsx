@@ -21,7 +21,11 @@ describe('PersonForm', () => {
 
     await userEvent.type(screen.getByLabelText(/first name/i), 'Scott');
     await userEvent.type(screen.getByLabelText(/last name/i), 'Fridlund');
-    await userEvent.type(screen.getByLabelText(/middle names/i), 'A, B');
+
+    await userEvent.click(screen.getByRole('button', { name: /add middle names/i }));
+    await userEvent.type(screen.getByLabelText('Middle names 1'), 'A');
+    await userEvent.click(screen.getByRole('button', { name: /add middle names/i }));
+    await userEvent.type(screen.getByLabelText('Middle names 2'), 'B');
 
     await userEvent.click(screen.getByRole('button', { name: /add custom field/i }));
     await userEvent.type(screen.getByLabelText('custom field key 0'), 'blood_type');
@@ -36,6 +40,7 @@ describe('PersonForm', () => {
       nickname: '',
       pronouns: '',
       birthdate: '',
+      phone_numbers: [],
       middle_names: ['A', 'B'],
       custom_fields: { blood_type: 'O+' },
     });

@@ -57,7 +57,8 @@ docs/design/            authoritative design documents
 - **Person fields**: `id` (UUID), `first_name`, `last_name` required;
   `middle_names` (ordered string array), `display_name` (always derived from name
   parts — not settable), `nickname`, `pronouns`, `birthdate` (ISO-8601 date string,
-  YYYY-MM-DD), `custom_fields` (JSONB), `created_at`, `updated_at`, `deleted_at` optional.
+  YYYY-MM-DD), `phone_numbers` (ordered string array, max 10, each ≤ 50 chars),
+  `custom_fields` (JSONB), `created_at`, `updated_at`, `deleted_at` optional.
 - **Custom fields**: lowercase `snake_case` keys; scalar values of type
   string / number / boolean / date; max 64 fields; key ≤ 64 chars; string ≤ 1024
   chars. Dates are ISO-8601 strings (JSON has no date type). `null` is rejected —

@@ -14,6 +14,7 @@ export interface PersonFormValues {
   nickname: string;
   pronouns: string;
   birthdate: string;
+  phone_numbers: string[];
   custom_fields: Record<string, string | number | boolean>;
 }
 
@@ -36,6 +37,59 @@ function draftsFromPerson(person?: Person): DraftCustomField[] {
 
 const TYPES: CustomFieldType[] = ['string', 'number', 'boolean', 'date'];
 
+function StringListField({
+  label,
+  values,
+  onChange,
+  maxItems,
+  inputType = 'text',
+}: {
+  label: string;
+  values: string[];
+  onChange: (values: string[]) => void;
+  maxItems?: number;
+  inputType?: string;
+}) {
+  const update = (i: number, v: string) => onChange(values.map((x, j) => (j === i ? v : x)));
+  const remove = (i: number) => onChange(values.filter((_, j) => j !== i));
+  const add = () => onChange([...values, '']);
+  const canAdd = maxItems === undefined || values.length < maxItems;
+
+  return (
+    <div className="array-field">
+      <span className="array-field-label">{label}</span>
+      {values.map((v, i) => (
+        <div className="array-field-row" key={i}>
+          <input
+            aria-label={`${label} ${i + 1}`}
+            type={inputType}
+            value={v}
+            onChange={(e) => update(i, e.target.value)}
+          />
+          <button
+            type="button"
+            className="btn-icon btn-remove"
+            onClick={() => remove(i)}
+            aria-label={`remove ${label} ${i + 1}`}
+          >
+            ✕
+          </button>
+        </div>
+      ))}
+      {canAdd && (
+        <button
+          type="button"
+          className="btn-icon btn-add"
+          onClick={add}
+          aria-label={`add ${label}`}
+        >
+          +
+        </button>
+      )}
+    </div>
+  );
+}
+
 export function PersonForm({
   initial,
   submitting,
@@ -45,10 +99,11 @@ export function PersonForm({
 }: PersonFormProps) {
   const [firstName, setFirstName] = useState(initial?.first_name ?? '');
   const [lastName, setLastName] = useState(initial?.last_name ?? '');
-  const [middleNames, setMiddleNames] = useState((initial?.middle_names ?? []).join(', '));
+  const [middleNames, setMiddleNames] = useState<string[]>(initial?.middle_names ?? []);
   const [nickname, setNickname] = useState(initial?.nickname ?? '');
   const [pronouns, setPronouns] = useState(initial?.pronouns ?? '');
   const [birthdate, setBirthdate] = useState(initial?.birthdate ?? '');
+  const [phoneNumbers, setPhoneNumbers] = useState<string[]>(initial?.phone_numbers ?? []);
   const [drafts, setDrafts] = useState<DraftCustomField[]>(draftsFromPerson(initial));
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [fieldErrors, setFieldErrors] = useState<Record<number, string>>({});
@@ -86,10 +141,8 @@ export function PersonForm({
       nickname: nickname.trim(),
       pronouns: pronouns.trim(),
       birthdate: birthdate.trim(),
-      middle_names: middleNames
-        .split(',')
-        .map((s) => s.trim())
-        .filter(Boolean),
+      middle_names: middleNames.map((s) => s.trim()).filter(Boolean),
+      phone_numbers: phoneNumbers.map((s) => s.trim()).filter(Boolean),
       custom_fields: fields,
     });
   };
@@ -109,14 +162,12 @@ export function PersonForm({
         {combinedErrors.first_name && <span className="error">{combinedErrors.first_name}</span>}
       </div>
 
-      <div className="field">
-        <label htmlFor="middle_names">Middle names (comma separated, in order)</label>
-        <input
-          id="middle_names"
-          value={middleNames}
-          onChange={(e) => setMiddleNames(e.target.value)}
-        />
-      </div>
+      <StringListField
+        label="Middle names"
+        values={middleNames}
+        onChange={setMiddleNames}
+        maxItems={16}
+      />
 
       <div className="field">
         <label htmlFor="last_name">Last name *</label>
@@ -149,6 +200,13 @@ export function PersonForm({
         />
         {combinedErrors.birthdate && <span className="error">{combinedErrors.birthdate}</span>}
       </div>
+
+      <StringListField
+        label="Phone numbers"
+        values={phoneNumbers}
+        onChange={setPhoneNumbers}
+        maxItems={10}
+      />
 
       <fieldset className="custom-fields">
         <legend>Custom fields</legend>

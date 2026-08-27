@@ -37,6 +37,7 @@ func TestRepositoryCRUD(t *testing.T) {
 		MiddleNames:  []string{"Q"},
 		LastName:     "Tester",
 		DisplayName:  "Integration Q Tester",
+		PhoneNumbers: []string{"+1-555-0100"},
 		CustomFields: map[string]any{"blood_type": "O+", "age": float64(30)},
 	})
 	if err != nil {
