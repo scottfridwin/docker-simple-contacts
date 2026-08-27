@@ -74,6 +74,10 @@ The default deployment compose file is hardened to run with explicit non-root
 `user:` settings, `read_only: true`, targeted `tmpfs` mounts for writable paths,
 and baseline `mem_limit` / `pids_limit` values for each service.
 
+The frontend nginx proxy target is configured at container startup with
+`API_UPSTREAM`, so deployments can point the frontend image at a differently
+named backend service without rebuilding the image.
+
 For local development without pulling published application images, use:
 
 ```bash
@@ -111,6 +115,7 @@ The backend is configured entirely through environment variables.
 | `APP_PUBLISH_PORT`     | `8080`      | Host port mapped to the backend container.              |
 | `FRONTEND_PUBLISH_PORT`| `5173`      | Host port mapped to the frontend container.             |
 | `POSTGRES_PUBLISH_PORT`| `5432`      | Host port mapped to PostgreSQL.                         |
+| `API_UPSTREAM`         | `http://app:8080` | Runtime nginx upstream for `/api` proxying.          |
 | `POSTGRES_UID` / `POSTGRES_GID` | `70` / `70` | UID/GID used for the PostgreSQL container.      |
 | `APP_UID` / `APP_GID`  | `65532` / `65532` | UID/GID used for the backend container.          |
 | `FRONTEND_UID` / `FRONTEND_GID` | `101` / `101` | UID/GID used for the frontend container.     |
