@@ -156,6 +156,53 @@ button:disabled {
   margin: 1rem 0;
 }
 
+.array-field {
+  margin-bottom: 0.75rem;
+}
+
+.array-field-label {
+  font-size: 0.85rem;
+  color: var(--muted);
+  display: block;
+  margin-bottom: 0.25rem;
+}
+
+.array-field-row {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  margin-bottom: 0.375rem;
+}
+
+.array-field-row input {
+  flex: 1;
+}
+
+.btn-icon {
+  padding: 0;
+  width: 2rem;
+  height: 2rem;
+  border-radius: 50%;
+  font-size: 1.1rem;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.btn-add {
+  background: #16a34a;
+  border-color: #16a34a;
+  color: #fff;
+}
+
+.btn-remove {
+  background: transparent;
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
 .custom-field-row {
   display: grid;
   grid-template-columns: 1fr auto 1fr auto;
