@@ -8,6 +8,9 @@ export interface Person {
   middle_names: string[];
   last_name: string;
   display_name: string;
+  nickname?: string | null;
+  pronouns?: string | null;
+  birthdate?: string | null;
   custom_fields: Record<string, CustomFieldValue>;
   created_at: string;
   updated_at: string;
@@ -26,7 +29,9 @@ export interface CreatePersonInput {
   first_name: string;
   middle_names?: string[];
   last_name: string;
-  display_name?: string;
+  nickname?: string;
+  pronouns?: string;
+  birthdate?: string;
   custom_fields?: Record<string, CustomFieldValue>;
 }
 

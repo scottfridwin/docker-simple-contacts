@@ -208,7 +208,8 @@ func decodeUpdate(w http.ResponseWriter, r *http.Request) (person.UpdateInput, e
 
 	allowed := map[string]struct{}{
 		"first_name": {}, "middle_names": {}, "last_name": {},
-		"display_name": {}, "custom_fields": {},
+		"nickname": {}, "pronouns": {}, "birthdate": {},
+		"custom_fields": {},
 	}
 	for key := range fields {
 		if _, ok := allowed[key]; !ok {
@@ -237,11 +238,23 @@ func decodeUpdate(w http.ResponseWriter, r *http.Request) (person.UpdateInput, e
 		in.MiddleNames = &names
 		in.MiddleNamesSet = true
 	}
-	if raw, ok := fields["display_name"]; ok {
-		if err := json.Unmarshal(raw, &in.DisplayName); err != nil {
-			return person.UpdateInput{}, errors.New("display_name must be a string")
+	if raw, ok := fields["nickname"]; ok {
+		if err := json.Unmarshal(raw, &in.Nickname); err != nil {
+			return person.UpdateInput{}, errors.New("nickname must be a string")
 		}
-		in.DisplayNameSet = true
+		in.NicknameSet = true
+	}
+	if raw, ok := fields["pronouns"]; ok {
+		if err := json.Unmarshal(raw, &in.Pronouns); err != nil {
+			return person.UpdateInput{}, errors.New("pronouns must be a string")
+		}
+		in.PronounsSet = true
+	}
+	if raw, ok := fields["birthdate"]; ok {
+		if err := json.Unmarshal(raw, &in.Birthdate); err != nil {
+			return person.UpdateInput{}, errors.New("birthdate must be a string")
+		}
+		in.BirthdateSet = true
 	}
 	if raw, ok := fields["custom_fields"]; ok {
 		var cf map[string]any

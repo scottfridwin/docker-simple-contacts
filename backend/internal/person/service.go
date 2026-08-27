@@ -47,7 +47,10 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (*Person, Validati
 		FirstName:    in.FirstName,
 		MiddleNames:  middleNames,
 		LastName:     in.LastName,
-		DisplayName:  resolveDisplayName(in.DisplayName, in.FirstName, middleNames, in.LastName),
+		DisplayName:  DeriveDisplayName(in.FirstName, middleNames, in.LastName),
+		Nickname:     in.Nickname,
+		Pronouns:     in.Pronouns,
+		Birthdate:    in.Birthdate,
 		CustomFields: customFields,
 	}
 	created, err := s.repo.Create(ctx, p)
@@ -104,6 +107,15 @@ func applyUpdate(current *Person, in UpdateInput) {
 			current.MiddleNames = []string{}
 		}
 	}
+	if in.NicknameSet {
+		current.Nickname = in.Nickname
+	}
+	if in.PronounsSet {
+		current.Pronouns = in.Pronouns
+	}
+	if in.BirthdateSet {
+		current.Birthdate = in.Birthdate
+	}
 	if in.CustomFieldsSet {
 		if in.CustomFields != nil {
 			current.CustomFields = in.CustomFields
@@ -111,20 +123,7 @@ func applyUpdate(current *Person, in UpdateInput) {
 			current.CustomFields = map[string]any{}
 		}
 	}
-	// Display name: explicit non-empty value wins; an explicit empty string
-	// re-derives from the current name parts.
-	if in.DisplayNameSet {
-		if in.DisplayName != nil && *in.DisplayName != "" {
-			current.DisplayName = *in.DisplayName
-		} else {
-			current.DisplayName = DeriveDisplayName(current.FirstName, current.MiddleNames, current.LastName)
-		}
-	}
+	// Always re-derive display name from current name parts.
+	current.DisplayName = DeriveDisplayName(current.FirstName, current.MiddleNames, current.LastName)
 }
 
-func resolveDisplayName(explicit *string, firstName string, middleNames []string, lastName string) string {
-	if explicit != nil && *explicit != "" {
-		return *explicit
-	}
-	return DeriveDisplayName(firstName, middleNames, lastName)
-}

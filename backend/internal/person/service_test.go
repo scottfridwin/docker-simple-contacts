@@ -158,26 +158,25 @@ func TestServiceListAndPurge(t *testing.T) {
 	}
 }
 
-func TestServiceUpdateDisplayNameRederive(t *testing.T) {
+func TestServiceUpdateDisplayNameRederived(t *testing.T) {
 	svc := NewService(newMemStore())
-	custom := "Custom Name"
 	created, _, _ := svc.Create(context.Background(), CreateInput{
-		FirstName: "A", LastName: "B", DisplayName: &custom,
+		FirstName: "A", LastName: "B",
 	})
-	if created.DisplayName != "Custom Name" {
-		t.Fatalf("DisplayName = %q, want explicit", created.DisplayName)
+	if created.DisplayName != "A B" {
+		t.Fatalf("DisplayName = %q, want derived", created.DisplayName)
 	}
 
-	// Empty display_name should re-derive from name parts.
-	empty := ""
+	// Updating a name part should re-derive display name automatically.
+	newFirst := "Alpha"
 	updated, _, err := svc.Update(context.Background(), created.ID, UpdateInput{
-		DisplayName: &empty, DisplayNameSet: true,
+		FirstName: &newFirst, FirstNameSet: true,
 	})
 	if err != nil {
 		t.Fatalf("update: %v", err)
 	}
-	if updated.DisplayName != "A B" {
-		t.Errorf("DisplayName = %q, want re-derived A B", updated.DisplayName)
+	if updated.DisplayName != "Alpha B" {
+		t.Errorf("DisplayName = %q, want re-derived Alpha B", updated.DisplayName)
 	}
 }
 

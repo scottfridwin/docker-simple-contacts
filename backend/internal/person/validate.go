@@ -45,8 +45,14 @@ func ValidateCreate(in CreateInput) ValidationErrors {
 	errs = append(errs, validateRequiredName("first_name", in.FirstName)...)
 	errs = append(errs, validateRequiredName("last_name", in.LastName)...)
 	errs = append(errs, validateMiddleNames(in.MiddleNames)...)
-	if in.DisplayName != nil {
-		errs = append(errs, validateDisplayName(*in.DisplayName)...)
+	if in.Nickname != nil {
+		errs = append(errs, validateOptionalShortField("nickname", *in.Nickname)...)
+	}
+	if in.Pronouns != nil {
+		errs = append(errs, validateOptionalShortField("pronouns", *in.Pronouns)...)
+	}
+	if in.Birthdate != nil {
+		errs = append(errs, validateBirthdate(*in.Birthdate)...)
 	}
 	errs = append(errs, ValidateCustomFields(in.CustomFields)...)
 	return errs
@@ -64,8 +70,14 @@ func ValidateUpdate(in UpdateInput) ValidationErrors {
 	if in.MiddleNamesSet && in.MiddleNames != nil {
 		errs = append(errs, validateMiddleNames(*in.MiddleNames)...)
 	}
-	if in.DisplayNameSet && in.DisplayName != nil {
-		errs = append(errs, validateDisplayName(*in.DisplayName)...)
+	if in.NicknameSet && in.Nickname != nil {
+		errs = append(errs, validateOptionalShortField("nickname", *in.Nickname)...)
+	}
+	if in.PronounsSet && in.Pronouns != nil {
+		errs = append(errs, validateOptionalShortField("pronouns", *in.Pronouns)...)
+	}
+	if in.BirthdateSet && in.Birthdate != nil {
+		errs = append(errs, validateBirthdate(*in.Birthdate)...)
 	}
 	if in.CustomFieldsSet {
 		errs = append(errs, ValidateCustomFields(in.CustomFields)...)
@@ -84,12 +96,20 @@ func validateRequiredName(field, value string) ValidationErrors {
 	return nil
 }
 
-func validateDisplayName(value string) ValidationErrors {
+func validateOptionalShortField(field, value string) ValidationErrors {
 	if len(value) > MaxNameLength {
-		return ValidationErrors{{Field: "display_name", Message: fmt.Sprintf("must be at most %d characters", MaxNameLength)}}
+		return ValidationErrors{{Field: field, Message: fmt.Sprintf("must be at most %d characters", MaxNameLength)}}
 	}
 	return nil
 }
+
+func validateBirthdate(value string) ValidationErrors {
+	if _, err := time.Parse("2006-01-02", value); err != nil {
+		return ValidationErrors{{Field: "birthdate", Message: "must be a valid date in YYYY-MM-DD format"}}
+	}
+	return nil
+}
+
 
 func validateMiddleNames(names []string) ValidationErrors {
 	if len(names) > MaxMiddleNames {
