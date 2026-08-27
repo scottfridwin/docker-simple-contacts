@@ -66,10 +66,13 @@ services:
     read_only: true
     mem_limit: ${FRONTEND_MEM_LIMIT:-128m}
     pids_limit: ${FRONTEND_PIDS_LIMIT:-64}
+    environment:
+      API_UPSTREAM: ${API_UPSTREAM:-http://app:8080}
     ports:
       - "${FRONTEND_PUBLISH_PORT:-5173}:8080"
     tmpfs:
       - /tmp:uid=${FRONTEND_UID:-101},gid=${FRONTEND_GID:-101},mode=1777
+      - /etc/nginx/conf.d:uid=${FRONTEND_UID:-101},gid=${FRONTEND_GID:-101},mode=0755
     depends_on:
       - app
     restart: unless-stopped
