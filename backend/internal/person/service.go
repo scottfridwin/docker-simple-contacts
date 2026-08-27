@@ -126,4 +126,3 @@ func applyUpdate(current *Person, in UpdateInput) {
 	// Always re-derive display name from current name parts.
 	current.DisplayName = DeriveDisplayName(current.FirstName, current.MiddleNames, current.LastName)
 }
-

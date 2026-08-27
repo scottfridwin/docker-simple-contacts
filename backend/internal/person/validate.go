@@ -110,7 +110,6 @@ func validateBirthdate(value string) ValidationErrors {
 	return nil
 }
 
-
 func validateMiddleNames(names []string) ValidationErrors {
 	if len(names) > MaxMiddleNames {
 		return ValidationErrors{{Field: "middle_names", Message: fmt.Sprintf("must contain at most %d entries", MaxMiddleNames)}}
