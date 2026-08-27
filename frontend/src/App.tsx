@@ -40,9 +40,9 @@ export default function App() {
         first_name: values.first_name,
         last_name: values.last_name,
         middle_names: values.middle_names,
-        // Always sent: an empty string tells the API to (re)derive from the
-        // name parts; a non-empty value is a custom override.
-        display_name: values.display_name,
+        nickname: values.nickname || undefined,
+        pronouns: values.pronouns || undefined,
+        birthdate: values.birthdate || undefined,
         custom_fields: values.custom_fields,
       };
       if (view.mode === 'edit') {

@@ -33,7 +33,9 @@ describe('PersonForm', () => {
     expect(onSubmit).toHaveBeenCalledWith({
       first_name: 'Scott',
       last_name: 'Fridlund',
-      display_name: '',
+      nickname: '',
+      pronouns: '',
+      birthdate: '',
       middle_names: ['A', 'B'],
       custom_fields: { blood_type: 'O+' },
     });

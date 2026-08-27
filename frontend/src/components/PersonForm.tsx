@@ -11,7 +11,9 @@ export interface PersonFormValues {
   first_name: string;
   middle_names: string[];
   last_name: string;
-  display_name: string;
+  nickname: string;
+  pronouns: string;
+  birthdate: string;
   custom_fields: Record<string, string | number | boolean>;
 }
 
@@ -32,23 +34,6 @@ function draftsFromPerson(person?: Person): DraftCustomField[] {
   }));
 }
 
-// Mirrors the backend's display-name derivation so the form can tell whether a
-// stored display name is a custom override or just the derived default.
-function deriveDisplayName(first: string, middles: string[], last: string): string {
-  return [first, ...middles, last]
-    .map((s) => s.trim())
-    .filter(Boolean)
-    .join(' ');
-}
-
-// Returns the stored display name only when it is a custom override; otherwise
-// an empty string so the field stays "auto" and the backend re-derives on save.
-function initialCustomDisplayName(person?: Person): string {
-  if (!person) return '';
-  const derived = deriveDisplayName(person.first_name, person.middle_names ?? [], person.last_name);
-  return (person.display_name ?? '') === derived ? '' : (person.display_name ?? '');
-}
-
 const TYPES: CustomFieldType[] = ['string', 'number', 'boolean', 'date'];
 
 export function PersonForm({
@@ -60,8 +45,10 @@ export function PersonForm({
 }: PersonFormProps) {
   const [firstName, setFirstName] = useState(initial?.first_name ?? '');
   const [lastName, setLastName] = useState(initial?.last_name ?? '');
-  const [displayName, setDisplayName] = useState(initialCustomDisplayName(initial));
   const [middleNames, setMiddleNames] = useState((initial?.middle_names ?? []).join(', '));
+  const [nickname, setNickname] = useState(initial?.nickname ?? '');
+  const [pronouns, setPronouns] = useState(initial?.pronouns ?? '');
+  const [birthdate, setBirthdate] = useState(initial?.birthdate ?? '');
   const [drafts, setDrafts] = useState<DraftCustomField[]>(draftsFromPerson(initial));
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [fieldErrors, setFieldErrors] = useState<Record<number, string>>({});
@@ -96,7 +83,9 @@ export function PersonForm({
     onSubmit({
       first_name: firstName.trim(),
       last_name: lastName.trim(),
-      display_name: displayName.trim(),
+      nickname: nickname.trim(),
+      pronouns: pronouns.trim(),
+      birthdate: birthdate.trim(),
       middle_names: middleNames
         .split(',')
         .map((s) => s.trim())
@@ -141,12 +130,24 @@ export function PersonForm({
       </div>
 
       <div className="field">
-        <label htmlFor="display_name">Display name (optional, derived if blank)</label>
+        <label htmlFor="nickname">Nickname</label>
+        <input id="nickname" value={nickname} onChange={(e) => setNickname(e.target.value)} />
+      </div>
+
+      <div className="field">
+        <label htmlFor="pronouns">Pronouns</label>
+        <input id="pronouns" value={pronouns} onChange={(e) => setPronouns(e.target.value)} />
+      </div>
+
+      <div className="field">
+        <label htmlFor="birthdate">Birthdate</label>
         <input
-          id="display_name"
-          value={displayName}
-          onChange={(e) => setDisplayName(e.target.value)}
+          id="birthdate"
+          type="date"
+          value={birthdate}
+          onChange={(e) => setBirthdate(e.target.value)}
         />
+        {combinedErrors.birthdate && <span className="error">{combinedErrors.birthdate}</span>}
       </div>
 
       <fieldset className="custom-fields">

@@ -78,11 +78,22 @@ func TestCustomFieldLimits(t *testing.T) {
 	}
 }
 
-func TestValidateDisplayNameTooLong(t *testing.T) {
+func TestValidateNewFields(t *testing.T) {
 	long := strings.Repeat("x", MaxNameLength+1)
-	errs := ValidateCreate(CreateInput{FirstName: "A", LastName: "B", DisplayName: &long})
-	if !errs.HasErrors() {
-		t.Error("expected error for oversized display_name")
+	longPtr := long
+
+	if errs := ValidateCreate(CreateInput{FirstName: "A", LastName: "B", Nickname: &longPtr}); !errs.HasErrors() {
+		t.Error("expected error for oversized nickname")
+	}
+
+	bad := "not-a-date"
+	if errs := ValidateCreate(CreateInput{FirstName: "A", LastName: "B", Birthdate: &bad}); !errs.HasErrors() {
+		t.Error("expected error for invalid birthdate format")
+	}
+
+	good := "1990-01-15"
+	if errs := ValidateCreate(CreateInput{FirstName: "A", LastName: "B", Birthdate: &good}); errs.HasErrors() {
+		t.Errorf("expected no errors for valid birthdate, got: %s", errs.Error())
 	}
 }
 
