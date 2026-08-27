@@ -42,6 +42,10 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (*Person, Validati
 	if phoneNumbers == nil {
 		phoneNumbers = []string{}
 	}
+	addresses := in.Addresses
+	if addresses == nil {
+		addresses = []Address{}
+	}
 	customFields := in.CustomFields
 	if customFields == nil {
 		customFields = map[string]any{}
@@ -56,6 +60,7 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (*Person, Validati
 		Pronouns:     in.Pronouns,
 		Birthdate:    in.Birthdate,
 		PhoneNumbers: phoneNumbers,
+		Addresses:    addresses,
 		CustomFields: customFields,
 	}
 	created, err := s.repo.Create(ctx, p)
@@ -126,6 +131,13 @@ func applyUpdate(current *Person, in UpdateInput) {
 			current.PhoneNumbers = *in.PhoneNumbers
 		} else {
 			current.PhoneNumbers = []string{}
+		}
+	}
+	if in.AddressesSet {
+		if in.Addresses != nil {
+			current.Addresses = *in.Addresses
+		} else {
+			current.Addresses = []Address{}
 		}
 	}
 	if in.CustomFieldsSet {

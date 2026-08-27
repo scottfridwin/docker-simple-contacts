@@ -209,7 +209,7 @@ func decodeUpdate(w http.ResponseWriter, r *http.Request) (person.UpdateInput, e
 	allowed := map[string]struct{}{
 		"first_name": {}, "middle_names": {}, "last_name": {},
 		"nickname": {}, "pronouns": {}, "birthdate": {},
-		"phone_numbers": {}, "custom_fields": {},
+		"phone_numbers": {}, "addresses": {}, "custom_fields": {},
 	}
 	for key := range fields {
 		if _, ok := allowed[key]; !ok {
@@ -263,6 +263,14 @@ func decodeUpdate(w http.ResponseWriter, r *http.Request) (person.UpdateInput, e
 		}
 		in.PhoneNumbers = &nums
 		in.PhoneNumbersSet = true
+	}
+	if raw, ok := fields["addresses"]; ok {
+		var addrs []person.Address
+		if err := json.Unmarshal(raw, &addrs); err != nil {
+			return person.UpdateInput{}, errors.New("addresses must be an array of address objects")
+		}
+		in.Addresses = &addrs
+		in.AddressesSet = true
 	}
 	if raw, ok := fields["custom_fields"]; ok {
 		var cf map[string]any

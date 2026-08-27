@@ -10,13 +10,15 @@ import (
 
 // Custom field policy constants (from implementation decisions).
 const (
-	MaxCustomFields      = 64
-	MaxKeyLength         = 64
-	MaxStringValueLength = 1024
-	MaxNameLength        = 255
-	MaxMiddleNames       = 16
-	MaxPhoneNumbers      = 10
-	MaxPhoneNumberLength = 50
+	MaxCustomFields       = 64
+	MaxKeyLength          = 64
+	MaxStringValueLength  = 1024
+	MaxNameLength         = 255
+	MaxMiddleNames        = 16
+	MaxPhoneNumbers       = 10
+	MaxPhoneNumberLength  = 50
+	MaxAddresses          = 10
+	MaxAddressFieldLength = 255
 )
 
 var snakeCaseKey = regexp.MustCompile(`^[a-z][a-z0-9]*(_[a-z0-9]+)*$`)
@@ -58,6 +60,7 @@ func ValidateCreate(in CreateInput) ValidationErrors {
 	}
 	errs = append(errs, ValidateCustomFields(in.CustomFields)...)
 	errs = append(errs, validatePhoneNumbers(in.PhoneNumbers)...)
+	errs = append(errs, validateAddresses(in.Addresses)...)
 	return errs
 }
 
@@ -84,6 +87,9 @@ func ValidateUpdate(in UpdateInput) ValidationErrors {
 	}
 	if in.PhoneNumbersSet && in.PhoneNumbers != nil {
 		errs = append(errs, validatePhoneNumbers(*in.PhoneNumbers)...)
+	}
+	if in.AddressesSet && in.Addresses != nil {
+		errs = append(errs, validateAddresses(*in.Addresses)...)
 	}
 	if in.CustomFieldsSet {
 		errs = append(errs, ValidateCustomFields(in.CustomFields)...)
@@ -128,6 +134,43 @@ func validatePhoneNumbers(numbers []string) ValidationErrors {
 		}
 		if len(n) > MaxPhoneNumberLength {
 			errs = append(errs, ValidationError{Field: fmt.Sprintf("phone_numbers[%d]", i), Message: fmt.Sprintf("must be at most %d characters", MaxPhoneNumberLength)})
+		}
+	}
+	return errs
+}
+
+func validateAddresses(addresses []Address) ValidationErrors {
+	if len(addresses) > MaxAddresses {
+		return ValidationErrors{{Field: "addresses", Message: fmt.Sprintf("must contain at most %d entries", MaxAddresses)}}
+	}
+	var errs ValidationErrors
+	validTypes := map[string]bool{"home": true, "work": true, "other": true}
+	for i, addr := range addresses {
+		prefix := fmt.Sprintf("addresses[%d]", i)
+		if !validTypes[addr.Type] {
+			errs = append(errs, ValidationError{Field: prefix + ".type", Message: "must be 'home', 'work', or 'other'"})
+		}
+		if strings.TrimSpace(addr.Street) == "" {
+			errs = append(errs, ValidationError{Field: prefix + ".street", Message: "must not be empty"})
+		} else if len(addr.Street) > MaxAddressFieldLength {
+			errs = append(errs, ValidationError{Field: prefix + ".street", Message: fmt.Sprintf("must be at most %d characters", MaxAddressFieldLength)})
+		}
+		if strings.TrimSpace(addr.City) == "" {
+			errs = append(errs, ValidationError{Field: prefix + ".city", Message: "must not be empty"})
+		} else if len(addr.City) > MaxAddressFieldLength {
+			errs = append(errs, ValidationError{Field: prefix + ".city", Message: fmt.Sprintf("must be at most %d characters", MaxAddressFieldLength)})
+		}
+		if len(addr.State) > MaxAddressFieldLength {
+			errs = append(errs, ValidationError{Field: prefix + ".state", Message: fmt.Sprintf("must be at most %d characters", MaxAddressFieldLength)})
+		}
+		if len(addr.PostalCode) > MaxAddressFieldLength {
+			errs = append(errs, ValidationError{Field: prefix + ".postal_code", Message: fmt.Sprintf("must be at most %d characters", MaxAddressFieldLength)})
+		}
+		if len(addr.Country) > MaxAddressFieldLength {
+			errs = append(errs, ValidationError{Field: prefix + ".country", Message: fmt.Sprintf("must be at most %d characters", MaxAddressFieldLength)})
+		}
+		if addr.Label != nil && len(*addr.Label) > MaxAddressFieldLength {
+			errs = append(errs, ValidationError{Field: prefix + ".label", Message: fmt.Sprintf("must be at most %d characters", MaxAddressFieldLength)})
 		}
 	}
 	return errs

@@ -11,7 +11,7 @@ import (
 )
 
 // NewRouter builds the application's HTTP handler.
-func NewRouter(logger *slog.Logger, svc *person.Service, ready pinger, allowedOrigins []string) http.Handler {
+func NewRouter(logger *slog.Logger, svc *person.Service, relSvc *person.RelationshipService, ready pinger, allowedOrigins []string) http.Handler {
 	r := chi.NewRouter()
 
 	r.Use(requestID)
@@ -30,6 +30,7 @@ func NewRouter(logger *slog.Logger, svc *person.Service, ready pinger, allowedOr
 	r.Get("/readyz", readyHandler(ready))
 
 	h := &personHandler{svc: svc}
+	rh := &relationshipHandler{svc: relSvc}
 	r.Route("/api/v1", func(api chi.Router) {
 		api.Route("/persons", func(p chi.Router) {
 			p.Post("/", h.create)
@@ -37,6 +38,15 @@ func NewRouter(logger *slog.Logger, svc *person.Service, ready pinger, allowedOr
 			p.Get("/{id}", h.get)
 			p.Patch("/{id}", h.update)
 			p.Delete("/{id}", h.delete)
+			p.Route("/{id}/relationships", func(rel chi.Router) {
+				rel.Post("/", rh.create)
+				rel.Get("/", rh.listForPerson)
+			})
+		})
+		api.Route("/relationships", func(r chi.Router) {
+			r.Get("/{id}", rh.get)
+			r.Patch("/{id}", rh.update)
+			r.Delete("/{id}", rh.delete)
 		})
 	})
 

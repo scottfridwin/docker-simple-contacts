@@ -84,11 +84,13 @@ func run() error {
 
 	repo := person.NewRepository(pool)
 	svc := person.NewService(repo)
+	relRepo := person.NewRelationshipRepository(pool)
+	relSvc := person.NewRelationshipService(relRepo, repo)
 
 	purgeWindow := time.Duration(cfg.PurgeAfterDays) * 24 * time.Hour
-	go runPurgeLoop(ctx, logger, svc, purgeWindow)
+	go runPurgeLoop(ctx, logger, svc, relSvc, purgeWindow)
 
-	handler := httpapi.NewRouter(logger, svc, repo, cfg.CORSAllowedOrigins)
+	handler := httpapi.NewRouter(logger, svc, relSvc, repo, cfg.CORSAllowedOrigins)
 	srv := &http.Server{
 		Addr:              ":" + cfg.Port,
 		Handler:           handler,
@@ -124,18 +126,23 @@ func run() error {
 
 // runPurgeLoop periodically purges soft-deleted records past the retention
 // window (recycle bin behavior).
-func runPurgeLoop(ctx context.Context, logger *slog.Logger, svc *person.Service, window time.Duration) {
+func runPurgeLoop(ctx context.Context, logger *slog.Logger, svc *person.Service, relSvc *person.RelationshipService, window time.Duration) {
 	ticker := time.NewTicker(24 * time.Hour)
 	defer ticker.Stop()
 
 	purge := func() {
 		count, err := svc.PurgeExpired(ctx, window)
 		if err != nil {
-			logger.Error("purge failed", "error", err)
-			return
-		}
-		if count > 0 {
+			logger.Error("purge persons failed", "error", err)
+		} else if count > 0 {
 			logger.Info("purged expired persons", "count", count)
+		}
+
+		relCount, err := relSvc.PurgeExpired(ctx, window)
+		if err != nil {
+			logger.Error("purge relationships failed", "error", err)
+		} else if relCount > 0 {
+			logger.Info("purged expired relationships", "count", relCount)
 		}
 	}
 

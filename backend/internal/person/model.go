@@ -19,10 +19,34 @@ type Person struct {
 	Pronouns     *string        `json:"pronouns,omitempty"`
 	Birthdate    *string        `json:"birthdate,omitempty"`
 	PhoneNumbers []string       `json:"phone_numbers"`
+	Addresses    []Address       `json:"addresses"`
 	CustomFields map[string]any `json:"custom_fields"`
 	CreatedAt    time.Time      `json:"created_at"`
 	UpdatedAt    time.Time      `json:"updated_at"`
 	DeletedAt    *time.Time     `json:"deleted_at,omitempty"`
+}
+
+// Address represents a physical address for a Person.
+type Address struct {
+	Type       string `json:"type"`       // "home", "work", "other"
+	Street     string `json:"street"`
+	City       string `json:"city"`
+	State      string `json:"state"`
+	PostalCode string `json:"postal_code"`
+	Country    string `json:"country"`
+	Label      *string `json:"label,omitempty"` // optional custom label
+}
+
+// Relationship represents a connection between two Person records.
+type Relationship struct {
+	ID               uuid.UUID  `json:"id"`
+	PersonID1        uuid.UUID  `json:"person_id_1"`
+	PersonID2        uuid.UUID  `json:"person_id_2"`
+	RelationshipType string     `json:"relationship_type"` // "spouse", "parent", "child", "sibling", "colleague", "friend", "other"
+	Label            *string    `json:"label,omitempty"`
+	CreatedAt        time.Time  `json:"created_at"`
+	UpdatedAt        time.Time  `json:"updated_at"`
+	DeletedAt        *time.Time `json:"deleted_at,omitempty"`
 }
 
 // CreateInput is the payload accepted when creating a Person.
@@ -34,6 +58,7 @@ type CreateInput struct {
 	Pronouns     *string        `json:"pronouns"`
 	Birthdate    *string        `json:"birthdate"`
 	PhoneNumbers []string       `json:"phone_numbers"`
+	Addresses    []Address      `json:"addresses"`
 	CustomFields map[string]any `json:"custom_fields"`
 }
 
@@ -47,6 +72,7 @@ type UpdateInput struct {
 	Pronouns     *string
 	Birthdate    *string
 	PhoneNumbers *[]string
+	Addresses    *[]Address
 	CustomFields map[string]any
 
 	FirstNameSet    bool
@@ -56,6 +82,7 @@ type UpdateInput struct {
 	PronounsSet     bool
 	BirthdateSet    bool
 	PhoneNumbersSet bool
+	AddressesSet    bool
 	CustomFieldsSet bool
 }
 

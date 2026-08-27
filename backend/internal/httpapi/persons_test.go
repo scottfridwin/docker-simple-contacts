@@ -84,8 +84,11 @@ func (f *fakeStore) Ping(_ context.Context) error { return nil }
 func testRouter() (http.Handler, *fakeStore) {
 	store := newFakeStore()
 	svc := person.NewService(store)
+	relRepo := person.NewRelationshipRepository(nil)
+	// For testing, pass a nil personRepo since relationship endpoints aren't tested here
+	relSvc := person.NewRelationshipService(relRepo, nil)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	return NewRouter(logger, svc, store, []string{"http://localhost:5173"}), store
+	return NewRouter(logger, svc, relSvc, store, []string{"http://localhost:5173"}), store
 }
 
 func doJSON(t *testing.T, h http.Handler, method, path string, body interface{}) *httptest.ResponseRecorder {

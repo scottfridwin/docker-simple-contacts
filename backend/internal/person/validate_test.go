@@ -178,3 +178,59 @@ func itoa(i int) string {
 	}
 	return string(b)
 }
+
+func TestValidateAddresses(t *testing.T) {
+	// Test too many addresses
+	tooMany := make([]Address, MaxAddresses+1)
+	for i := range tooMany {
+		tooMany[i] = Address{Type: "home", Street: "St", City: "C"}
+	}
+	if errs := ValidateCreate(CreateInput{FirstName: "A", LastName: "B", Addresses: tooMany}); !errs.HasErrors() {
+		t.Error("expected error for too many addresses")
+	}
+
+	// Test invalid address type
+	if errs := ValidateCreate(CreateInput{FirstName: "A", LastName: "B", Addresses: []Address{
+		{Type: "invalid", Street: "St", City: "C"},
+	}}); !errs.HasErrors() {
+		t.Error("expected error for invalid address type")
+	}
+
+	// Test missing required street
+	if errs := ValidateCreate(CreateInput{FirstName: "A", LastName: "B", Addresses: []Address{
+		{Type: "home", Street: "", City: "C"},
+	}}); !errs.HasErrors() {
+		t.Error("expected error for empty street")
+	}
+
+	// Test missing required city
+	if errs := ValidateCreate(CreateInput{FirstName: "A", LastName: "B", Addresses: []Address{
+		{Type: "home", Street: "123 Main St", City: ""},
+	}}); !errs.HasErrors() {
+		t.Error("expected error for empty city")
+	}
+
+	// Test field length limits
+	long := strings.Repeat("x", MaxAddressFieldLength+1)
+	if errs := ValidateCreate(CreateInput{FirstName: "A", LastName: "B", Addresses: []Address{
+		{Type: "home", Street: long, City: "C"},
+	}}); !errs.HasErrors() {
+		t.Error("expected error for oversized street")
+	}
+
+	// Test valid addresses with all combinations
+	validAddrs := []Address{
+		{Type: "home", Street: "123 Main St", City: "Springfield", State: "IL", PostalCode: "62701", Country: "USA"},
+		{Type: "work", Street: "456 Business Blvd", City: "Chicago", State: "IL", PostalCode: "60601", Country: "USA", Label: ptrString("Office")},
+		{Type: "other", Street: "789 Other Ave", City: "Evanston", State: "IL", PostalCode: "60201", Country: "USA"},
+	}
+	if errs := ValidateCreate(CreateInput{FirstName: "A", LastName: "B", Addresses: validAddrs}); errs.HasErrors() {
+		t.Errorf("expected no errors for valid addresses, got: %s", errs.Error())
+	}
+}
+
+// Helper to create string pointers for tests
+func ptrString(s string) *string {
+	return &s
+}
+

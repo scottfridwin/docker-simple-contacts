@@ -2,6 +2,31 @@ export type CustomFieldType = 'string' | 'number' | 'boolean' | 'date';
 
 export type CustomFieldValue = string | number | boolean;
 
+export type AddressType = 'home' | 'work' | 'other';
+
+export interface Address {
+  type: AddressType;
+  street: string;
+  city: string;
+  state?: string;
+  postal_code?: string;
+  country?: string;
+  label?: string | null;
+}
+
+export type RelationshipType = 'spouse' | 'parent' | 'child' | 'sibling' | 'colleague' | 'friend' | 'other';
+
+export interface Relationship {
+  id: string;
+  person_id_1: string;
+  person_id_2: string;
+  relationship_type: RelationshipType;
+  label?: string | null;
+  created_at: string;
+  updated_at: string;
+  deleted_at?: string | null;
+}
+
 export interface Person {
   id: string;
   first_name: string;
@@ -12,6 +37,7 @@ export interface Person {
   pronouns?: string | null;
   birthdate?: string | null;
   phone_numbers: string[];
+  addresses: Address[];
   custom_fields: Record<string, CustomFieldValue>;
   created_at: string;
   updated_at: string;
@@ -34,6 +60,7 @@ export interface CreatePersonInput {
   pronouns?: string;
   birthdate?: string;
   phone_numbers?: string[];
+  addresses?: Address[];
   custom_fields?: Record<string, CustomFieldValue>;
 }
 
