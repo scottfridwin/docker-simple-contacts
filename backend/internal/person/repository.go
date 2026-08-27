@@ -35,6 +35,9 @@ var allowedSortFields = map[string]string{
 
 // Create inserts a new Person and returns the stored record.
 func (r *Repository) Create(ctx context.Context, p *Person) (*Person, error) {
+	if p.PhoneNumbers == nil {
+		p.PhoneNumbers = []string{}
+	}
 	const q = `
 		INSERT INTO persons (first_name, middle_names, last_name, display_name, nickname, pronouns, birthdate, phone_numbers, custom_fields)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
@@ -128,6 +131,9 @@ func (r *Repository) List(ctx context.Context, params ListParams) ([]Person, int
 
 // Update applies a patch to an existing Person and returns the updated record.
 func (r *Repository) Update(ctx context.Context, id uuid.UUID, p *Person) (*Person, error) {
+	if p.PhoneNumbers == nil {
+		p.PhoneNumbers = []string{}
+	}
 	const q = `
 		UPDATE persons
 		SET first_name = $2, middle_names = $3, last_name = $4,
