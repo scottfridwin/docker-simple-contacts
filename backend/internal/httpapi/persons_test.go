@@ -216,6 +216,37 @@ func TestFullCRUDFlow(t *testing.T) {
 	}
 }
 
+func TestPatchNewFields(t *testing.T) {
+	h, store := testRouter()
+	p, _, _ := person.NewService(store).Create(context.Background(), person.CreateInput{FirstName: "A", LastName: "B"})
+
+	rec := doJSON(t, h, http.MethodPatch, "/api/v1/persons/"+p.ID.String(), map[string]any{
+		"nickname":      "Ace",
+		"pronouns":      "they/them",
+		"birthdate":     "1990-06-15",
+		"phone_numbers": []string{"+1-555-0100"},
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+	var updated person.Person
+	_ = json.Unmarshal(rec.Body.Bytes(), &updated)
+	if updated.Nickname == nil || *updated.Nickname != "Ace" {
+		t.Errorf("Nickname = %v", updated.Nickname)
+	}
+	if len(updated.PhoneNumbers) != 1 {
+		t.Errorf("PhoneNumbers = %v", updated.PhoneNumbers)
+	}
+
+	// Wrong type for phone_numbers should return 400.
+	rec = doJSON(t, h, http.MethodPatch, "/api/v1/persons/"+p.ID.String(), map[string]any{
+		"phone_numbers": "not-an-array",
+	})
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", rec.Code)
+	}
+}
+
 func TestPatchInvalidCustomField(t *testing.T) {
 	h, store := testRouter()
 	p, _, _ := person.NewService(store).Create(context.Background(), person.CreateInput{FirstName: "A", LastName: "B"})

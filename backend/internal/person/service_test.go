@@ -158,6 +158,55 @@ func TestServiceListAndPurge(t *testing.T) {
 	}
 }
 
+func TestServiceUpdateNewOptionalFields(t *testing.T) {
+	svc := NewService(newMemStore())
+	created, _, _ := svc.Create(context.Background(), CreateInput{FirstName: "A", LastName: "B"})
+
+	nick := "Ace"
+	pro := "they/them"
+	bd := "1990-06-15"
+	nums := []string{"+1-555-0100"}
+	updated, verrs, err := svc.Update(context.Background(), created.ID, UpdateInput{
+		Nickname:        &nick,
+		NicknameSet:     true,
+		Pronouns:        &pro,
+		PronounsSet:     true,
+		Birthdate:       &bd,
+		BirthdateSet:    true,
+		PhoneNumbers:    &nums,
+		PhoneNumbersSet: true,
+	})
+	if err != nil || verrs.HasErrors() {
+		t.Fatalf("unexpected: err=%v verrs=%v", err, verrs)
+	}
+	if updated.Nickname == nil || *updated.Nickname != "Ace" {
+		t.Errorf("Nickname = %v", updated.Nickname)
+	}
+	if updated.Pronouns == nil || *updated.Pronouns != "they/them" {
+		t.Errorf("Pronouns = %v", updated.Pronouns)
+	}
+	if updated.Birthdate == nil || *updated.Birthdate != "1990-06-15" {
+		t.Errorf("Birthdate = %v", updated.Birthdate)
+	}
+	if len(updated.PhoneNumbers) != 1 || updated.PhoneNumbers[0] != "+1-555-0100" {
+		t.Errorf("PhoneNumbers = %v", updated.PhoneNumbers)
+	}
+
+	// Clearing optional fields should work.
+	updated, _, _ = svc.Update(context.Background(), created.ID, UpdateInput{
+		Nickname:        nil,
+		NicknameSet:     true,
+		PhoneNumbers:    &[]string{},
+		PhoneNumbersSet: true,
+	})
+	if updated.Nickname != nil {
+		t.Errorf("expected Nickname cleared, got %v", updated.Nickname)
+	}
+	if len(updated.PhoneNumbers) != 0 {
+		t.Errorf("expected PhoneNumbers cleared, got %v", updated.PhoneNumbers)
+	}
+}
+
 func TestServiceUpdateDisplayNameRederived(t *testing.T) {
 	svc := NewService(newMemStore())
 	created, _, _ := svc.Create(context.Background(), CreateInput{
@@ -167,7 +216,6 @@ func TestServiceUpdateDisplayNameRederived(t *testing.T) {
 		t.Fatalf("DisplayName = %q, want derived", created.DisplayName)
 	}
 
-	// Updating a name part should re-derive display name automatically.
 	newFirst := "Alpha"
 	updated, _, err := svc.Update(context.Background(), created.ID, UpdateInput{
 		FirstName: &newFirst, FirstNameSet: true,
