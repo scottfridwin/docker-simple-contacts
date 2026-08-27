@@ -44,6 +44,7 @@ export default function App() {
         pronouns: values.pronouns || undefined,
         birthdate: values.birthdate || undefined,
         phone_numbers: values.phone_numbers.length ? values.phone_numbers : undefined,
+        addresses: values.addresses.length ? values.addresses : undefined,
         custom_fields: values.custom_fields,
       };
       if (view.mode === 'edit') {

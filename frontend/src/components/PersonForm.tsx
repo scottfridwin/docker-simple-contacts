@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import type { CustomFieldType, Person } from '../types';
+import type { Address, AddressType, CustomFieldType, Person } from '../types';
 import {
   buildCustomFields,
   inferType,
@@ -15,6 +15,7 @@ export interface PersonFormValues {
   pronouns: string;
   birthdate: string;
   phone_numbers: string[];
+  addresses: Address[];
   custom_fields: Record<string, string | number | boolean>;
 }
 
@@ -90,6 +91,131 @@ function StringListField({
   );
 }
 
+function AddressField({
+  label,
+  addresses,
+  onChange,
+  maxItems = 10,
+}: {
+  label: string;
+  addresses: Address[];
+  onChange: (addresses: Address[]) => void;
+  maxItems?: number;
+}) {
+  const update = (i: number, patch: Partial<Address>) =>
+    onChange(addresses.map((a, j) => (j === i ? { ...a, ...patch } : a)));
+  const remove = (i: number) => onChange(addresses.filter((_, j) => j !== i));
+  const add = () =>
+    onChange([
+      ...addresses,
+      { type: 'home', street: '', city: '', state: '', postal_code: '', country: '' },
+    ]);
+  const canAdd = addresses.length < maxItems;
+
+  return (
+    <fieldset className="array-field-set">
+      <legend>{label}</legend>
+      {addresses.map((addr, i) => (
+        <div className="address-row" key={i}>
+          <div className="address-row-group">
+            <div>
+              <label htmlFor={`address-type-${i}`}>Type *</label>
+              <select
+                id={`address-type-${i}`}
+                value={addr.type}
+                onChange={(e) => update(i, { type: e.target.value as AddressType })}
+              >
+                <option value="home">Home</option>
+                <option value="work">Work</option>
+                <option value="other">Other</option>
+              </select>
+            </div>
+            <div>
+              <label htmlFor={`address-street-${i}`}>Street *</label>
+              <input
+                id={`address-street-${i}`}
+                type="text"
+                placeholder="Street address"
+                value={addr.street}
+                onChange={(e) => update(i, { street: e.target.value })}
+              />
+            </div>
+            <div>
+              <label htmlFor={`address-city-${i}`}>City *</label>
+              <input
+                id={`address-city-${i}`}
+                type="text"
+                placeholder="City"
+                value={addr.city}
+                onChange={(e) => update(i, { city: e.target.value })}
+              />
+            </div>
+          </div>
+          <div className="address-row-group">
+            <div>
+              <label htmlFor={`address-state-${i}`}>State</label>
+              <input
+                id={`address-state-${i}`}
+                type="text"
+                placeholder="State"
+                value={addr.state || ''}
+                onChange={(e) => update(i, { state: e.target.value })}
+              />
+            </div>
+            <div>
+              <label htmlFor={`address-postal-${i}`}>Postal Code</label>
+              <input
+                id={`address-postal-${i}`}
+                type="text"
+                placeholder="Postal code"
+                value={addr.postal_code || ''}
+                onChange={(e) => update(i, { postal_code: e.target.value })}
+              />
+            </div>
+            <div>
+              <label htmlFor={`address-country-${i}`}>Country</label>
+              <input
+                id={`address-country-${i}`}
+                type="text"
+                placeholder="Country"
+                value={addr.country || ''}
+                onChange={(e) => update(i, { country: e.target.value })}
+              />
+            </div>
+          </div>
+          <div className="address-row-group">
+            <div>
+              <label htmlFor={`address-label-${i}`}>Label</label>
+              <input
+                id={`address-label-${i}`}
+                type="text"
+                placeholder="e.g., Apartment 4B"
+                value={addr.label || ''}
+                onChange={(e) => update(i, { label: e.target.value })}
+              />
+            </div>
+            <div>
+              <button
+                type="button"
+                className="btn-remove-address"
+                onClick={() => remove(i)}
+                aria-label={`remove address ${i + 1}`}
+              >
+                Remove
+              </button>
+            </div>
+          </div>
+        </div>
+      ))}
+      {canAdd && (
+        <button type="button" onClick={add} aria-label={`add ${label}`}>
+          + Add address
+        </button>
+      )}
+    </fieldset>
+  );
+}
+
 export function PersonForm({
   initial,
   submitting,
@@ -104,6 +230,7 @@ export function PersonForm({
   const [pronouns, setPronouns] = useState(initial?.pronouns ?? '');
   const [birthdate, setBirthdate] = useState(initial?.birthdate ?? '');
   const [phoneNumbers, setPhoneNumbers] = useState<string[]>(initial?.phone_numbers ?? []);
+  const [addresses, setAddresses] = useState<Address[]>(initial?.addresses ?? []);
   const [drafts, setDrafts] = useState<DraftCustomField[]>(draftsFromPerson(initial));
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [fieldErrors, setFieldErrors] = useState<Record<number, string>>({});
@@ -143,6 +270,17 @@ export function PersonForm({
       birthdate: birthdate.trim(),
       middle_names: middleNames.map((s) => s.trim()).filter(Boolean),
       phone_numbers: phoneNumbers.map((s) => s.trim()).filter(Boolean),
+      addresses: addresses
+        .filter((a) => a.street.trim() || a.city.trim())
+        .map((a) => ({
+          ...a,
+          street: a.street.trim(),
+          city: a.city.trim(),
+          state: a.state?.trim() || undefined,
+          postal_code: a.postal_code?.trim() || undefined,
+          country: a.country?.trim() || undefined,
+          label: a.label?.trim() || undefined,
+        })),
       custom_fields: fields,
     });
   };
@@ -207,6 +345,8 @@ export function PersonForm({
         onChange={setPhoneNumbers}
         maxItems={10}
       />
+
+      <AddressField label="Addresses" addresses={addresses} onChange={setAddresses} maxItems={10} />
 
       <fieldset className="custom-fields">
         <legend>Custom fields</legend>

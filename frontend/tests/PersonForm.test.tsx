@@ -41,6 +41,7 @@ describe('PersonForm', () => {
       pronouns: '',
       birthdate: '',
       phone_numbers: [],
+      addresses: [],
       middle_names: ['A', 'B'],
       custom_fields: { blood_type: 'O+' },
     });

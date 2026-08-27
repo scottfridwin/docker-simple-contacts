@@ -20,6 +20,16 @@ export function PersonList({ persons, onEdit, onDelete }: PersonListProps) {
             {(person.phone_numbers ?? []).length > 0 && (
               <span className="person-meta">{person.phone_numbers.join(' · ')}</span>
             )}
+            {(person.addresses ?? []).length > 0 && (
+              <span className="person-meta">
+                {person.addresses
+                  .map(
+                    (a) =>
+                      `${a.label || a.type}: ${a.street}, ${a.city}${a.state ? ', ' + a.state : ''}`
+                  )
+                  .join(' · ')}
+              </span>
+            )}
             {Object.keys(person.custom_fields ?? {}).length > 0 && (
               <span className="person-meta">
                 {Object.entries(person.custom_fields)
