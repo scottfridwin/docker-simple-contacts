@@ -2,11 +2,12 @@ import type { Person } from '../types';
 
 interface PersonListProps {
   persons: Person[];
+  onView: (person: Person) => void;
   onEdit: (person: Person) => void;
   onDelete: (person: Person) => void;
 }
 
-export function PersonList({ persons, onEdit, onDelete }: PersonListProps) {
+export function PersonList({ persons, onView, onEdit, onDelete }: PersonListProps) {
   if (persons.length === 0) {
     return <p className="empty">No contacts yet. Add your first one.</p>;
   }
@@ -16,7 +17,13 @@ export function PersonList({ persons, onEdit, onDelete }: PersonListProps) {
       {persons.map((person) => (
         <li key={person.id} className="person-item">
           <div className="person-summary">
-            <span className="person-name">{person.display_name}</span>
+            <button
+              type="button"
+              className="person-name-button"
+              onClick={() => onView(person)}
+            >
+              {person.display_name}
+            </button>
             {(person.phone_numbers ?? []).length > 0 && (
               <span className="person-meta">{person.phone_numbers.join(' · ')}</span>
             )}

@@ -306,3 +306,142 @@ button:disabled {
     grid-template-columns: 1fr 1fr;
   }
 }
+
+/* PersonDetail view */
+.person-detail {
+  max-width: 720px;
+  margin: 0 auto;
+}
+
+.btn-back {
+  margin-bottom: 1rem;
+  background: transparent;
+  color: var(--text);
+  border-color: var(--border);
+}
+
+.btn-back:hover {
+  background: var(--surface);
+}
+
+.person-detail-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 1rem;
+  margin-bottom: 2rem;
+  padding-bottom: 1rem;
+  border-bottom: 2px solid var(--border);
+}
+
+.person-detail-header h2 {
+  margin: 0;
+}
+
+.person-detail-header .muted {
+  display: block;
+  margin-top: 0.25rem;
+}
+
+.person-detail-actions {
+  display: flex;
+  gap: 0.5rem;
+  flex-shrink: 0;
+}
+
+.person-detail-body {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+}
+
+.detail-section {
+  padding: 0.75rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.detail-section strong {
+  display: block;
+  margin-bottom: 0.5rem;
+  color: var(--text);
+}
+
+.detail-section ul {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.detail-section li {
+  padding: 0.25rem 0;
+  margin: 0.25rem 0;
+}
+
+.relationships-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.relationship-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.75rem;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  margin-bottom: 0.5rem;
+}
+
+.relationship-info {
+  flex: 1;
+}
+
+.relationship-info strong {
+  display: block;
+}
+
+.relationship-info .muted {
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.person-name-button {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--text);
+  font-size: 1rem;
+  font-weight: 600;
+  cursor: pointer;
+  text-decoration: underline;
+  text-align: left;
+}
+
+.person-name-button:hover {
+  color: var(--primary);
+}
+
+@media (max-width: 560px) {
+  .person-detail-header {
+    flex-direction: column;
+  }
+
+  .person-detail-actions {
+    width: 100%;
+    flex-direction: column;
+  }
+
+  .relationship-item {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .relationship-item button {
+    align-self: flex-end;
+  }
+}

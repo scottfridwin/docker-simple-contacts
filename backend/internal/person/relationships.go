@@ -145,6 +145,10 @@ func NewRelationshipService(repo *RelationshipRepository, personRepo *Repository
 }
 
 // CreateRelationship validates and creates a relationship between two persons.
+// Automatically normalizes directionality for directional relationship types (parent/child).
+// For directional types, the semantic is: personID1 is the "subject" of relType in relation to personID2.
+// E.g., "parent" means personID1 is parent of personID2.
+// When stored, IDs are always sorted (personID_1 < personID_2), and the type is adjusted if needed.
 func (s *RelationshipService) CreateRelationship(ctx context.Context, personID1, personID2 uuid.UUID, relType string, label *string) (*Relationship, ValidationErrors, error) {
 	// Validate that both persons exist
 	if _, err := s.personRepo.GetByID(ctx, personID1); err != nil {
@@ -173,10 +177,24 @@ func (s *RelationshipService) CreateRelationship(ctx context.Context, personID1,
 		return nil, errs, nil
 	}
 
+	// Normalize directionality: sort IDs and adjust relType if needed
+	id1, id2 := personID1, personID2
+	adjustedType := relType
+	if id1.String() > id2.String() {
+		id1, id2 = id2, id1
+		// Flip the type for directional relationships
+		if relType == "parent" {
+			adjustedType = "child"
+		} else if relType == "child" {
+			adjustedType = "parent"
+		}
+		// Symmetric types stay the same
+	}
+
 	rel := &Relationship{
-		PersonID1:        personID1,
-		PersonID2:        personID2,
-		RelationshipType: relType,
+		PersonID1:        id1,
+		PersonID2:        id2,
+		RelationshipType: adjustedType,
 		Label:            label,
 	}
 	created, err := s.repo.CreateRelationship(ctx, rel)

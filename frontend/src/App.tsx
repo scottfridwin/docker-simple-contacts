@@ -3,8 +3,9 @@ import { ApiRequestError, createPerson, deletePerson, listPersons, updatePerson 
 import type { Person } from './types';
 import { PersonForm, type PersonFormValues } from './components/PersonForm';
 import { PersonList } from './components/PersonList';
+import { PersonDetail } from './components/PersonDetail';
 
-type View = { mode: 'list' } | { mode: 'create' } | { mode: 'edit'; person: Person };
+type View = { mode: 'list' } | { mode: 'create' } | { mode: 'edit'; person: Person } | { mode: 'detail'; person: Person };
 
 export default function App() {
   const [persons, setPersons] = useState<Person[]>([]);
@@ -106,6 +107,7 @@ export default function App() {
           ) : (
             <PersonList
               persons={persons}
+              onView={(person) => setView({ mode: 'detail', person })}
               onEdit={(person) => setView({ mode: 'edit', person })}
               onDelete={handleDelete}
             />
@@ -113,7 +115,16 @@ export default function App() {
         </>
       )}
 
-      {view.mode !== 'list' && (
+      {view.mode === 'detail' && (
+        <PersonDetail
+          person={view.person}
+          onBack={() => setView({ mode: 'list' })}
+          onEdit={(person) => setView({ mode: 'edit', person })}
+          onDelete={handleDelete}
+        />
+      )}
+
+      {(view.mode === 'create' || view.mode === 'edit') && (
         <section className="editor">
           <h2>{view.mode === 'edit' ? 'Edit contact' : 'New contact'}</h2>
           <PersonForm
