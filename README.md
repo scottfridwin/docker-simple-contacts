@@ -25,8 +25,9 @@ flowchart LR
   in v1), served by nginx.
 - **Database** — PostgreSQL, a single database with a `persons` table. Custom
   fields are stored in a `JSONB` column.
-- **Delivery** — Docker images for backend and frontend; Docker Compose for
-  local development; GitHub Actions for CI and tagged releases.
+- **Delivery** — Docker images for backend and frontend; a deployment-oriented
+  Docker Compose stack plus a local source-build override; GitHub Actions for
+  CI and tagged releases.
 
 [chi]: https://github.com/go-chi/chi
 [pgx]: https://github.com/jackc/pgx
@@ -46,11 +47,37 @@ flowchart LR
    make up
    ```
 
-### Option B — Docker Compose only
+`make up` uses `docker-compose.dev.yml` on top of the default deployment stack
+so backend and frontend changes are built from the local source tree. If
+`secrets/db_password` does not exist yet, the Make target creates it from
+`DB_PASSWORD` for local use.
+
+### Option B — Docker Compose
 
 ```bash
 cp .env.example .env
-docker compose up --build
+mkdir -p secrets
+printf 'change-me\n' > secrets/db_password
+docker compose up -d
+```
+
+The compose stack pulls published images by default:
+
+- `ghcr.io/scottfridwin/contacts-backend:${CONTACTS_VERSION:-latest}`
+- `ghcr.io/scottfridwin/contacts-frontend:${CONTACTS_VERSION:-latest}`
+
+Override `CONTACTS_VERSION` in `.env` to pin a specific release such as
+`v1.0.0` or `1.0.0`. You can also override `BACKEND_IMAGE` or
+`FRONTEND_IMAGE` explicitly if you mirror the images elsewhere.
+
+The default deployment compose file is hardened to run with explicit non-root
+`user:` settings, `read_only: true`, targeted `tmpfs` mounts for writable paths,
+and baseline `mem_limit` / `pids_limit` values for each service.
+
+For local development without pulling published application images, use:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
 ```
 
 Services:
@@ -73,10 +100,26 @@ The backend is configured entirely through environment variables.
 | `DB_USER`              | _(required)_| PostgreSQL user.                                        |
 | `DB_PASSWORD`          | —           | PostgreSQL password (see precedence below).             |
 | `DB_PASSWORD_FILE`     | —           | Path to a file with the password (Docker secrets).      |
+| `DB_PASSWORD_SECRET_FILE` | `./secrets/db_password` | Host path for the Compose-mounted Docker secret. |
 | `DB_NAME`              | `postgres`  | Database name.                                          |
 | `DB_SSLMODE`           | `disable`   | `libpq` sslmode.                                        |
 | `CORS_ALLOWED_ORIGINS` | dev origins | Comma-separated allow-list of browser origins.          |
 | `PURGE_AFTER_DAYS`     | `30`        | Recycle-bin retention before soft-deleted rows purge.   |
+| `CONTACTS_VERSION`     | `latest`    | Tag used for both published application images.         |
+| `BACKEND_IMAGE`        | GHCR image  | Optional override for the backend image repository.     |
+| `FRONTEND_IMAGE`       | GHCR image  | Optional override for the frontend image repository.    |
+| `APP_PUBLISH_PORT`     | `8080`      | Host port mapped to the backend container.              |
+| `FRONTEND_PUBLISH_PORT`| `5173`      | Host port mapped to the frontend container.             |
+| `POSTGRES_PUBLISH_PORT`| `5432`      | Host port mapped to PostgreSQL.                         |
+| `POSTGRES_UID` / `POSTGRES_GID` | `70` / `70` | UID/GID used for the PostgreSQL container.      |
+| `APP_UID` / `APP_GID`  | `65532` / `65532` | UID/GID used for the backend container.          |
+| `FRONTEND_UID` / `FRONTEND_GID` | `101` / `101` | UID/GID used for the frontend container.     |
+| `POSTGRES_MEM_LIMIT`   | `512m`      | Memory limit for PostgreSQL.                            |
+| `POSTGRES_PIDS_LIMIT`  | `256`       | PID limit for PostgreSQL.                               |
+| `APP_MEM_LIMIT`        | `256m`      | Memory limit for the backend API.                       |
+| `APP_PIDS_LIMIT`       | `128`       | PID limit for the backend API.                          |
+| `FRONTEND_MEM_LIMIT`   | `128m`      | Memory limit for the frontend nginx container.          |
+| `FRONTEND_PIDS_LIMIT`  | `64`        | PID limit for the frontend nginx container.             |
 
 Frontend build-time variable:
 
@@ -85,8 +128,11 @@ Frontend build-time variable:
 | `VITE_API_BASE_URL` | `""`    | Base URL of the API (empty = same host). |
 
 **Secret precedence:** if both `DB_PASSWORD_FILE` and `DB_PASSWORD` are set, the
-file wins. If neither is set, startup fails with an explicit error. All logs go
-to stdout/stderr only — the container runtime owns log collection.
+file wins. In the default Compose deployment, Postgres and the backend both read
+the password from the `db_password` Docker secret mounted from
+`DB_PASSWORD_SECRET_FILE`. If neither is set, startup fails with an explicit
+error. All logs go to stdout/stderr only — the container runtime owns log
+collection.
 
 ## Data model
 
@@ -122,7 +168,8 @@ Run `make help` for the full list.
 
 | Command                  | Description                                    |
 | ------------------------ | ---------------------------------------------- |
-| `make up` / `make down`  | Start / stop the full stack.                   |
+| `make up` / `make down`  | Start / stop the local source-build stack.     |
+| `make up-deploy`         | Start the published-image deployment stack.    |
 | `make backend-test`      | Backend unit tests.                            |
 | `make backend-cover`     | Backend tests with the 70% coverage gate.      |
 | `make backend-integration` | Integration tests (needs `TEST_DATABASE_URL`). |
