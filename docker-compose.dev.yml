@@ -1,0 +1,21 @@
+services:
+  postgres:
+    secrets: []
+    environment:
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-contacts}
+      POSTGRES_PASSWORD_FILE:
+
+  app:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    environment:
+      DB_PASSWORD: ${DB_PASSWORD:-contacts}
+      DB_PASSWORD_FILE:
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-}

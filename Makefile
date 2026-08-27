@@ -1,6 +1,7 @@
 SHELL := /bin/bash
 COVERAGE_PKGS := ./internal/config/... ./internal/httpapi/... ./internal/person/...
 COVERAGE_MIN := 70
+COMPOSE_DEV := -f docker-compose.yml -f docker-compose.dev.yml
 
 .PHONY: help
 help: ## Show this help
@@ -10,15 +11,21 @@ help: ## Show this help
 ## ---- Local stack ----
 .PHONY: up
 up: ## Start the full stack (postgres + app + frontend)
-	docker compose up --build
+	@mkdir -p secrets
+	@if [[ ! -f secrets/db_password ]]; then printf '%s\n' "$${DB_PASSWORD:-contacts}" > secrets/db_password; fi
+	docker compose $(COMPOSE_DEV) up --build
+
+.PHONY: up-deploy
+up-deploy: ## Start the published-image deployment stack
+	docker compose up -d
 
 .PHONY: down
 down: ## Stop the stack and remove volumes
-	docker compose down -v
+	docker compose $(COMPOSE_DEV) down -v
 
 .PHONY: logs
 logs: ## Tail stack logs
-	docker compose logs -f
+	docker compose $(COMPOSE_DEV) logs -f
 
 ## ---- Backend ----
 .PHONY: backend-build
