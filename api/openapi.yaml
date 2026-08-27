@@ -113,6 +113,95 @@ paths:
           description: No Content
         '404':
           $ref: '#/components/responses/NotFound'
+  /persons/{id}/relationships:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    get:
+      summary: List relationships for a person
+      operationId: listRelationshipsForPerson
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Relationship' }
+        '404':
+          $ref: '#/components/responses/NotFound'
+    post:
+      summary: Create a relationship between two persons
+      operationId: createRelationship
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateRelationshipInput'
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Relationship'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+  /relationships/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    get:
+      summary: Get a relationship by ID
+      operationId: getRelationship
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Relationship'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      summary: Update a relationship
+      operationId: updateRelationship
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateRelationshipInput'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Relationship'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+    delete:
+      summary: Soft-delete a relationship (recoverable for 30 days)
+      operationId: deleteRelationship
+      responses:
+        '204':
+          description: No Content
+        '404':
+          $ref: '#/components/responses/NotFound'
 components:
   schemas:
     CustomFieldValue:
@@ -128,6 +217,36 @@ components:
       description: >-
         Map of snake_case keys to scalar values. Max 64 fields; key max 64
         chars; string value max 1024 chars.
+    Address:
+      type: object
+      required: [type, street, city]
+      properties:
+        type:
+          type: string
+          enum: [home, work, other]
+        street: { type: string, maxLength: 255 }
+        city: { type: string, maxLength: 255 }
+        state: { type: string, maxLength: 255, nullable: true }
+        postal_code: { type: string, maxLength: 255, nullable: true }
+        country: { type: string, maxLength: 255, nullable: true }
+        label: { type: string, maxLength: 255, nullable: true }
+    Relationship:
+      type: object
+      required: [id, person_id_1, person_id_2, relationship_type, created_at, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        person_id_1: { type: string, format: uuid }
+        person_id_2: { type: string, format: uuid }
+        relationship_type:
+          type: string
+          enum: [spouse, parent, child, sibling, colleague, friend, other]
+        label: { type: string, maxLength: 255, nullable: true }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        deleted_at:
+          type: string
+          format: date-time
+          nullable: true
     Person:
       type: object
       required: [id, first_name, last_name, display_name, created_at, updated_at]
@@ -145,6 +264,9 @@ components:
         phone_numbers:
           type: array
           items: { type: string, maxLength: 50 }
+        addresses:
+          type: array
+          items: { $ref: '#/components/schemas/Address' }
         custom_fields:
           $ref: '#/components/schemas/CustomFields'
         created_at: { type: string, format: date-time }
@@ -168,6 +290,9 @@ components:
         phone_numbers:
           type: array
           items: { type: string, maxLength: 50 }
+        addresses:
+          type: array
+          items: { $ref: '#/components/schemas/Address' }
         custom_fields:
           $ref: '#/components/schemas/CustomFields'
     UpdatePersonInput:
@@ -184,8 +309,27 @@ components:
         phone_numbers:
           type: array
           items: { type: string, maxLength: 50 }
+        addresses:
+          type: array
+          items: { $ref: '#/components/schemas/Address' }
         custom_fields:
           $ref: '#/components/schemas/CustomFields'
+    CreateRelationshipInput:
+      type: object
+      required: [person_id_2, relationship_type]
+      properties:
+        person_id_2: { type: string, format: uuid }
+        relationship_type:
+          type: string
+          enum: [spouse, parent, child, sibling, colleague, friend, other]
+        label: { type: string, maxLength: 255 }
+    UpdateRelationshipInput:
+      type: object
+      properties:
+        relationship_type:
+          type: string
+          enum: [spouse, parent, child, sibling, colleague, friend, other]
+        label: { type: string, maxLength: 255 }
     PersonListResponse:
       type: object
       required: [data, page, page_size, total, total_pages]
