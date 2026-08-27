@@ -66,6 +66,14 @@ export interface CreatePersonInput {
 
 export type UpdatePersonInput = Partial<CreatePersonInput>;
 
+export interface CreateRelationshipInput {
+  person_id_2: string;
+  relationship_type: RelationshipType;
+  label?: string;
+}
+
+export type UpdateRelationshipInput = Partial<CreateRelationshipInput>;
+
 export interface ApiError {
   error: {
     code: string;

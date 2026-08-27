@@ -1,8 +1,11 @@
 import type {
   CreatePersonInput,
+  CreateRelationshipInput,
   Person,
   PersonListResponse,
+  Relationship,
   UpdatePersonInput,
+  UpdateRelationshipInput,
   ValidationDetail,
 } from './types';
 
@@ -97,4 +100,33 @@ export function updatePerson(id: string, input: UpdatePersonInput): Promise<Pers
 
 export function deletePerson(id: string): Promise<void> {
   return request<void>(`/persons/${id}`, { method: 'DELETE' });
+}
+
+export function listRelationshipsForPerson(personId: string): Promise<Relationship[]> {
+  return request<Relationship[]>(`/persons/${personId}/relationships`);
+}
+
+export function createRelationship(
+  personId: string,
+  input: CreateRelationshipInput,
+): Promise<Relationship> {
+  return request<Relationship>(`/persons/${personId}/relationships`, {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
+}
+
+export function getRelationship(id: string): Promise<Relationship> {
+  return request<Relationship>(`/relationships/${id}`);
+}
+
+export function updateRelationship(id: string, input: UpdateRelationshipInput): Promise<Relationship> {
+  return request<Relationship>(`/relationships/${id}`, {
+    method: 'PATCH',
+    body: JSON.stringify(input),
+  });
+}
+
+export function deleteRelationship(id: string): Promise<void> {
+  return request<void>(`/relationships/${id}`, { method: 'DELETE' });
 }
