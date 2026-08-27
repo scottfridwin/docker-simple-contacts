@@ -14,6 +14,7 @@ export interface PersonFormValues {
   nickname: string;
   pronouns: string;
   birthdate: string;
+  phone_numbers: string[];
   custom_fields: Record<string, string | number | boolean>;
 }
 
@@ -49,6 +50,7 @@ export function PersonForm({
   const [nickname, setNickname] = useState(initial?.nickname ?? '');
   const [pronouns, setPronouns] = useState(initial?.pronouns ?? '');
   const [birthdate, setBirthdate] = useState(initial?.birthdate ?? '');
+  const [phoneNumbers, setPhoneNumbers] = useState((initial?.phone_numbers ?? []).join(', '));
   const [drafts, setDrafts] = useState<DraftCustomField[]>(draftsFromPerson(initial));
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [fieldErrors, setFieldErrors] = useState<Record<number, string>>({});
@@ -87,6 +89,10 @@ export function PersonForm({
       pronouns: pronouns.trim(),
       birthdate: birthdate.trim(),
       middle_names: middleNames
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean),
+      phone_numbers: phoneNumbers
         .split(',')
         .map((s) => s.trim())
         .filter(Boolean),
@@ -148,6 +154,15 @@ export function PersonForm({
           onChange={(e) => setBirthdate(e.target.value)}
         />
         {combinedErrors.birthdate && <span className="error">{combinedErrors.birthdate}</span>}
+      </div>
+
+      <div className="field">
+        <label htmlFor="phone_numbers">Phone numbers (comma separated)</label>
+        <input
+          id="phone_numbers"
+          value={phoneNumbers}
+          onChange={(e) => setPhoneNumbers(e.target.value)}
+        />
       </div>
 
       <fieldset className="custom-fields">

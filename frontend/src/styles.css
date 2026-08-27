@@ -1,12 +1,30 @@
 :root {
   --bg: #f9fafb;
   --card: #ffffff;
+  --surface: #ffffff;
   --border: #e5e7eb;
   --text: #111827;
   --muted: #6b7280;
   --primary: #1f2937;
   --danger: #dc2626;
-  color-scheme: light;
+  --error-bg: #fef2f2;
+  --error-border: #fecaca;
+  color-scheme: light dark;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #111827;
+    --card: #1f2937;
+    --surface: #374151;
+    --border: #4b5563;
+    --text: #f9fafb;
+    --muted: #9ca3af;
+    --primary: #4b5563;
+    --danger: #f87171;
+    --error-bg: #450a0a;
+    --error-border: #7f1d1d;
+  }
 }
 
 * {
@@ -49,7 +67,7 @@ button {
 }
 
 button[type='button'] {
-  background: #fff;
+  background: var(--surface);
   color: var(--text);
 }
 
@@ -64,9 +82,9 @@ button:disabled {
 }
 
 .banner.error {
-  background: #fef2f2;
+  background: var(--error-bg);
   color: var(--danger);
-  border: 1px solid #fecaca;
+  border: 1px solid var(--error-border);
   padding: 0.75rem;
   border-radius: 6px;
   margin: 1rem 0;
@@ -127,7 +145,8 @@ button:disabled {
   padding: 0.5rem;
   border: 1px solid var(--border);
   border-radius: 6px;
-  background: #fff;
+  background: var(--surface);
+  color: var(--text);
 }
 
 .custom-fields {

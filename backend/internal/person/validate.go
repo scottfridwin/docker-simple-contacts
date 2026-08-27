@@ -15,6 +15,8 @@ const (
 	MaxStringValueLength = 1024
 	MaxNameLength        = 255
 	MaxMiddleNames       = 16
+	MaxPhoneNumbers      = 10
+	MaxPhoneNumberLength = 50
 )
 
 var snakeCaseKey = regexp.MustCompile(`^[a-z][a-z0-9]*(_[a-z0-9]+)*$`)
@@ -55,6 +57,7 @@ func ValidateCreate(in CreateInput) ValidationErrors {
 		errs = append(errs, validateBirthdate(*in.Birthdate)...)
 	}
 	errs = append(errs, ValidateCustomFields(in.CustomFields)...)
+	errs = append(errs, validatePhoneNumbers(in.PhoneNumbers)...)
 	return errs
 }
 
@@ -78,6 +81,9 @@ func ValidateUpdate(in UpdateInput) ValidationErrors {
 	}
 	if in.BirthdateSet && in.Birthdate != nil {
 		errs = append(errs, validateBirthdate(*in.Birthdate)...)
+	}
+	if in.PhoneNumbersSet && in.PhoneNumbers != nil {
+		errs = append(errs, validatePhoneNumbers(*in.PhoneNumbers)...)
 	}
 	if in.CustomFieldsSet {
 		errs = append(errs, ValidateCustomFields(in.CustomFields)...)
@@ -108,6 +114,23 @@ func validateBirthdate(value string) ValidationErrors {
 		return ValidationErrors{{Field: "birthdate", Message: "must be a valid date in YYYY-MM-DD format"}}
 	}
 	return nil
+}
+
+func validatePhoneNumbers(numbers []string) ValidationErrors {
+	if len(numbers) > MaxPhoneNumbers {
+		return ValidationErrors{{Field: "phone_numbers", Message: fmt.Sprintf("must contain at most %d entries", MaxPhoneNumbers)}}
+	}
+	var errs ValidationErrors
+	for i, n := range numbers {
+		if strings.TrimSpace(n) == "" {
+			errs = append(errs, ValidationError{Field: fmt.Sprintf("phone_numbers[%d]", i), Message: "must not be empty"})
+			continue
+		}
+		if len(n) > MaxPhoneNumberLength {
+			errs = append(errs, ValidationError{Field: fmt.Sprintf("phone_numbers[%d]", i), Message: fmt.Sprintf("must be at most %d characters", MaxPhoneNumberLength)})
+		}
+	}
+	return errs
 }
 
 func validateMiddleNames(names []string) ValidationErrors {

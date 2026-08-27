@@ -11,6 +11,7 @@ export interface Person {
   nickname?: string | null;
   pronouns?: string | null;
   birthdate?: string | null;
+  phone_numbers: string[];
   custom_fields: Record<string, CustomFieldValue>;
   created_at: string;
   updated_at: string;
@@ -32,6 +33,7 @@ export interface CreatePersonInput {
   nickname?: string;
   pronouns?: string;
   birthdate?: string;
+  phone_numbers?: string[];
   custom_fields?: Record<string, CustomFieldValue>;
 }
 

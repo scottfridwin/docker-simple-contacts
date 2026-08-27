@@ -18,6 +18,7 @@ type Person struct {
 	Nickname     *string        `json:"nickname,omitempty"`
 	Pronouns     *string        `json:"pronouns,omitempty"`
 	Birthdate    *string        `json:"birthdate,omitempty"`
+	PhoneNumbers []string       `json:"phone_numbers"`
 	CustomFields map[string]any `json:"custom_fields"`
 	CreatedAt    time.Time      `json:"created_at"`
 	UpdatedAt    time.Time      `json:"updated_at"`
@@ -32,6 +33,7 @@ type CreateInput struct {
 	Nickname     *string        `json:"nickname"`
 	Pronouns     *string        `json:"pronouns"`
 	Birthdate    *string        `json:"birthdate"`
+	PhoneNumbers []string       `json:"phone_numbers"`
 	CustomFields map[string]any `json:"custom_fields"`
 }
 
@@ -44,6 +46,7 @@ type UpdateInput struct {
 	Nickname     *string
 	Pronouns     *string
 	Birthdate    *string
+	PhoneNumbers *[]string
 	CustomFields map[string]any
 
 	FirstNameSet    bool
@@ -52,6 +55,7 @@ type UpdateInput struct {
 	NicknameSet     bool
 	PronounsSet     bool
 	BirthdateSet    bool
+	PhoneNumbersSet bool
 	CustomFieldsSet bool
 }
 
