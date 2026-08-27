@@ -13,11 +13,6 @@ type relationshipHandler struct {
 	svc *person.RelationshipService
 }
 
-// listRelationshipsResponse is the envelope for relationship list results.
-type listRelationshipsResponse struct {
-	Data []person.Relationship `json:"data"`
-}
-
 func (h *relationshipHandler) create(w http.ResponseWriter, r *http.Request) {
 	personID, ok := parseID(w, r)
 	if !ok {
@@ -90,7 +85,7 @@ func (h *relationshipHandler) listForPerson(w http.ResponseWriter, r *http.Reque
 	if rels == nil {
 		rels = []person.Relationship{}
 	}
-	writeJSON(w, http.StatusOK, listRelationshipsResponse{Data: rels})
+	writeJSON(w, http.StatusOK, rels)
 }
 
 func (h *relationshipHandler) update(w http.ResponseWriter, r *http.Request) {
