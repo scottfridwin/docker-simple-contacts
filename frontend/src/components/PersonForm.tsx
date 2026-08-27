@@ -131,20 +131,12 @@ export function PersonForm({
 
       <div className="field">
         <label htmlFor="nickname">Nickname</label>
-        <input
-          id="nickname"
-          value={nickname}
-          onChange={(e) => setNickname(e.target.value)}
-        />
+        <input id="nickname" value={nickname} onChange={(e) => setNickname(e.target.value)} />
       </div>
 
       <div className="field">
         <label htmlFor="pronouns">Pronouns</label>
-        <input
-          id="pronouns"
-          value={pronouns}
-          onChange={(e) => setPronouns(e.target.value)}
-        />
+        <input id="pronouns" value={pronouns} onChange={(e) => setPronouns(e.target.value)} />
       </div>
 
       <div className="field">
