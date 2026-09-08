@@ -27,8 +27,8 @@ func NewRouter(logger *slog.Logger, svc *person.Service, ready pinger, allowedOr
 		MaxAge:           300,
 	}))
 	if len(providers) > 0 && providers[0] != nil {
-		providers[0].Routes(r)
 		r.Use(providers[0].Middleware)
+		providers[0].Routes(r)
 	}
 
 	r.Get("/healthz", healthHandler)
