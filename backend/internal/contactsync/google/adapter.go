@@ -133,14 +133,9 @@ func (a *Adapter) CompleteAuthorization(ctx context.Context, code string) (conta
 	if err != nil {
 		return contactsync.AuthSession{}, fmt.Errorf("google oauth exchange failed: %w", err)
 	}
-	profile, err := a.getContact(ctx, tok.AccessToken, "people/me")
-	if err != nil {
-		return contactsync.AuthSession{}, err
-	}
-	providerAccountID := strings.TrimSpace(profile.ResourceName)
-	if providerAccountID == "" {
-		providerAccountID = "people/me"
-	}
+	// Keep the OAuth flow contacts-scope only. Looking up people/me can require
+	// additional profile scopes depending on Google API behavior.
+	providerAccountID := "people/me"
 	scope, _ := tok.Extra("scope").(string)
 	if strings.TrimSpace(scope) == "" {
 		scope = strings.Join(a.cfg.Scopes, " ")
