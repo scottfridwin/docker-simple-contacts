@@ -1,7 +1,9 @@
 import type {
   CreatePersonInput,
+  GoogleOAuthBeginResponse,
   Person,
   PersonListResponse,
+  SyncAccountListResponse,
   UpdatePersonInput,
   ValidationDetail,
 } from './types';
@@ -116,4 +118,17 @@ export function restorePerson(id: string): Promise<void> {
 
 export function permanentlyDeletePerson(id: string): Promise<void> {
   return request<void>(`/persons/${id}/permanent`, { method: 'DELETE' });
+}
+
+export function listSyncAccounts(): Promise<SyncAccountListResponse> {
+  return request<SyncAccountListResponse>('/sync-accounts');
+}
+
+export function beginGoogleSync(redirectUri?: string): Promise<GoogleOAuthBeginResponse> {
+  const query = new URLSearchParams();
+  if (redirectUri) {
+    query.set('redirect_uri', redirectUri);
+  }
+  const qs = query.toString();
+  return request<GoogleOAuthBeginResponse>(`/sync/google/begin${qs ? `?${qs}` : ''}`);
 }

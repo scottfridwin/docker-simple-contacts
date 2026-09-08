@@ -1,15 +1,17 @@
 import { useCallback, useEffect, useState } from 'react';
 import {
   ApiRequestError,
+  beginGoogleSync,
   createPerson,
   deletePerson,
   listDeletedPersons,
+  listSyncAccounts,
   listPersons,
   permanentlyDeletePerson,
   restorePerson,
   updatePerson,
 } from './api';
-import type { Person } from './types';
+import type { Person, SyncAccount } from './types';
 import { PersonForm, type PersonFormValues } from './components/PersonForm';
 import { PersonList } from './components/PersonList';
 
@@ -17,10 +19,14 @@ type View = { mode: 'list' } | { mode: 'create' } | { mode: 'edit'; person: Pers
 
 export default function App() {
   const [persons, setPersons] = useState<Person[]>([]);
+  const [syncAccounts, setSyncAccounts] = useState<SyncAccount[]>([]);
   const [view, setView] = useState<View>({ mode: 'list' });
   const [loading, setLoading] = useState(false);
+  const [syncLoading, setSyncLoading] = useState(false);
+  const [syncConnecting, setSyncConnecting] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [syncError, setSyncError] = useState<string | null>(null);
   const [authenticationRequired, setAuthenticationRequired] = useState(false);
   const [serverErrors, setServerErrors] = useState<Record<string, string>>({});
   const [search, setSearch] = useState({ firstName: '', lastName: '' });
@@ -55,11 +61,61 @@ export default function App() {
     }
   }, [page, search, showDeleted]);
 
+  const refreshSyncAccounts = useCallback(async () => {
+    setSyncLoading(true);
+    setSyncError(null);
+    try {
+      const res = await listSyncAccounts();
+      setSyncAccounts(res.data);
+    } catch (err) {
+      if (err instanceof ApiRequestError && err.status === 401) {
+        setSyncAccounts([]);
+      } else {
+        setSyncError(err instanceof Error ? err.message : 'Failed to load sync accounts');
+      }
+    } finally {
+      setSyncLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
     queueMicrotask(() => {
       void refresh();
     });
   }, [refresh]);
+
+  useEffect(() => {
+    if (authenticationRequired) {
+      return;
+    }
+    queueMicrotask(() => {
+      void refreshSyncAccounts();
+    });
+  }, [authenticationRequired, refreshSyncAccounts]);
+
+  useEffect(() => {
+    const onFocus = () => {
+      void refreshSyncAccounts();
+    };
+    window.addEventListener('focus', onFocus);
+    return () => window.removeEventListener('focus', onFocus);
+  }, [refreshSyncAccounts]);
+
+  const handleConnectGoogle = async () => {
+    setSyncConnecting(true);
+    setSyncError(null);
+    try {
+      const { authorization_url: authorizationUrl } = await beginGoogleSync(`${window.location.origin}/api/v1/sync/google/callback`);
+      const popup = window.open(authorizationUrl, 'google-sync', 'popup,width=520,height=760');
+      if (!popup) {
+        window.location.assign(authorizationUrl);
+      }
+    } catch (err) {
+      setSyncError(err instanceof Error ? err.message : 'Failed to start Google sync');
+    } finally {
+      setSyncConnecting(false);
+    }
+  };
 
   if (authenticationRequired) {
     return (
@@ -158,11 +214,16 @@ export default function App() {
     <main className="app">
       <header className="app-header">
         <h1>Contacts</h1>
-        {view.mode === 'list' && !showDeleted && (
-          <button type="button" onClick={() => setView({ mode: 'create' })}>
-            Add contact
+        <div className="app-header-actions">
+          <button type="button" className="ghost" onClick={refreshSyncAccounts}>
+            Refresh sync
           </button>
-        )}
+          {view.mode === 'list' && !showDeleted && (
+            <button type="button" onClick={() => setView({ mode: 'create' })}>
+              Add contact
+            </button>
+          )}
+        </div>
       </header>
 
       {error && (
@@ -175,6 +236,62 @@ export default function App() {
           )}
         </div>
       )}
+
+      <section className="sync-panel" aria-labelledby="sync-panel-title">
+        <div className="sync-panel-header">
+          <div>
+            <p className="section-eyebrow">SYNC</p>
+            <h2 id="sync-panel-title">Connected accounts</h2>
+          </div>
+          <button type="button" onClick={handleConnectGoogle} disabled={syncConnecting}>
+            {syncConnecting ? 'Starting Google…' : 'Connect Google'}
+          </button>
+        </div>
+        <p className="sync-panel-description">
+          Connect Google to sync your contacts. The authorization flow opens in a popup so your
+          current app stays open.
+        </p>
+        {syncError && (
+          <div className="banner error" role="alert">
+            {syncError}
+          </div>
+        )}
+        {syncLoading ? (
+          <p>Loading sync accounts…</p>
+        ) : syncAccounts.length === 0 ? (
+          <p className="empty">No sync accounts configured yet.</p>
+        ) : (
+          <ul className="sync-account-list">
+            {syncAccounts.map((account) => (
+              <li key={account.id} className="sync-account-card">
+                <div className="sync-account-head">
+                  <strong>{account.provider}</strong>
+                  <span className={`sync-status sync-status-${account.status}`}>{account.status}</span>
+                </div>
+                <dl className="sync-account-details">
+                  <div>
+                    <dt>Account</dt>
+                    <dd>{account.provider_account_id}</dd>
+                  </div>
+                  <div>
+                    <dt>Last sync</dt>
+                    <dd>{account.last_synced_at ? new Date(account.last_synced_at).toLocaleString() : 'Never'}</dd>
+                  </div>
+                  <div>
+                    <dt>Frequency</dt>
+                    <dd>Every {account.sync_frequency_minutes} min</dd>
+                  </div>
+                  <div>
+                    <dt>Cursor</dt>
+                    <dd>{account.sync_cursor || '—'}</dd>
+                  </div>
+                </dl>
+                {account.last_error && <p className="sync-account-error">{account.last_error}</p>}
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
 
       {view.mode === 'list' && (
         <>

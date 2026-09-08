@@ -26,6 +26,33 @@ export interface PersonListResponse {
   total_pages: number;
 }
 
+export interface SyncAccount {
+  id: string;
+  owner_id?: string | null;
+  provider: string;
+  provider_account_id: string;
+  access_token?: string | null;
+  refresh_token?: string | null;
+  expires_at?: string | null;
+  scope: string;
+  sync_cursor: string;
+  sync_frequency_minutes: number;
+  status: string;
+  last_synced_at?: string | null;
+  last_error?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface SyncAccountListResponse {
+  data: SyncAccount[];
+}
+
+export interface GoogleOAuthBeginResponse {
+  authorization_url: string;
+  state: string;
+}
+
 export interface CreatePersonInput {
   first_name: string;
   middle_names?: string[];
