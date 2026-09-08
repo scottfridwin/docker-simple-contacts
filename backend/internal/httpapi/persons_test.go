@@ -51,14 +51,15 @@ func (f *fakeStore) List(_ context.Context, _ person.ListParams) ([]person.Perso
 			out = append(out, *p)
 		}
 
-		func (f *fakeStore) ListDeleted(_ context.Context, _ person.ListParams) ([]person.Person, int, error) {
-			out := make([]person.Person, 0, len(f.items))
-			for _, p := range f.items {
-				if p.DeletedAt != nil {
-					out = append(out, *p)
-				}
-			}
-			return out, len(out), nil
+	}
+	return out, len(out), nil
+}
+
+func (f *fakeStore) ListDeleted(_ context.Context, _ person.ListParams) ([]person.Person, int, error) {
+	out := make([]person.Person, 0, len(f.items))
+	for _, p := range f.items {
+		if p.DeletedAt != nil {
+			out = append(out, *p)
 		}
 	}
 	return out, len(out), nil
@@ -83,25 +84,26 @@ func (f *fakeStore) SoftDelete(_ context.Context, id uuid.UUID) error {
 		return person.ErrNotFound
 	}
 
-	func (f *fakeStore) Restore(_ context.Context, id uuid.UUID) error {
-		p, ok := f.items[id]
-		if !ok || p.DeletedAt == nil {
-			return person.ErrNotFound
-		}
-		p.DeletedAt = nil
-		return nil
-	}
-
-	func (f *fakeStore) HardDelete(_ context.Context, id uuid.UUID) error {
-		p, ok := f.items[id]
-		if !ok || p.DeletedAt == nil {
-			return person.ErrNotFound
-		}
-		delete(f.items, id)
-		return nil
-	}
 	now := time.Now()
 	p.DeletedAt = &now
+	return nil
+}
+
+func (f *fakeStore) Restore(_ context.Context, id uuid.UUID) error {
+	p, ok := f.items[id]
+	if !ok || p.DeletedAt == nil {
+		return person.ErrNotFound
+	}
+	p.DeletedAt = nil
+	return nil
+}
+
+func (f *fakeStore) HardDelete(_ context.Context, id uuid.UUID) error {
+	p, ok := f.items[id]
+	if !ok || p.DeletedAt == nil {
+		return person.ErrNotFound
+	}
+	delete(f.items, id)
 	return nil
 }
 
@@ -208,26 +210,6 @@ func TestFullCRUDFlow(t *testing.T) {
 		t.Fatalf("create status = %d", rec.Code)
 	}
 
-	func TestRecycleBinFlow(t *testing.T) {
-		h, _ := testRouter()
-		rec := doJSON(t, h, http.MethodPost, "/api/v1/persons", map[string]any{"first_name": "Recycle", "last_name": "Bin"})
-		var created person.Person
-		_ = json.Unmarshal(rec.Body.Bytes(), &created)
-		_ = doJSON(t, h, http.MethodDelete, "/api/v1/persons/"+created.ID.String(), nil)
-
-		rec = doJSON(t, h, http.MethodGet, "/api/v1/persons/deleted", nil)
-		if rec.Code != http.StatusOK || !bytes.Contains(rec.Body.Bytes(), []byte("Recycle")) {
-			t.Fatalf("deleted list status/body = %d/%s", rec.Code, rec.Body.String())
-		}
-		rec = doJSON(t, h, http.MethodPost, "/api/v1/persons/"+created.ID.String()+"/restore", nil)
-		if rec.Code != http.StatusNoContent {
-			t.Fatalf("restore status = %d", rec.Code)
-		}
-		rec = doJSON(t, h, http.MethodDelete, "/api/v1/persons/"+created.ID.String()+"/permanent", nil)
-		if rec.Code != http.StatusNotFound {
-			t.Fatalf("permanent delete active person status = %d", rec.Code)
-		}
-	}
 	var created person.Person
 	_ = json.Unmarshal(rec.Body.Bytes(), &created)
 
@@ -236,6 +218,7 @@ func TestFullCRUDFlow(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("list status = %d", rec.Code)
 	}
+
 	var list listResponse
 	_ = json.Unmarshal(rec.Body.Bytes(), &list)
 	if list.Total != 1 {
@@ -380,5 +363,26 @@ func TestCreateMalformedJSON(t *testing.T) {
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("status = %d, want 400", rec.Code)
+	}
+}
+
+func TestRecycleBinFlow(t *testing.T) {
+	h, _ := testRouter()
+	rec := doJSON(t, h, http.MethodPost, "/api/v1/persons", map[string]any{"first_name": "Recycle", "last_name": "Bin"})
+	var created person.Person
+	_ = json.Unmarshal(rec.Body.Bytes(), &created)
+	_ = doJSON(t, h, http.MethodDelete, "/api/v1/persons/"+created.ID.String(), nil)
+
+	rec = doJSON(t, h, http.MethodGet, "/api/v1/persons/deleted", nil)
+	if rec.Code != http.StatusOK || !bytes.Contains(rec.Body.Bytes(), []byte("Recycle")) {
+		t.Fatalf("deleted list status/body = %d/%s", rec.Code, rec.Body.String())
+	}
+	rec = doJSON(t, h, http.MethodPost, "/api/v1/persons/"+created.ID.String()+"/restore", nil)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("restore status = %d", rec.Code)
+	}
+	rec = doJSON(t, h, http.MethodDelete, "/api/v1/persons/"+created.ID.String()+"/permanent", nil)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("permanent delete active person status = %d", rec.Code)
 	}
 }

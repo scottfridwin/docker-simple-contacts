@@ -158,17 +158,17 @@ func TestIsDateString(t *testing.T) {
 	if !IsDateString("2026-08-25") {
 		t.Error("expected YYYY-MM-DD to be a date")
 	}
-
-	func TestCustomDateFieldValidation(t *testing.T) {
-		if errs := ValidateCustomFields(map[string]any{"anniversary_date": "not-a-date"}); !errs.HasErrors() {
-			t.Error("expected invalid custom date to be rejected")
-		}
-	}
 	if !IsDateString("2026-08-25T10:00:00Z") {
 		t.Error("expected RFC3339 to be a date")
 	}
 	if IsDateString("not a date") {
 		t.Error("expected non-date string to be rejected")
+	}
+}
+
+func TestCustomDateFieldValidation(t *testing.T) {
+	if errs := ValidateCustomFields(map[string]any{"anniversary_date": "not-a-date"}); !errs.HasErrors() {
+		t.Error("expected invalid custom date to be rejected")
 	}
 }
 

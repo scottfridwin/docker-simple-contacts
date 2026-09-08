@@ -75,44 +75,6 @@ func (r *Repository) List(ctx context.Context, params ListParams) ([]Person, int
 		idx++
 	}
 
-	// ListDeleted returns a page of soft-deleted Persons.
-	func (r *Repository) ListDeleted(ctx context.Context, params ListParams) ([]Person, int, error) {
-		const base = ` FROM persons WHERE deleted_at IS NOT NULL`
-		var total int
-		if err := r.pool.QueryRow(ctx, "SELECT COUNT(*)"+base).Scan(&total); err != nil {
-			return nil, 0, fmt.Errorf("counting deleted persons: %w", err)
-		}
-		sortColumn := allowedSortFields[params.SortField]
-		if sortColumn == "" {
-			sortColumn = "display_name"
-		}
-		direction := "ASC"
-		if params.SortDesc {
-			direction = "DESC"
-		}
-		q := fmt.Sprintf(`
-			SELECT id, first_name, middle_names, last_name, display_name, nickname, pronouns, birthdate, phone_numbers, custom_fields,
-			       created_at, updated_at, deleted_at
-			FROM persons WHERE deleted_at IS NOT NULL
-			ORDER BY %s %s, id ASC LIMIT $1 OFFSET $2`, sortColumn, direction)
-		rows, err := r.pool.Query(ctx, q, params.PageSize, (params.Page-1)*params.PageSize)
-		if err != nil {
-			return nil, 0, fmt.Errorf("listing deleted persons: %w", err)
-		}
-		defer rows.Close()
-		persons := make([]Person, 0, params.PageSize)
-		for rows.Next() {
-			p, scanErr := scanPerson(rows)
-			if scanErr != nil {
-				return nil, 0, scanErr
-			}
-			persons = append(persons, *p)
-		}
-		if err := rows.Err(); err != nil {
-			return nil, 0, fmt.Errorf("iterating deleted persons: %w", err)
-		}
-		return persons, total, nil
-	}
 	if params.LastName != "" {
 		where = append(where, fmt.Sprintf("last_name ILIKE $%d", idx))
 		args = append(args, "%"+params.LastName+"%")
@@ -168,6 +130,45 @@ func (r *Repository) List(ctx context.Context, params ListParams) ([]Person, int
 	return persons, total, nil
 }
 
+// ListDeleted returns a page of soft-deleted Persons.
+func (r *Repository) ListDeleted(ctx context.Context, params ListParams) ([]Person, int, error) {
+	const base = ` FROM persons WHERE deleted_at IS NOT NULL`
+	var total int
+	if err := r.pool.QueryRow(ctx, "SELECT COUNT(*)"+base).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("counting deleted persons: %w", err)
+	}
+	sortColumn := allowedSortFields[params.SortField]
+	if sortColumn == "" {
+		sortColumn = "display_name"
+	}
+	direction := "ASC"
+	if params.SortDesc {
+		direction = "DESC"
+	}
+	q := fmt.Sprintf(`
+		SELECT id, first_name, middle_names, last_name, display_name, nickname, pronouns, birthdate, phone_numbers, custom_fields,
+		       created_at, updated_at, deleted_at
+		FROM persons WHERE deleted_at IS NOT NULL
+		ORDER BY %s %s, id ASC LIMIT $1 OFFSET $2`, sortColumn, direction)
+	rows, err := r.pool.Query(ctx, q, params.PageSize, (params.Page-1)*params.PageSize)
+	if err != nil {
+		return nil, 0, fmt.Errorf("listing deleted persons: %w", err)
+	}
+	defer rows.Close()
+	persons := make([]Person, 0, params.PageSize)
+	for rows.Next() {
+		p, scanErr := scanPerson(rows)
+		if scanErr != nil {
+			return nil, 0, scanErr
+		}
+		persons = append(persons, *p)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, fmt.Errorf("iterating deleted persons: %w", err)
+	}
+	return persons, total, nil
+}
+
 // Update applies a patch to an existing Person and returns the updated record.
 func (r *Repository) Update(ctx context.Context, id uuid.UUID, p *Person) (*Person, error) {
 	if p.PhoneNumbers == nil {
@@ -199,30 +200,31 @@ func (r *Repository) SoftDelete(ctx context.Context, id uuid.UUID) error {
 		return fmt.Errorf("soft deleting person: %w", err)
 	}
 
-	// Restore makes a soft-deleted Person active again.
-	func (r *Repository) Restore(ctx context.Context, id uuid.UUID) error {
-		const q = `UPDATE persons SET deleted_at = NULL, updated_at = now() WHERE id = $1 AND deleted_at IS NOT NULL`
-		tag, err := r.pool.Exec(ctx, q, id)
-		if err != nil {
-			return fmt.Errorf("restoring person: %w", err)
-		}
-		if tag.RowsAffected() == 0 {
-			return ErrNotFound
-		}
-		return nil
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
 	}
+	return nil
+}
 
-	// HardDelete permanently removes a soft-deleted Person.
-	func (r *Repository) HardDelete(ctx context.Context, id uuid.UUID) error {
-		const q = `DELETE FROM persons WHERE id = $1 AND deleted_at IS NOT NULL`
-		tag, err := r.pool.Exec(ctx, q, id)
-		if err != nil {
-			return fmt.Errorf("permanently deleting person: %w", err)
-		}
-		if tag.RowsAffected() == 0 {
-			return ErrNotFound
-		}
-		return nil
+// Restore makes a soft-deleted Person active again.
+func (r *Repository) Restore(ctx context.Context, id uuid.UUID) error {
+	const q = `UPDATE persons SET deleted_at = NULL, updated_at = now() WHERE id = $1 AND deleted_at IS NOT NULL`
+	tag, err := r.pool.Exec(ctx, q, id)
+	if err != nil {
+		return fmt.Errorf("restoring person: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// HardDelete permanently removes a soft-deleted Person.
+func (r *Repository) HardDelete(ctx context.Context, id uuid.UUID) error {
+	const q = `DELETE FROM persons WHERE id = $1 AND deleted_at IS NOT NULL`
+	tag, err := r.pool.Exec(ctx, q, id)
+	if err != nil {
+		return fmt.Errorf("permanently deleting person: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
 		return ErrNotFound

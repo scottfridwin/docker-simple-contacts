@@ -131,6 +131,11 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
   /persons/{id}/restore:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
     post:
       summary: Restore a deleted person
       operationId: restorePerson
@@ -138,6 +143,11 @@ paths:
         '204': { description: Restored }
         '404': { $ref: '#/components/responses/NotFound' }
   /persons/{id}/permanent:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
     delete:
       summary: Permanently delete a deleted person
       operationId: permanentlyDeletePerson
@@ -155,8 +165,6 @@ components:
     CustomFields:
       type: object
       maxProperties: 64
-      propertyNames:
-        pattern: '^[a-z][a-z0-9]*(_[a-z0-9]+)*$'
       additionalProperties:
         $ref: '#/components/schemas/CustomFieldValue'
       description: >-
