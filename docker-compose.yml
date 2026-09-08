@@ -12,7 +12,7 @@ secrets:
 
 services:
   postgres:
-    image: postgres:17-alpine
+    image: postgres:18-alpine
     user: "${POSTGRES_UID:-70}:${POSTGRES_GID:-70}"
     read_only: true
     mem_limit: ${POSTGRES_MEM_LIMIT:-512m}
