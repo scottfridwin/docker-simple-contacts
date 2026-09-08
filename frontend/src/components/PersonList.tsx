@@ -9,9 +9,20 @@ interface PersonListProps {
   onPermanentDelete?: (person: Person) => void;
 }
 
-export function PersonList({ persons, onEdit, onDelete, deleted, onRestore, onPermanentDelete }: PersonListProps) {
+export function PersonList({
+  persons,
+  onEdit,
+  onDelete,
+  deleted,
+  onRestore,
+  onPermanentDelete,
+}: PersonListProps) {
   if (persons.length === 0) {
-    return <p className="empty">{deleted ? 'The recycle bin is empty.' : 'No contacts yet. Add your first one.'}</p>;
+    return (
+      <p className="empty">
+        {deleted ? 'The recycle bin is empty.' : 'No contacts yet. Add your first one.'}
+      </p>
+    );
   }
 
   return (
@@ -34,15 +45,25 @@ export function PersonList({ persons, onEdit, onDelete, deleted, onRestore, onPe
           <div className="person-actions">
             {deleted ? (
               <>
-                <button type="button" onClick={() => onRestore?.(person)}>Restore</button>
-                <button type="button" className="danger" onClick={() => onPermanentDelete?.(person)}>
+                <button type="button" onClick={() => onRestore?.(person)}>
+                  Restore
+                </button>
+                <button
+                  type="button"
+                  className="danger"
+                  onClick={() => onPermanentDelete?.(person)}
+                >
                   Permanently delete
                 </button>
               </>
             ) : (
               <>
-                <button type="button" onClick={() => onEdit(person)}>Edit</button>
-                <button type="button" className="danger" onClick={() => onDelete(person)}>Delete</button>
+                <button type="button" onClick={() => onEdit(person)}>
+                  Edit
+                </button>
+                <button type="button" className="danger" onClick={() => onDelete(person)}>
+                  Delete
+                </button>
               </>
             )}
           </div>
