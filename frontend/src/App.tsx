@@ -103,14 +103,24 @@ export default function App() {
   };
 
   const handleRestore = async (person: Person) => {
-    await restorePerson(person.id);
-    await refresh();
+    setError(null);
+    try {
+      await restorePerson(person.id);
+      await refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Restore failed');
+    }
   };
 
   const handlePermanentDelete = async (person: Person) => {
     if (!window.confirm(`Permanently delete ${person.display_name}? This cannot be undone.`)) return;
-    await permanentlyDeletePerson(person.id);
-    await refresh();
+    setError(null);
+    try {
+      await permanentlyDeletePerson(person.id);
+      await refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Permanent delete failed');
+    }
   };
 
   return (
@@ -133,11 +143,17 @@ export default function App() {
       {view.mode === 'list' && (
         <>
           <div className="list-controls">
-            <input aria-label="filter first name" placeholder="First name" value={search.firstName}
-              onChange={(e) => { setPage(1); setSearch((s) => ({ ...s, firstName: e.target.value })); }} />
-            <input aria-label="filter last name" placeholder="Last name" value={search.lastName}
-              onChange={(e) => { setPage(1); setSearch((s) => ({ ...s, lastName: e.target.value })); }} />
-            <button type="button" onClick={() => { setPage(1); setShowDeleted((v) => !v); }}>
+            {!showDeleted && <>
+              <input aria-label="filter first name" placeholder="First name" value={search.firstName}
+                onChange={(e) => { setPage(1); setSearch((s) => ({ ...s, firstName: e.target.value })); }} />
+              <input aria-label="filter last name" placeholder="Last name" value={search.lastName}
+                onChange={(e) => { setPage(1); setSearch((s) => ({ ...s, lastName: e.target.value })); }} />
+            </>}
+            <button type="button" onClick={() => {
+              setPage(1);
+              setSearch({ firstName: '', lastName: '' });
+              setShowDeleted((v) => !v);
+            }}>
               {showDeleted ? 'Active contacts' : 'Recycle bin'}
             </button>
           </div>

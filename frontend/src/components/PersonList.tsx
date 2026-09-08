@@ -11,7 +11,7 @@ interface PersonListProps {
 
 export function PersonList({ persons, onEdit, onDelete, deleted, onRestore, onPermanentDelete }: PersonListProps) {
   if (persons.length === 0) {
-    return <p className="empty">No contacts yet. Add your first one.</p>;
+    return <p className="empty">{deleted ? 'The recycle bin is empty.' : 'No contacts yet. Add your first one.'}</p>;
   }
 
   return (
