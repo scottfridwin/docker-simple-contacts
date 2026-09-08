@@ -21,6 +21,7 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [authenticationRequired, setAuthenticationRequired] = useState(false);
   const [serverErrors, setServerErrors] = useState<Record<string, string>>({});
   const [search, setSearch] = useState({ firstName: '', lastName: '' });
   const [page, setPage] = useState(1);
@@ -41,9 +42,11 @@ export default function App() {
       });
       setPersons(res.data);
       setTotalPages(res.total_pages);
+      setAuthenticationRequired(false);
     } catch (err) {
       if (err instanceof ApiRequestError && err.status === 401) {
-        setError('Authentication required');
+        setAuthenticationRequired(true);
+        setError(null);
       } else {
         setError(err instanceof Error ? err.message : 'Failed to load contacts');
       }
@@ -55,6 +58,27 @@ export default function App() {
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  if (authenticationRequired) {
+    return (
+      <main className="landing-page">
+        <section className="landing-card" aria-labelledby="landing-title">
+          <div className="landing-banner" aria-hidden="true">
+            <span className="landing-mark">FW</span>
+          </div>
+          <p className="landing-eyebrow">FRIDWIN CONTACTS</p>
+          <h1 id="landing-title">Your contacts, all in one place.</h1>
+          <p className="landing-description">
+            Sign in to securely access and manage your contacts.
+          </p>
+          <a className="sso-button" href="/auth/login">
+            <span aria-hidden="true">→</span>
+            Sign in with FridWin
+          </a>
+        </section>
+      </main>
+    );
+  }
 
   const handleSubmit = async (values: PersonFormValues) => {
     setSubmitting(true);
