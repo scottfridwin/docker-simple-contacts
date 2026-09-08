@@ -55,8 +55,7 @@ body {
   place-items: center;
   padding: 1.5rem;
   background:
-    radial-gradient(circle at top left, rgba(30, 58, 138, 0.22), transparent 38%),
-    var(--bg);
+    radial-gradient(circle at top left, rgba(30, 58, 138, 0.22), transparent 38%), var(--bg);
 }
 
 .landing-card {
@@ -121,7 +120,9 @@ body {
   color: #fff;
   font-weight: 700;
   text-decoration: none;
-  transition: background-color 0.2s ease, transform 0.2s ease;
+  transition:
+    background-color 0.2s ease,
+    transform 0.2s ease;
 }
 
 .sso-button:hover {
