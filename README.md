@@ -162,9 +162,12 @@ by a background job.
 ## API
 
 - Base path: `/api/v1`
-- Endpoints: `POST/GET /persons`, `GET/PATCH/DELETE /persons/{id}`
+- Endpoints: `POST/GET /persons`, `GET/PATCH/DELETE /persons/{id}`, `GET /persons/deleted`,
+  `POST /persons/{id}/restore`, and `DELETE /persons/{id}/permanent`
 - List defaults: page size 25 (max 100), default sort `display_name desc`,
   filters `first_name` and `last_name`.
+- The recycle bin lists soft-deleted contacts and supports restoring or permanently
+  deleting them before the retention purge.
 - OpenAPI specification: [api/openapi.yaml](api/openapi.yaml) (validated in CI).
 
 ## Development commands

@@ -34,6 +34,9 @@ func NewRouter(logger *slog.Logger, svc *person.Service, ready pinger, allowedOr
 		api.Route("/persons", func(p chi.Router) {
 			p.Post("/", h.create)
 			p.Get("/", h.list)
+			p.Get("/deleted", h.listDeleted)
+			p.Post("/{id}/restore", h.restore)
+			p.Delete("/{id}/permanent", h.permanentDelete)
 			p.Get("/{id}", h.get)
 			p.Patch("/{id}", h.update)
 			p.Delete("/{id}", h.delete)

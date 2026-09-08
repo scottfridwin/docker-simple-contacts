@@ -166,6 +166,12 @@ func TestIsDateString(t *testing.T) {
 	}
 }
 
+func TestCustomDateFieldValidation(t *testing.T) {
+	if errs := ValidateCustomFields(map[string]any{"anniversary_date": "not-a-date"}); !errs.HasErrors() {
+		t.Error("expected invalid custom date to be rejected")
+	}
+}
+
 // itoa avoids importing strconv in the test for a trivial conversion.
 func itoa(i int) string {
 	if i == 0 {

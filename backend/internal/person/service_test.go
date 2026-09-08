@@ -43,6 +43,7 @@ func (m *memStore) List(_ context.Context, _ ListParams) ([]Person, int, error) 
 		if p.DeletedAt == nil {
 			out = append(out, *p)
 		}
+
 	}
 	return out, len(out), nil
 }
@@ -65,8 +66,37 @@ func (m *memStore) SoftDelete(_ context.Context, id uuid.UUID) error {
 	if !ok || p.DeletedAt != nil {
 		return ErrNotFound
 	}
+
 	now := time.Now()
 	p.DeletedAt = &now
+	return nil
+}
+
+func (m *memStore) ListDeleted(_ context.Context, _ ListParams) ([]Person, int, error) {
+	out := make([]Person, 0, len(m.items))
+	for _, p := range m.items {
+		if p.DeletedAt != nil {
+			out = append(out, *p)
+		}
+	}
+	return out, len(out), nil
+}
+
+func (m *memStore) Restore(_ context.Context, id uuid.UUID) error {
+	p, ok := m.items[id]
+	if !ok || p.DeletedAt == nil {
+		return ErrNotFound
+	}
+	p.DeletedAt = nil
+	return nil
+}
+
+func (m *memStore) HardDelete(_ context.Context, id uuid.UUID) error {
+	p, ok := m.items[id]
+	if !ok || p.DeletedAt == nil {
+		return ErrNotFound
+	}
+	delete(m.items, id)
 	return nil
 }
 
@@ -84,9 +114,11 @@ func TestServiceCreateDerivesDisplayName(t *testing.T) {
 	if err != nil || verrs.HasErrors() {
 		t.Fatalf("unexpected: err=%v verrs=%v", err, verrs)
 	}
+
 	if p.DisplayName != "Scott A Fridlund" {
 		t.Errorf("DisplayName = %q, want derived", p.DisplayName)
 	}
+
 }
 
 func TestServiceCreateValidationError(t *testing.T) {
@@ -248,5 +280,30 @@ func TestServiceUpdateMiddleNamesAndCustomFields(t *testing.T) {
 	}
 	if _, ok := updated.CustomFields["k_two"]; !ok {
 		t.Errorf("CustomFields = %v, want k_two", updated.CustomFields)
+	}
+}
+
+func TestServiceRecycleBinOperations(t *testing.T) {
+	store := newMemStore()
+	svc := NewService(store)
+	p, _, err := svc.Create(context.Background(), CreateInput{FirstName: "A", LastName: "B"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.Delete(context.Background(), p.ID); err != nil {
+		t.Fatal(err)
+	}
+	deleted, total, err := svc.ListDeleted(context.Background(), ListParams{Page: 1, PageSize: 25})
+	if err != nil || total != 1 || len(deleted) != 1 {
+		t.Fatalf("unexpected deleted list: total=%d len=%d err=%v", total, len(deleted), err)
+	}
+	if err := svc.Restore(context.Background(), p.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.Delete(context.Background(), p.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.HardDelete(context.Background(), p.ID); err != nil {
+		t.Fatal(err)
 	}
 }
