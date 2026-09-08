@@ -218,6 +218,7 @@ func randomToken() (string, error) {
 }
 
 func setCookie(w http.ResponseWriter, name, value string, httpOnly bool, maxAge time.Duration) {
+	//nolint:gosec // HttpOnly is intentionally configurable for CSRF token cookie
 	http.SetCookie(w, &http.Cookie{Name: name, Value: value, Path: "/", HttpOnly: httpOnly, Secure: true, SameSite: http.SameSiteLaxMode, MaxAge: int(maxAge.Seconds())})
 }
 

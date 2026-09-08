@@ -2,10 +2,10 @@
   "name": "Contacts Dev",
   "image": "mcr.microsoft.com/devcontainers/go:1-1.23-bookworm",
   "features": {
-    "ghcr.io/devcontainers/features/node:1": {
-      "version": "20"
+    "ghcr.io/devcontainers/features/node:2": {
+      "version": "24"
     },
-    "ghcr.io/devcontainers/features/docker-in-docker:2": {}
+    "ghcr.io/devcontainers/features/docker-in-docker:4": {}
   },
   "customizations": {
     "vscode": {
