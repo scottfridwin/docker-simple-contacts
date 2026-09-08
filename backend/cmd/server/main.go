@@ -14,6 +14,7 @@ import (
 
 	"github.com/scottfridlund/contacts/backend/internal/auth"
 	"github.com/scottfridlund/contacts/backend/internal/config"
+	"github.com/scottfridlund/contacts/backend/internal/contactsync"
 	"github.com/scottfridlund/contacts/backend/internal/db"
 	"github.com/scottfridlund/contacts/backend/internal/httpapi"
 	"github.com/scottfridlund/contacts/backend/internal/logging"
@@ -86,7 +87,10 @@ func run() error {
 	defer pool.Close()
 
 	repo := person.NewRepository(pool)
-	svc := person.NewService(repo)
+	syncAccountRepo := contactsync.NewRepository(pool)
+	syncJobRepo := contactsync.NewJobRepository(pool)
+	syncSvc := contactsync.NewService(syncJobRepo)
+	svc := person.NewService(repo, syncSvc)
 	accountRepo := user.NewRepository(pool)
 
 	purgeWindow := time.Duration(cfg.PurgeAfterDays) * 24 * time.Hour
@@ -105,7 +109,7 @@ func run() error {
 			return err
 		}
 	}
-	handler := httpapi.NewRouter(logger, svc, repo, cfg.CORSAllowedOrigins, provider)
+	handler := httpapi.NewRouter(logger, svc, repo, syncAccountRepo, cfg.CORSAllowedOrigins, provider)
 	srv := &http.Server{
 		Addr:              ":" + cfg.Port,
 		Handler:           handler,

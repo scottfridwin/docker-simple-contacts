@@ -1,18 +1,29 @@
 package httpapi
 
 import (
+	"context"
 	"log/slog"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/cors"
+	"github.com/google/uuid"
 
 	"github.com/scottfridlund/contacts/backend/internal/auth"
+	"github.com/scottfridlund/contacts/backend/internal/contactsync"
 	"github.com/scottfridlund/contacts/backend/internal/person"
 )
 
+type syncAccountStore interface {
+	List(context.Context, int) ([]contactsync.Account, error)
+	Create(context.Context, *contactsync.Account) (*contactsync.Account, error)
+	GetByID(context.Context, uuid.UUID) (*contactsync.Account, error)
+	Update(context.Context, *contactsync.Account) (*contactsync.Account, error)
+	Delete(context.Context, uuid.UUID) error
+}
+
 // NewRouter builds the application's HTTP handler.
-func NewRouter(logger *slog.Logger, svc *person.Service, ready pinger, allowedOrigins []string, providers ...*auth.Provider) http.Handler {
+func NewRouter(logger *slog.Logger, svc *person.Service, ready pinger, syncRepo syncAccountStore, allowedOrigins []string, providers ...*auth.Provider) http.Handler {
 	r := chi.NewRouter()
 
 	r.Use(requestID)
@@ -35,6 +46,7 @@ func NewRouter(logger *slog.Logger, svc *person.Service, ready pinger, allowedOr
 	r.Get("/readyz", readyHandler(ready))
 
 	h := &personHandler{svc: svc}
+	syncHandler := &syncAccountHandler{repo: syncRepo}
 	r.Route("/api/v1", func(api chi.Router) {
 		api.Route("/persons", func(p chi.Router) {
 			p.Post("/", h.create)
@@ -45,6 +57,13 @@ func NewRouter(logger *slog.Logger, svc *person.Service, ready pinger, allowedOr
 			p.Get("/{id}", h.get)
 			p.Patch("/{id}", h.update)
 			p.Delete("/{id}", h.delete)
+		})
+		api.Route("/sync-accounts", func(s chi.Router) {
+			s.Get("/", syncHandler.list)
+			s.Post("/", syncHandler.create)
+			s.Get("/{id}", syncHandler.get)
+			s.Patch("/{id}", syncHandler.update)
+			s.Delete("/{id}", syncHandler.delete)
 		})
 	})
 

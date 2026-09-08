@@ -5,12 +5,16 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	"github.com/scottfridlund/contacts/backend/internal/authn"
+	"github.com/scottfridlund/contacts/backend/internal/contactsync"
 )
 
 // store abstracts the persistence operations the service depends on.
 type store interface {
 	Create(ctx context.Context, p *Person) (*Person, error)
 	GetByID(ctx context.Context, id uuid.UUID) (*Person, error)
+	GetDeletedByID(ctx context.Context, id uuid.UUID) (*Person, error)
 	List(ctx context.Context, params ListParams) ([]Person, int, error)
 	ListDeleted(ctx context.Context, params ListParams) ([]Person, int, error)
 	Update(ctx context.Context, id uuid.UUID, p *Person) (*Person, error)
@@ -20,14 +24,24 @@ type store interface {
 	PurgeExpired(ctx context.Context, olderThan time.Duration) (int64, error)
 }
 
+// syncNotifier is implemented by the sync engine to enqueue follow-up work.
+type syncNotifier interface {
+	RecordChanged(context.Context, contactsync.PersonChange) error
+}
+
 // Service holds the Person business logic.
 type Service struct {
-	repo store
+	repo     store
+	notifier syncNotifier
 }
 
 // NewService constructs a Service.
-func NewService(repo store) *Service {
-	return &Service{repo: repo}
+func NewService(repo store, notifier ...syncNotifier) *Service {
+	svc := &Service{repo: repo}
+	if len(notifier) > 0 {
+		svc.notifier = notifier[0]
+	}
+	return svc
 }
 
 // Create validates the input, derives the display name when absent, and stores
@@ -62,6 +76,9 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (*Person, Validati
 		CustomFields: customFields,
 	}
 	created, err := s.repo.Create(ctx, p)
+	if err == nil {
+		s.notify(ctx, contactsync.ChangeKindCreated, created)
+	}
 	return created, nil, err
 }
 
@@ -93,22 +110,51 @@ func (s *Service) Update(ctx context.Context, id uuid.UUID, in UpdateInput) (*Pe
 
 	applyUpdate(current, in)
 	updated, err := s.repo.Update(ctx, id, current)
+	if err == nil {
+		s.notify(ctx, contactsync.ChangeKindUpdated, updated)
+	}
 	return updated, nil, err
 }
 
 // Delete soft-deletes a Person.
 func (s *Service) Delete(ctx context.Context, id uuid.UUID) error {
-	return s.repo.SoftDelete(ctx, id)
+	current, err := s.repo.GetByID(ctx, id)
+	if err != nil {
+		return err
+	}
+	if err := s.repo.SoftDelete(ctx, id); err != nil {
+		return err
+	}
+	current.DeletedAt = timePtr(time.Now())
+	s.notify(ctx, contactsync.ChangeKindDeleted, current)
+	return nil
 }
 
 // Restore makes a soft-deleted Person visible again.
 func (s *Service) Restore(ctx context.Context, id uuid.UUID) error {
-	return s.repo.Restore(ctx, id)
+	deleted, err := s.repo.GetDeletedByID(ctx, id)
+	if err != nil {
+		return err
+	}
+	if err := s.repo.Restore(ctx, id); err != nil {
+		return err
+	}
+	deleted.DeletedAt = nil
+	s.notify(ctx, contactsync.ChangeKindRestored, deleted)
+	return nil
 }
 
 // HardDelete permanently removes a soft-deleted Person.
 func (s *Service) HardDelete(ctx context.Context, id uuid.UUID) error {
-	return s.repo.HardDelete(ctx, id)
+	deleted, err := s.repo.GetDeletedByID(ctx, id)
+	if err != nil {
+		return err
+	}
+	if err := s.repo.HardDelete(ctx, id); err != nil {
+		return err
+	}
+	s.notify(ctx, contactsync.ChangeKindHardDeleted, deleted)
+	return nil
 }
 
 // PurgeExpired removes soft-deleted records older than the retention window.
@@ -156,3 +202,21 @@ func applyUpdate(current *Person, in UpdateInput) {
 	// Always re-derive display name from current name parts.
 	current.DisplayName = DeriveDisplayName(current.FirstName, current.MiddleNames, current.LastName)
 }
+
+func (s *Service) notify(ctx context.Context, kind contactsync.ChangeKind, p *Person) {
+	if s.notifier == nil || p == nil {
+		return
+	}
+	ownerID, _ := authn.UserID(ctx)
+	var ownerPtr *uuid.UUID
+	if ownerID != uuid.Nil {
+		ownerPtr = &ownerID
+	}
+	_ = s.notifier.RecordChanged(ctx, contactsync.PersonChange{
+		Kind:      kind,
+		Snapshot:  p.Snapshot(ownerPtr),
+		ChangedAt: time.Now(),
+	})
+}
+
+func timePtr(t time.Time) *time.Time { return &t }

@@ -6,6 +6,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	"github.com/scottfridlund/contacts/backend/internal/contactsync"
 )
 
 // Person is the single domain entity supported in v1.
@@ -85,4 +87,35 @@ func DeriveDisplayName(firstName string, middleNames []string, lastName string) 
 		parts = append(parts, lastName)
 	}
 	return strings.Join(parts, " ")
+}
+
+// Snapshot converts a Person into a provider-neutral sync snapshot.
+func (p Person) Snapshot(ownerID *uuid.UUID) contactsync.PersonSnapshot {
+	return contactsync.PersonSnapshot{
+		ID:           p.ID,
+		OwnerID:      ownerID,
+		FirstName:    p.FirstName,
+		MiddleNames:  append([]string(nil), p.MiddleNames...),
+		LastName:     p.LastName,
+		DisplayName:  p.DisplayName,
+		Nickname:     p.Nickname,
+		Pronouns:     p.Pronouns,
+		Birthdate:    p.Birthdate,
+		PhoneNumbers: append([]string(nil), p.PhoneNumbers...),
+		CustomFields: cloneMap(p.CustomFields),
+		DeletedAt:    p.DeletedAt,
+		CreatedAt:    p.CreatedAt,
+		UpdatedAt:    p.UpdatedAt,
+	}
+}
+
+func cloneMap(in map[string]any) map[string]any {
+	if len(in) == 0 {
+		return map[string]any{}
+	}
+	out := make(map[string]any, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
 }

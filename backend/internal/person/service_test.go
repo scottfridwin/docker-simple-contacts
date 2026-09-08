@@ -7,11 +7,17 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	"github.com/scottfridlund/contacts/backend/internal/contactsync"
 )
 
 // memStore is an in-memory store implementation for unit tests.
 type memStore struct {
 	items map[uuid.UUID]*Person
+}
+
+type memNotifier struct {
+	events []contactsync.PersonChange
 }
 
 func newMemStore() *memStore {
@@ -31,6 +37,15 @@ func (m *memStore) Create(_ context.Context, p *Person) (*Person, error) {
 func (m *memStore) GetByID(_ context.Context, id uuid.UUID) (*Person, error) {
 	p, ok := m.items[id]
 	if !ok || p.DeletedAt != nil {
+		return nil, ErrNotFound
+	}
+	out := *p
+	return &out, nil
+}
+
+func (m *memStore) GetDeletedByID(_ context.Context, id uuid.UUID) (*Person, error) {
+	p, ok := m.items[id]
+	if !ok || p.DeletedAt == nil {
 		return nil, ErrNotFound
 	}
 	out := *p
@@ -102,6 +117,11 @@ func (m *memStore) HardDelete(_ context.Context, id uuid.UUID) error {
 
 func (m *memStore) PurgeExpired(_ context.Context, _ time.Duration) (int64, error) {
 	return 0, nil
+}
+
+func (n *memNotifier) RecordChanged(_ context.Context, change contactsync.PersonChange) error {
+	n.events = append(n.events, change)
+	return nil
 }
 
 func TestServiceCreateDerivesDisplayName(t *testing.T) {
@@ -305,5 +325,33 @@ func TestServiceRecycleBinOperations(t *testing.T) {
 	}
 	if err := svc.HardDelete(context.Background(), p.ID); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestServiceEmitsSyncNotifications(t *testing.T) {
+	store := newMemStore()
+	notifier := &memNotifier{}
+	svc := NewService(store, notifier)
+	created, _, err := svc.Create(context.Background(), CreateInput{FirstName: "A", LastName: "B"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(notifier.events) != 1 || notifier.events[0].Kind != contactsync.ChangeKindCreated {
+		t.Fatalf("expected created event, got %#v", notifier.events)
+	}
+
+	newLast := "C"
+	if _, _, err := svc.Update(context.Background(), created.ID, UpdateInput{LastName: &newLast, LastNameSet: true}); err != nil {
+		t.Fatal(err)
+	}
+	if len(notifier.events) != 2 || notifier.events[1].Kind != contactsync.ChangeKindUpdated {
+		t.Fatalf("expected updated event, got %#v", notifier.events)
+	}
+
+	if err := svc.Delete(context.Background(), created.ID); err != nil {
+		t.Fatal(err)
+	}
+	if len(notifier.events) != 3 || notifier.events[2].Kind != contactsync.ChangeKindDeleted {
+		t.Fatalf("expected deleted event, got %#v", notifier.events)
 	}
 }
