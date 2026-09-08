@@ -120,7 +120,9 @@ describe('App sync integration', () => {
     await userEvent.click(screen.getByRole('button', { name: /connect google/i }));
 
     await waitFor(() => {
-      expect(mocks.beginGoogleSync).toHaveBeenCalledWith('https://contacts.example/api/v1/sync/google/callback');
+      expect(mocks.beginGoogleSync).toHaveBeenCalledWith(
+        'https://contacts.example/api/v1/sync/google/callback',
+      );
     });
     expect(window.open).toHaveBeenCalledWith(
       'https://accounts.google.com/o/oauth2/v2/auth?state=abc',

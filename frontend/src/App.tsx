@@ -30,28 +30,25 @@ function PrivacyPolicyPage() {
         <p className="privacy-updated">Last updated: September 8, 2026</p>
         <div className="privacy-copy">
           <p>
-            This service is intended for a small, private family and direct-relations
-            group. It is not operated as a public consumer service.
+            This service is intended for a small, private family and direct-relations group. It is
+            not operated as a public consumer service.
           </p>
           <p>
-            We collect and store the contact information you choose to enter into the
-            application, including names, phone numbers, custom fields, and sync
-            configuration needed to connect Google Contacts.
+            We collect and store the contact information you choose to enter into the application,
+            including names, phone numbers, custom fields, and sync configuration needed to connect
+            Google Contacts.
           </p>
           <p>
-            Google account authorization is used only to synchronize contacts that you
-            choose to connect. We do not sell personal data, do not use it for
-            advertising, and do not intentionally share it with unrelated third
-            parties.
+            Google account authorization is used only to synchronize contacts that you choose to
+            connect. We do not sell personal data, do not use it for advertising, and do not
+            intentionally share it with unrelated third parties.
           </p>
           <p>
-            Data is stored to provide contact management and synchronization
-            functionality. If you delete a contact, it is soft-deleted first and later
-            purged according to the application retention policy.
+            Data is stored to provide contact management and synchronization functionality. If you
+            delete a contact, it is soft-deleted first and later purged according to the application
+            retention policy.
           </p>
-          <p>
-            If you have questions about this policy, contact the site operator.
-          </p>
+          <p>If you have questions about this policy, contact the site operator.</p>
         </div>
         <a className="sso-button privacy-home-link" href="/">
           <span aria-hidden="true">←</span>
@@ -131,18 +128,18 @@ export default function App() {
   }, [isPrivacyPage]);
 
   useEffect(() => {
-	  if (isPrivacyPage) {
-	    return;
-	  }
+    if (isPrivacyPage) {
+      return;
+    }
     queueMicrotask(() => {
       void refresh();
     });
   }, [isPrivacyPage, refresh]);
 
   useEffect(() => {
-	  if (isPrivacyPage) {
-	    return;
-	  }
+    if (isPrivacyPage) {
+      return;
+    }
     if (authenticationRequired) {
       return;
     }
@@ -152,9 +149,9 @@ export default function App() {
   }, [authenticationRequired, isPrivacyPage, refreshSyncAccounts]);
 
   useEffect(() => {
-	  if (isPrivacyPage) {
-	    return;
-	  }
+    if (isPrivacyPage) {
+      return;
+    }
     const onFocus = () => {
       void refreshSyncAccounts();
     };
@@ -162,15 +159,17 @@ export default function App() {
     return () => window.removeEventListener('focus', onFocus);
   }, [isPrivacyPage, refreshSyncAccounts]);
 
-	if (isPrivacyPage) {
-		return <PrivacyPolicyPage />;
-	}
+  if (isPrivacyPage) {
+    return <PrivacyPolicyPage />;
+  }
 
   const handleConnectGoogle = async () => {
     setSyncConnecting(true);
     setSyncError(null);
     try {
-      const { authorization_url: authorizationUrl } = await beginGoogleSync(`${window.location.origin}/api/v1/sync/google/callback`);
+      const { authorization_url: authorizationUrl } = await beginGoogleSync(
+        `${window.location.origin}/api/v1/sync/google/callback`,
+      );
       const popup = window.open(authorizationUrl, 'google-sync', 'popup,width=520,height=760');
       if (!popup) {
         window.location.assign(authorizationUrl);
@@ -331,7 +330,9 @@ export default function App() {
               <li key={account.id} className="sync-account-card">
                 <div className="sync-account-head">
                   <strong>{account.provider}</strong>
-                  <span className={`sync-status sync-status-${account.status}`}>{account.status}</span>
+                  <span className={`sync-status sync-status-${account.status}`}>
+                    {account.status}
+                  </span>
                 </div>
                 <dl className="sync-account-details">
                   <div>
@@ -340,7 +341,11 @@ export default function App() {
                   </div>
                   <div>
                     <dt>Last sync</dt>
-                    <dd>{account.last_synced_at ? new Date(account.last_synced_at).toLocaleString() : 'Never'}</dd>
+                    <dd>
+                      {account.last_synced_at
+                        ? new Date(account.last_synced_at).toLocaleString()
+                        : 'Never'}
+                    </dd>
                   </div>
                   <div>
                     <dt>Frequency</dt>
@@ -439,9 +444,9 @@ export default function App() {
         </section>
       )}
 
-		<footer className="app-footer">
-			<a href="/privacy">Privacy Policy</a>
-		</footer>
+      <footer className="app-footer">
+        <a href="/privacy">Privacy Policy</a>
+      </footer>
     </main>
   );
 }
