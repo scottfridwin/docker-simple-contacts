@@ -145,17 +145,24 @@ func (r *Repository) ListDeleted(ctx context.Context, params ListParams) ([]Pers
 	if params.SortDesc {
 		direction = "DESC"
 	}
+	pageSize := params.PageSize
+	if pageSize < 1 {
+		pageSize = 1
+	}
+	if pageSize > 100 {
+		pageSize = 100
+	}
 	q := fmt.Sprintf(`
 		SELECT id, first_name, middle_names, last_name, display_name, nickname, pronouns, birthdate, phone_numbers, custom_fields,
 		       created_at, updated_at, deleted_at
 		FROM persons WHERE deleted_at IS NOT NULL
 		ORDER BY %s %s, id ASC LIMIT $1 OFFSET $2`, sortColumn, direction)
-	rows, err := r.pool.Query(ctx, q, params.PageSize, (params.Page-1)*params.PageSize)
+	rows, err := r.pool.Query(ctx, q, pageSize, (params.Page-1)*pageSize)
 	if err != nil {
 		return nil, 0, fmt.Errorf("listing deleted persons: %w", err)
 	}
 	defer rows.Close()
-	persons := make([]Person, 0, params.PageSize)
+	persons := make([]Person, 0, pageSize)
 	for rows.Next() {
 		p, scanErr := scanPerson(rows)
 		if scanErr != nil {
