@@ -63,9 +63,23 @@ describe('App sync integration', () => {
       writable: true,
     });
     Object.defineProperty(window, 'location', {
-      value: { origin: 'https://contacts.example', assign: vi.fn() },
+      value: { origin: 'https://contacts.example', pathname: '/', assign: vi.fn() },
       writable: true,
     });
+  });
+
+  it('renders the privacy policy at /privacy without loading app data', () => {
+    Object.defineProperty(window, 'location', {
+      value: { origin: 'https://contacts.example', pathname: '/privacy', assign: vi.fn() },
+      writable: true,
+    });
+
+    render(<App />);
+
+    expect(screen.getByRole('heading', { name: /privacy policy/i })).toBeInTheDocument();
+    expect(screen.getByText(/family and direct-relations group/i)).toBeInTheDocument();
+    expect(mocks.listPersons).not.toHaveBeenCalled();
+    expect(mocks.listSyncAccounts).not.toHaveBeenCalled();
   });
 
   it('renders sync panel and configured accounts', async () => {

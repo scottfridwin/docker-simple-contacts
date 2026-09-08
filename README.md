@@ -187,6 +187,7 @@ by a background job.
 - Sync account management: `GET/POST /sync-accounts`, `GET/PATCH/DELETE /sync-accounts/{id}`
 - Google sync OAuth: `GET /sync/google/begin`, `GET /sync/google/callback`
 - Frontend sync panel: connect Google and review sync status from the main app UI
+- Public privacy policy: `GET /privacy`
 - List defaults: page size 25 (max 100), default sort `display_name desc`,
   filters `first_name` and `last_name`.
 - The recycle bin lists soft-deleted contacts and supports restoring or permanently

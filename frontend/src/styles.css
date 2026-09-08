@@ -110,6 +110,54 @@ body {
   color: var(--muted);
 }
 
+.privacy-card {
+  text-align: left;
+}
+
+.privacy-card h1 {
+  text-align: center;
+}
+
+.privacy-updated {
+  margin: 0.5rem 0 1.25rem;
+  text-align: center;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.privacy-copy {
+  display: grid;
+  gap: 0.9rem;
+  color: var(--text);
+  line-height: 1.6;
+}
+
+.privacy-copy p {
+  margin: 0;
+}
+
+.privacy-home-link {
+  margin-top: 1.5rem;
+}
+
+.app-footer {
+  margin: 1.5rem 0 0.5rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--border);
+  display: flex;
+  justify-content: center;
+}
+
+.app-footer a {
+  color: var(--muted);
+  text-decoration: none;
+}
+
+.app-footer a:hover {
+  color: var(--text);
+  text-decoration: underline;
+}
+
 .sso-button {
   display: inline-flex;
   align-items: center;

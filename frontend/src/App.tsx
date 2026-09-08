@@ -17,7 +17,53 @@ import { PersonList } from './components/PersonList';
 
 type View = { mode: 'list' } | { mode: 'create' } | { mode: 'edit'; person: Person };
 
+function getAppPathname() {
+  return window.location.pathname.replace(/\/+$/, '') || '/';
+}
+
+function PrivacyPolicyPage() {
+  return (
+    <main className="landing-page privacy-page">
+      <section className="landing-card privacy-card" aria-labelledby="privacy-title">
+        <p className="landing-eyebrow">PRIVACY POLICY</p>
+        <h1 id="privacy-title">Privacy Policy</h1>
+        <p className="privacy-updated">Last updated: September 8, 2026</p>
+        <div className="privacy-copy">
+          <p>
+            This service is intended for a small, private family and direct-relations
+            group. It is not operated as a public consumer service.
+          </p>
+          <p>
+            We collect and store the contact information you choose to enter into the
+            application, including names, phone numbers, custom fields, and sync
+            configuration needed to connect Google Contacts.
+          </p>
+          <p>
+            Google account authorization is used only to synchronize contacts that you
+            choose to connect. We do not sell personal data, do not use it for
+            advertising, and do not intentionally share it with unrelated third
+            parties.
+          </p>
+          <p>
+            Data is stored to provide contact management and synchronization
+            functionality. If you delete a contact, it is soft-deleted first and later
+            purged according to the application retention policy.
+          </p>
+          <p>
+            If you have questions about this policy, contact the site operator.
+          </p>
+        </div>
+        <a className="sso-button privacy-home-link" href="/">
+          <span aria-hidden="true">←</span>
+          Back to contacts
+        </a>
+      </section>
+    </main>
+  );
+}
+
 export default function App() {
+  const isPrivacyPage = getAppPathname() === '/privacy';
   const [persons, setPersons] = useState<Person[]>([]);
   const [syncAccounts, setSyncAccounts] = useState<SyncAccount[]>([]);
   const [view, setView] = useState<View>({ mode: 'list' });
@@ -35,6 +81,9 @@ export default function App() {
   const [showDeleted, setShowDeleted] = useState(false);
 
   const refresh = useCallback(async () => {
+    if (isPrivacyPage) {
+      return;
+    }
     setLoading(true);
     setError(null);
     try {
@@ -59,9 +108,12 @@ export default function App() {
     } finally {
       setLoading(false);
     }
-  }, [page, search, showDeleted]);
+  }, [isPrivacyPage, page, search, showDeleted]);
 
   const refreshSyncAccounts = useCallback(async () => {
+    if (isPrivacyPage) {
+      return;
+    }
     setSyncLoading(true);
     setSyncError(null);
     try {
@@ -76,30 +128,43 @@ export default function App() {
     } finally {
       setSyncLoading(false);
     }
-  }, []);
+  }, [isPrivacyPage]);
 
   useEffect(() => {
+	  if (isPrivacyPage) {
+	    return;
+	  }
     queueMicrotask(() => {
       void refresh();
     });
-  }, [refresh]);
+  }, [isPrivacyPage, refresh]);
 
   useEffect(() => {
+	  if (isPrivacyPage) {
+	    return;
+	  }
     if (authenticationRequired) {
       return;
     }
     queueMicrotask(() => {
       void refreshSyncAccounts();
     });
-  }, [authenticationRequired, refreshSyncAccounts]);
+  }, [authenticationRequired, isPrivacyPage, refreshSyncAccounts]);
 
   useEffect(() => {
+	  if (isPrivacyPage) {
+	    return;
+	  }
     const onFocus = () => {
       void refreshSyncAccounts();
     };
     window.addEventListener('focus', onFocus);
     return () => window.removeEventListener('focus', onFocus);
-  }, [refreshSyncAccounts]);
+  }, [isPrivacyPage, refreshSyncAccounts]);
+
+	if (isPrivacyPage) {
+		return <PrivacyPolicyPage />;
+	}
 
   const handleConnectGoogle = async () => {
     setSyncConnecting(true);
@@ -373,6 +438,10 @@ export default function App() {
           />
         </section>
       )}
+
+		<footer className="app-footer">
+			<a href="/privacy">Privacy Policy</a>
+		</footer>
     </main>
   );
 }
