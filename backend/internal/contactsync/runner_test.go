@@ -23,13 +23,12 @@ func (f *fakeAccountStore) List(context.Context, int) ([]Account, error) {
 }
 
 type fakeQueue struct {
-	jobs      []Job
-	done      []uuid.UUID
-	failed    map[uuid.UUID]string
-	listErr   error
-	doneErr   error
-	failErr   error
-	processed map[uuid.UUID]bool
+	jobs    []Job
+	done    []uuid.UUID
+	failed  map[uuid.UUID]string
+	listErr error
+	doneErr error
+	failErr error
 }
 
 func (f *fakeQueue) ListPending(context.Context, int) ([]Job, error) {
