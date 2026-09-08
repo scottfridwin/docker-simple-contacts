@@ -4,9 +4,12 @@ interface PersonListProps {
   persons: Person[];
   onEdit: (person: Person) => void;
   onDelete: (person: Person) => void;
+  deleted?: boolean;
+  onRestore?: (person: Person) => void;
+  onPermanentDelete?: (person: Person) => void;
 }
 
-export function PersonList({ persons, onEdit, onDelete }: PersonListProps) {
+export function PersonList({ persons, onEdit, onDelete, deleted, onRestore, onPermanentDelete }: PersonListProps) {
   if (persons.length === 0) {
     return <p className="empty">No contacts yet. Add your first one.</p>;
   }
@@ -29,12 +32,19 @@ export function PersonList({ persons, onEdit, onDelete }: PersonListProps) {
             )}
           </div>
           <div className="person-actions">
-            <button type="button" onClick={() => onEdit(person)}>
-              Edit
-            </button>
-            <button type="button" className="danger" onClick={() => onDelete(person)}>
-              Delete
-            </button>
+            {deleted ? (
+              <>
+                <button type="button" onClick={() => onRestore?.(person)}>Restore</button>
+                <button type="button" className="danger" onClick={() => onPermanentDelete?.(person)}>
+                  Permanently delete
+                </button>
+              </>
+            ) : (
+              <>
+                <button type="button" onClick={() => onEdit(person)}>Edit</button>
+                <button type="button" className="danger" onClick={() => onDelete(person)}>Delete</button>
+              </>
+            )}
           </div>
         </li>
       ))}

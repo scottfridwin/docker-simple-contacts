@@ -65,6 +65,23 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '422':
           $ref: '#/components/responses/ValidationError'
+  /persons/deleted:
+    get:
+      summary: List deleted persons
+      operationId: listDeletedPersons
+      parameters:
+        - name: page
+          in: query
+          schema: { type: integer, minimum: 1, default: 1 }
+        - name: page_size
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 100, default: 25 }
+      responses:
+        '200':
+          description: A page of deleted persons
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PersonListResponse' }
   /persons/{id}:
     parameters:
       - name: id
@@ -113,6 +130,20 @@ paths:
           description: No Content
         '404':
           $ref: '#/components/responses/NotFound'
+  /persons/{id}/restore:
+    post:
+      summary: Restore a deleted person
+      operationId: restorePerson
+      responses:
+        '204': { description: Restored }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /persons/{id}/permanent:
+    delete:
+      summary: Permanently delete a deleted person
+      operationId: permanentlyDeletePerson
+      responses:
+        '204': { description: Permanently deleted }
+        '404': { $ref: '#/components/responses/NotFound' }
 components:
   schemas:
     CustomFieldValue:
@@ -123,6 +154,9 @@ components:
         - type: boolean
     CustomFields:
       type: object
+      maxProperties: 64
+      propertyNames:
+        pattern: '^[a-z][a-z0-9]*(_[a-z0-9]+)*$'
       additionalProperties:
         $ref: '#/components/schemas/CustomFieldValue'
       description: >-
@@ -144,6 +178,7 @@ components:
         birthdate: { type: string, format: date, nullable: true }
         phone_numbers:
           type: array
+          maxItems: 10
           items: { type: string, maxLength: 50 }
         custom_fields:
           $ref: '#/components/schemas/CustomFields'

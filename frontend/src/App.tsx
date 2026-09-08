@@ -1,5 +1,14 @@
 import { useCallback, useEffect, useState } from 'react';
-import { ApiRequestError, createPerson, deletePerson, listPersons, updatePerson } from './api';
+import {
+  ApiRequestError,
+  createPerson,
+  deletePerson,
+  listDeletedPersons,
+  listPersons,
+  permanentlyDeletePerson,
+  restorePerson,
+  updatePerson,
+} from './api';
 import type { Person } from './types';
 import { PersonForm, type PersonFormValues } from './components/PersonForm';
 import { PersonList } from './components/PersonList';
@@ -13,19 +22,31 @@ export default function App() {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [serverErrors, setServerErrors] = useState<Record<string, string>>({});
+  const [search, setSearch] = useState({ firstName: '', lastName: '' });
+  const [page, setPage] = useState(1);
+  const [totalPages, setTotalPages] = useState(1);
+  const [showDeleted, setShowDeleted] = useState(false);
 
   const refresh = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const res = await listPersons({ sort: 'display_name', order: 'desc' });
+      const loader = showDeleted ? listDeletedPersons : listPersons;
+      const res = await loader({
+        page,
+        sort: 'display_name',
+        order: 'desc',
+        firstName: search.firstName || undefined,
+        lastName: search.lastName || undefined,
+      });
       setPersons(res.data);
+      setTotalPages(res.total_pages);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load contacts');
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [page, search, showDeleted]);
 
   useEffect(() => {
     void refresh();
@@ -81,11 +102,22 @@ export default function App() {
     }
   };
 
+  const handleRestore = async (person: Person) => {
+    await restorePerson(person.id);
+    await refresh();
+  };
+
+  const handlePermanentDelete = async (person: Person) => {
+    if (!window.confirm(`Permanently delete ${person.display_name}? This cannot be undone.`)) return;
+    await permanentlyDeletePerson(person.id);
+    await refresh();
+  };
+
   return (
     <main className="app">
       <header className="app-header">
         <h1>Contacts</h1>
-        {view.mode === 'list' && (
+        {view.mode === 'list' && !showDeleted && (
           <button type="button" onClick={() => setView({ mode: 'create' })}>
             Add contact
           </button>
@@ -100,6 +132,15 @@ export default function App() {
 
       {view.mode === 'list' && (
         <>
+          <div className="list-controls">
+            <input aria-label="filter first name" placeholder="First name" value={search.firstName}
+              onChange={(e) => { setPage(1); setSearch((s) => ({ ...s, firstName: e.target.value })); }} />
+            <input aria-label="filter last name" placeholder="Last name" value={search.lastName}
+              onChange={(e) => { setPage(1); setSearch((s) => ({ ...s, lastName: e.target.value })); }} />
+            <button type="button" onClick={() => { setPage(1); setShowDeleted((v) => !v); }}>
+              {showDeleted ? 'Active contacts' : 'Recycle bin'}
+            </button>
+          </div>
           {loading ? (
             <p>Loading…</p>
           ) : (
@@ -107,8 +148,16 @@ export default function App() {
               persons={persons}
               onEdit={(person) => setView({ mode: 'edit', person })}
               onDelete={handleDelete}
+              deleted={showDeleted}
+              onRestore={handleRestore}
+              onPermanentDelete={handlePermanentDelete}
             />
           )}
+          {totalPages > 1 && <nav aria-label="pagination">
+            <button type="button" disabled={page === 1} onClick={() => setPage((p) => p - 1)}>Previous</button>
+            <span>Page {page} of {totalPages}</span>
+            <button type="button" disabled={page >= totalPages} onClick={() => setPage((p) => p + 1)}>Next</button>
+          </nav>}
         </>
       )}
 
