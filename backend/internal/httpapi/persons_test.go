@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -20,6 +21,27 @@ import (
 type fakeStore struct {
 	items map[uuid.UUID]*person.Person
 }
+
+type errorStore struct {
+	*fakeStore
+	err error
+}
+
+func (s *errorStore) GetByID(context.Context, uuid.UUID) (*person.Person, error) {
+	return nil, s.err
+}
+func (s *errorStore) List(context.Context, person.ListParams) ([]person.Person, int, error) {
+	return nil, 0, s.err
+}
+func (s *errorStore) ListDeleted(context.Context, person.ListParams) ([]person.Person, int, error) {
+	return nil, 0, s.err
+}
+func (s *errorStore) Update(context.Context, uuid.UUID, *person.Person) (*person.Person, error) {
+	return nil, s.err
+}
+func (s *errorStore) SoftDelete(context.Context, uuid.UUID) error { return s.err }
+func (s *errorStore) Restore(context.Context, uuid.UUID) error    { return s.err }
+func (s *errorStore) HardDelete(context.Context, uuid.UUID) error { return s.err }
 
 func newFakeStore() *fakeStore {
 	return &fakeStore{items: make(map[uuid.UUID]*person.Person)}
@@ -50,6 +72,17 @@ func (f *fakeStore) List(_ context.Context, _ person.ListParams) ([]person.Perso
 		if p.DeletedAt == nil {
 			out = append(out, *p)
 		}
+
+	}
+	return out, len(out), nil
+}
+
+func (f *fakeStore) ListDeleted(_ context.Context, _ person.ListParams) ([]person.Person, int, error) {
+	out := make([]person.Person, 0, len(f.items))
+	for _, p := range f.items {
+		if p.DeletedAt != nil {
+			out = append(out, *p)
+		}
 	}
 	return out, len(out), nil
 }
@@ -72,8 +105,27 @@ func (f *fakeStore) SoftDelete(_ context.Context, id uuid.UUID) error {
 	if !ok || p.DeletedAt != nil {
 		return person.ErrNotFound
 	}
+
 	now := time.Now()
 	p.DeletedAt = &now
+	return nil
+}
+
+func (f *fakeStore) Restore(_ context.Context, id uuid.UUID) error {
+	p, ok := f.items[id]
+	if !ok || p.DeletedAt == nil {
+		return person.ErrNotFound
+	}
+	p.DeletedAt = nil
+	return nil
+}
+
+func (f *fakeStore) HardDelete(_ context.Context, id uuid.UUID) error {
+	p, ok := f.items[id]
+	if !ok || p.DeletedAt == nil {
+		return person.ErrNotFound
+	}
+	delete(f.items, id)
 	return nil
 }
 
@@ -110,7 +162,12 @@ func TestHealthAndReady(t *testing.T) {
 		if rec.Code != http.StatusOK {
 			t.Errorf("%s = %d, want 200", path, rec.Code)
 		}
+
+		if rec.Header().Get("X-Content-Type-Options") != "nosniff" {
+			t.Error("missing security response headers")
+		}
 	}
+
 }
 
 func TestCreatePersonSuccess(t *testing.T) {
@@ -176,6 +233,7 @@ func TestFullCRUDFlow(t *testing.T) {
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("create status = %d", rec.Code)
 	}
+
 	var created person.Person
 	_ = json.Unmarshal(rec.Body.Bytes(), &created)
 
@@ -184,6 +242,7 @@ func TestFullCRUDFlow(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("list status = %d", rec.Code)
 	}
+
 	var list listResponse
 	_ = json.Unmarshal(rec.Body.Bytes(), &list)
 	if list.Total != 1 {
@@ -328,5 +387,118 @@ func TestCreateMalformedJSON(t *testing.T) {
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("status = %d, want 400", rec.Code)
+	}
+
+}
+
+func TestRecycleBinFlow(t *testing.T) {
+	h, _ := testRouter()
+	rec := doJSON(t, h, http.MethodPost, "/api/v1/persons", map[string]any{"first_name": "Recycle", "last_name": "Bin"})
+	var created person.Person
+	_ = json.Unmarshal(rec.Body.Bytes(), &created)
+	_ = doJSON(t, h, http.MethodDelete, "/api/v1/persons/"+created.ID.String(), nil)
+
+	rec = doJSON(t, h, http.MethodGet, "/api/v1/persons/deleted", nil)
+	if rec.Code != http.StatusOK || !bytes.Contains(rec.Body.Bytes(), []byte("Recycle")) {
+		t.Fatalf("deleted list status/body = %d/%s", rec.Code, rec.Body.String())
+	}
+	rec = doJSON(t, h, http.MethodPost, "/api/v1/persons/"+created.ID.String()+"/restore", nil)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("restore status = %d", rec.Code)
+	}
+	rec = doJSON(t, h, http.MethodDelete, "/api/v1/persons/"+created.ID.String()+"/permanent", nil)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("permanent delete active person status = %d", rec.Code)
+	}
+}
+
+func TestDecodeUpdateFields(t *testing.T) {
+	cases := []string{
+		`{"first_name":"A"}`, `{"last_name":"B"}`, `{"middle_names":["M"]}`,
+		`{"nickname":"N"}`, `{"pronouns":"they"}`, `{"birthdate":"2020-01-01"}`,
+		`{"phone_numbers":["555"]}`, `{"custom_fields":{"x":"y"}}`,
+	}
+	for _, body := range cases {
+		req := httptest.NewRequest(http.MethodPatch, "/", bytes.NewBufferString(body))
+		if _, err := decodeUpdate(httptest.NewRecorder(), req); err != nil {
+			t.Errorf("decodeUpdate(%s): %v", body, err)
+		}
+	}
+}
+
+func TestDecodeUpdateRejectsMalformedFields(t *testing.T) {
+	cases := []string{
+		`{"first_name":1}`, `{"last_name":1}`, `{"middle_names":"x"}`,
+		`{"nickname":1}`, `{"pronouns":1}`, `{"birthdate":1}`,
+		`{"phone_numbers":"x"}`, `{"custom_fields":"x"}`, `{"unknown":true}`,
+	}
+
+	for _, body := range cases {
+		req := httptest.NewRequest(http.MethodPatch, "/", bytes.NewBufferString(body))
+		if _, err := decodeUpdate(httptest.NewRecorder(), req); err == nil {
+			t.Errorf("decodeUpdate(%s) unexpectedly succeeded", body)
+		}
+	}
+
+}
+
+func TestDecodeJSONRejectsTrailingPayload(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "/", bytes.NewBufferString(`{"first_name":"A"}{"last_name":"B"}`))
+	if err := decodeJSON(httptest.NewRecorder(), req, &map[string]string{}); err == nil {
+		t.Fatal("expected trailing JSON to be rejected")
+	}
+}
+
+func TestRecycleBinMissingPerson(t *testing.T) {
+	h, _ := testRouter()
+	id := uuid.NewString()
+	for _, methodPath := range []struct {
+		method string
+		path   string
+	}{
+		{http.MethodPost, "/api/v1/persons/" + id + "/restore"},
+		{http.MethodDelete, "/api/v1/persons/" + id + "/permanent"},
+	} {
+		rec := doJSON(t, h, methodPath.method, methodPath.path, nil)
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("%s %s = %d, want 404", methodPath.method, methodPath.path, rec.Code)
+		}
+	}
+}
+
+func TestPermanentDeleteDeletedPerson(t *testing.T) {
+	h, _ := testRouter()
+	rec := doJSON(t, h, http.MethodPost, "/api/v1/persons", map[string]any{"first_name": "A", "last_name": "B"})
+	var p person.Person
+	_ = json.Unmarshal(rec.Body.Bytes(), &p)
+	_ = doJSON(t, h, http.MethodDelete, "/api/v1/persons/"+p.ID.String(), nil)
+	rec = doJSON(t, h, http.MethodDelete, "/api/v1/persons/"+p.ID.String()+"/permanent", nil)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204", rec.Code)
+	}
+
+}
+
+func TestHandlersReturnInternalErrors(t *testing.T) {
+	store := &errorStore{fakeStore: newFakeStore(), err: errors.New("database unavailable")}
+	svc := person.NewService(store)
+	h := NewRouter(slog.Default(), svc, store, nil)
+	id := uuid.NewString()
+	for _, tc := range []struct {
+		method, path string
+		body         any
+	}{
+		{http.MethodGet, "/api/v1/persons/" + id, nil},
+		{http.MethodGet, "/api/v1/persons", nil},
+		{http.MethodGet, "/api/v1/persons/deleted", nil},
+		{http.MethodPatch, "/api/v1/persons/" + id, map[string]any{"nickname": "N"}},
+		{http.MethodDelete, "/api/v1/persons/" + id, nil},
+		{http.MethodPost, "/api/v1/persons/" + id + "/restore", nil},
+		{http.MethodDelete, "/api/v1/persons/" + id + "/permanent", nil},
+	} {
+		rec := doJSON(t, h, tc.method, tc.path, tc.body)
+		if rec.Code != http.StatusInternalServerError {
+			t.Errorf("%s %s = %d, want 500", tc.method, tc.path, rec.Code)
+		}
 	}
 }

@@ -99,3 +99,21 @@ export function updatePerson(id: string, input: UpdatePersonInput): Promise<Pers
 export function deletePerson(id: string): Promise<void> {
   return request<void>(`/persons/${id}`, { method: 'DELETE' });
 }
+
+export function listDeletedPersons(params: ListPersonsParams = {}): Promise<PersonListResponse> {
+  const query = new URLSearchParams();
+  if (params.page) query.set('page', String(params.page));
+  if (params.pageSize) query.set('page_size', String(params.pageSize));
+  if (params.sort) query.set('sort', params.sort);
+  if (params.order) query.set('order', params.order);
+  const qs = query.toString();
+  return request<PersonListResponse>(`/persons/deleted${qs ? `?${qs}` : ''}`);
+}
+
+export function restorePerson(id: string): Promise<void> {
+  return request<void>(`/persons/${id}/restore`, { method: 'POST' });
+}
+
+export function permanentlyDeletePerson(id: string): Promise<void> {
+  return request<void>(`/persons/${id}/permanent`, { method: 'DELETE' });
+}

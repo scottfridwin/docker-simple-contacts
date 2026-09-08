@@ -97,10 +97,24 @@ func TestInvalidPurgeAfterDays(t *testing.T) {
 }
 
 func TestDatabaseURL(t *testing.T) {
-	cfg := Config{DBUser: "u", DBPassword: "p", DBHost: "h", DBPort: "5432", DBName: "postgres", DBSSLMode: "disable"}
+	cfg := Config{
+		DBUser: "u", DBPassword: "p", DBHost: "h",
+		DBPort: "5432", DBName: "postgres", DBSSLMode: "disable",
+	}
 	want := "postgres" + "://u:p@h:5432/postgres?sslmode=disable"
 	if got := cfg.DatabaseURL(); got != want {
 		t.Errorf("DatabaseURL() = %q, want %q", got, want)
+	}
+}
+
+func TestIsProduction(t *testing.T) {
+	for _, env := range []string{"production", "PROD", "prod"} {
+		if !(Config{Env: env}).IsProduction() {
+			t.Errorf("Env %q should be production", env)
+		}
+	}
+	if (Config{Env: "development"}).IsProduction() {
+		t.Error("development should not be production")
 	}
 }
 

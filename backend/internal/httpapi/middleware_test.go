@@ -1,6 +1,8 @@
 package httpapi
 
 import (
+	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -66,4 +68,18 @@ func TestRequestIDFromEmptyContext(t *testing.T) {
 	if id := RequestIDFromContext(req.Context()); id != "" {
 		t.Errorf("expected empty id, got %q", id)
 	}
+
 }
+
+func TestReadyHandlerDatabaseFailure(t *testing.T) {
+	h := readyHandler(pingerFunc(func(context.Context) error { return errors.New("offline") }))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", rec.Code)
+	}
+}
+
+type pingerFunc func(context.Context) error
+
+func (f pingerFunc) Ping(ctx context.Context) error { return f(ctx) }
