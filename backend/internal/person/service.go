@@ -12,8 +12,11 @@ type store interface {
 	Create(ctx context.Context, p *Person) (*Person, error)
 	GetByID(ctx context.Context, id uuid.UUID) (*Person, error)
 	List(ctx context.Context, params ListParams) ([]Person, int, error)
+	ListDeleted(ctx context.Context, params ListParams) ([]Person, int, error)
 	Update(ctx context.Context, id uuid.UUID, p *Person) (*Person, error)
 	SoftDelete(ctx context.Context, id uuid.UUID) error
+	Restore(ctx context.Context, id uuid.UUID) error
+	HardDelete(ctx context.Context, id uuid.UUID) error
 	PurgeExpired(ctx context.Context, olderThan time.Duration) (int64, error)
 }
 
@@ -72,6 +75,11 @@ func (s *Service) List(ctx context.Context, params ListParams) ([]Person, int, e
 	return s.repo.List(ctx, params)
 }
 
+// ListDeleted returns soft-deleted Persons for the recycle bin.
+func (s *Service) ListDeleted(ctx context.Context, params ListParams) ([]Person, int, error) {
+	return s.repo.ListDeleted(ctx, params)
+}
+
 // Update validates and applies a patch to an existing Person.
 func (s *Service) Update(ctx context.Context, id uuid.UUID, in UpdateInput) (*Person, ValidationErrors, error) {
 	if errs := ValidateUpdate(in); errs.HasErrors() {
@@ -91,6 +99,16 @@ func (s *Service) Update(ctx context.Context, id uuid.UUID, in UpdateInput) (*Pe
 // Delete soft-deletes a Person.
 func (s *Service) Delete(ctx context.Context, id uuid.UUID) error {
 	return s.repo.SoftDelete(ctx, id)
+}
+
+// Restore makes a soft-deleted Person visible again.
+func (s *Service) Restore(ctx context.Context, id uuid.UUID) error {
+	return s.repo.Restore(ctx, id)
+}
+
+// HardDelete permanently removes a soft-deleted Person.
+func (s *Service) HardDelete(ctx context.Context, id uuid.UUID) error {
+	return s.repo.HardDelete(ctx, id)
 }
 
 // PurgeExpired removes soft-deleted records older than the retention window.

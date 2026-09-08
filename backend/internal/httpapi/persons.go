@@ -76,6 +76,19 @@ func (h *personHandler) list(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal_error", "failed to list persons", nil)
 		return
 	}
+
+	func (h *personHandler) listDeleted(w http.ResponseWriter, r *http.Request) {
+		params := parseListParams(r)
+		persons, total, err := h.svc.ListDeleted(r.Context(), params)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "internal_error", "failed to list deleted persons", nil)
+			return
+		}
+		writeJSON(w, http.StatusOK, listResponse{
+			Data: persons, Page: params.Page, PageSize: params.PageSize,
+			Total: total, TotalPages: (total + params.PageSize - 1) / params.PageSize,
+		})
+	}
 	totalPages := (total + params.PageSize - 1) / params.PageSize
 	writeJSON(w, http.StatusOK, listResponse{
 		Data:       persons,
@@ -118,6 +131,38 @@ func (h *personHandler) delete(w http.ResponseWriter, r *http.Request) {
 	id, ok := parseID(w, r)
 	if !ok {
 		return
+	}
+
+	func (h *personHandler) restore(w http.ResponseWriter, r *http.Request) {
+		id, ok := parseID(w, r)
+		if !ok {
+			return
+		}
+		if err := h.svc.Restore(r.Context(), id); err != nil {
+			if errors.Is(err, person.ErrNotFound) {
+				writeError(w, http.StatusNotFound, "not_found", "deleted person not found", nil)
+				return
+			}
+			writeError(w, http.StatusInternalServerError, "internal_error", "failed to restore person", nil)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}
+
+	func (h *personHandler) permanentDelete(w http.ResponseWriter, r *http.Request) {
+		id, ok := parseID(w, r)
+		if !ok {
+			return
+		}
+		if err := h.svc.HardDelete(r.Context(), id); err != nil {
+			if errors.Is(err, person.ErrNotFound) {
+				writeError(w, http.StatusNotFound, "not_found", "deleted person not found", nil)
+				return
+			}
+			writeError(w, http.StatusInternalServerError, "internal_error", "failed to permanently delete person", nil)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
 	}
 	err := h.svc.Delete(r.Context(), id)
 	if errors.Is(err, person.ErrNotFound) {

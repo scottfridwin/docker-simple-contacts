@@ -189,6 +189,9 @@ func validateCustomValue(field string, value any) ValidationErrors {
 		if len(v) > MaxStringValueLength {
 			return ValidationErrors{{Field: field, Message: fmt.Sprintf("string value must be at most %d characters", MaxStringValueLength)}}
 		}
+		if strings.HasSuffix(field, "_date") && !IsDateString(v) {
+			return ValidationErrors{{Field: field, Message: "date value must be YYYY-MM-DD or RFC 3339"}}
+		}
 		return nil
 	default:
 		return ValidationErrors{{Field: field, Message: "value must be a string, number, boolean, or date string"}}
