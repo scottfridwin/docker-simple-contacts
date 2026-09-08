@@ -251,6 +251,45 @@ paths:
       responses:
         '204': { description: Deleted }
         '404': { $ref: '#/components/responses/NotFound' }
+  /sync/google/begin:
+    get:
+      summary: Begin Google OAuth for contact sync
+      operationId: beginGoogleSyncOAuth
+      parameters:
+        - name: redirect_uri
+          in: query
+          required: false
+          schema: { type: string, format: uri }
+      responses:
+        '200':
+          description: OAuth authorization URL and CSRF state
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GoogleOAuthBeginResponse'
+        '400': { $ref: '#/components/responses/BadRequest' }
+  /sync/google/callback:
+    get:
+      summary: Complete Google OAuth and trigger initial two-way sync
+      operationId: completeGoogleSyncOAuth
+      parameters:
+        - name: code
+          in: query
+          required: true
+          schema: { type: string }
+        - name: state
+          in: query
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Connected Google sync account
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SyncAccount'
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '502': { $ref: '#/components/responses/BadRequest' }
 components:
   securitySchemes:
     contactsSession:
@@ -393,6 +432,12 @@ components:
         sync_cursor: { type: string, nullable: true }
         sync_frequency_minutes: { type: integer, minimum: 1, nullable: true }
         status: { type: string, nullable: true }
+    GoogleOAuthBeginResponse:
+      type: object
+      required: [authorization_url, state]
+      properties:
+        authorization_url: { type: string, format: uri }
+        state: { type: string }
     Error:
       type: object
       required: [error]

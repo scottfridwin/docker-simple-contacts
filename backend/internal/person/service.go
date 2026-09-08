@@ -207,6 +207,9 @@ func (s *Service) notify(ctx context.Context, kind contactsync.ChangeKind, p *Pe
 	if s.notifier == nil || p == nil {
 		return
 	}
+	if contactsync.IsSyncOrigin(ctx) {
+		return
+	}
 	ownerID, _ := authn.UserID(ctx)
 	var ownerPtr *uuid.UUID
 	if ownerID != uuid.Nil {

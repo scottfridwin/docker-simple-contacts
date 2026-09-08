@@ -355,3 +355,17 @@ func TestServiceEmitsSyncNotifications(t *testing.T) {
 		t.Fatalf("expected deleted event, got %#v", notifier.events)
 	}
 }
+
+func TestServiceSkipsNotificationsForSyncOrigin(t *testing.T) {
+	store := newMemStore()
+	notifier := &memNotifier{}
+	svc := NewService(store, notifier)
+
+	ctx := contactsync.WithSyncOrigin(context.Background())
+	if _, _, err := svc.Create(ctx, CreateInput{FirstName: "A", LastName: "B"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(notifier.events) != 0 {
+		t.Fatalf("expected no events for sync-origin context, got %#v", notifier.events)
+	}
+}

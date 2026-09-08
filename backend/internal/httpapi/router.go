@@ -23,7 +23,7 @@ type syncAccountStore interface {
 }
 
 // NewRouter builds the application's HTTP handler.
-func NewRouter(logger *slog.Logger, svc *person.Service, ready pinger, syncRepo syncAccountStore, allowedOrigins []string, providers ...*auth.Provider) http.Handler {
+func NewRouter(logger *slog.Logger, svc *person.Service, ready pinger, syncRepo syncAccountStore, googleAdapter contactsync.Adapter, allowedOrigins []string, providers ...*auth.Provider) http.Handler {
 	r := chi.NewRouter()
 
 	r.Use(requestID)
@@ -47,6 +47,7 @@ func NewRouter(logger *slog.Logger, svc *person.Service, ready pinger, syncRepo 
 
 	h := &personHandler{svc: svc}
 	syncHandler := &syncAccountHandler{repo: syncRepo}
+	googleAuth := &googleOAuthHandler{repo: syncRepo, adapter: googleAdapter}
 	r.Route("/api/v1", func(api chi.Router) {
 		api.Route("/persons", func(p chi.Router) {
 			p.Post("/", h.create)
@@ -64,6 +65,10 @@ func NewRouter(logger *slog.Logger, svc *person.Service, ready pinger, syncRepo 
 			s.Get("/{id}", syncHandler.get)
 			s.Patch("/{id}", syncHandler.update)
 			s.Delete("/{id}", syncHandler.delete)
+		})
+		api.Route("/sync/google", func(s chi.Router) {
+			s.Get("/begin", googleAuth.begin)
+			s.Get("/callback", googleAuth.callback)
 		})
 	})
 

@@ -15,6 +15,7 @@ import (
 	"github.com/scottfridlund/contacts/backend/internal/auth"
 	"github.com/scottfridlund/contacts/backend/internal/config"
 	"github.com/scottfridlund/contacts/backend/internal/contactsync"
+	googlesync "github.com/scottfridlund/contacts/backend/internal/contactsync/google"
 	"github.com/scottfridlund/contacts/backend/internal/db"
 	"github.com/scottfridlund/contacts/backend/internal/httpapi"
 	"github.com/scottfridlund/contacts/backend/internal/logging"
@@ -93,8 +94,25 @@ func run() error {
 	svc := person.NewService(repo, syncSvc)
 	accountRepo := user.NewRepository(pool)
 
+	processor := contactsync.Processor(contactsync.NoopProcessor{})
+	var googleAdapter contactsync.Adapter
+	if cfg.GoogleClientID != "" && cfg.GoogleClientSecret != "" && cfg.GoogleRedirectURL != "" {
+		adapter := googlesync.NewAdapter(googlesync.Config{
+			ClientID:     cfg.GoogleClientID,
+			ClientSecret: cfg.GoogleClientSecret,
+			RedirectURL:  cfg.GoogleRedirectURL,
+		}, syncAccountRepo, svc, nil)
+		registry := contactsync.AdapterRegistry{}
+		registry.Register(adapter)
+		processor = contactsync.NewDispatchProcessor(registry)
+		googleAdapter = adapter
+		logger.Info("google sync adapter configured")
+	}
+	runner := contactsync.NewRunner(syncAccountRepo, syncJobRepo, processor)
+
 	purgeWindow := time.Duration(cfg.PurgeAfterDays) * 24 * time.Hour
 	go runPurgeLoop(ctx, logger, svc, purgeWindow)
+	go runSyncLoop(ctx, logger, runner, 30*time.Second)
 
 	var provider *auth.Provider
 	if cfg.AuthentikIssuer != "" {
@@ -109,7 +127,7 @@ func run() error {
 			return err
 		}
 	}
-	handler := httpapi.NewRouter(logger, svc, repo, syncAccountRepo, cfg.CORSAllowedOrigins, provider)
+	handler := httpapi.NewRouter(logger, svc, repo, syncAccountRepo, googleAdapter, cfg.CORSAllowedOrigins, provider)
 	srv := &http.Server{
 		Addr:              ":" + cfg.Port,
 		Handler:           handler,
@@ -141,6 +159,15 @@ func run() error {
 	}
 	logger.Info("server stopped cleanly")
 	return nil
+}
+
+func runSyncLoop(ctx context.Context, logger *slog.Logger, runner *contactsync.Runner, interval time.Duration) {
+	if runner == nil {
+		return
+	}
+	if err := runner.RunLoop(ctx, interval); err != nil && !errors.Is(err, context.Canceled) {
+		logger.Error("sync loop failed", "error", err)
+	}
 }
 
 // runPurgeLoop periodically purges soft-deleted records past the retention

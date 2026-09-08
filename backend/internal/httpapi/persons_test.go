@@ -149,7 +149,7 @@ func testRouter() (http.Handler, *fakeStore) {
 	store := newFakeStore()
 	svc := person.NewService(store)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	return NewRouter(logger, svc, store, nil, []string{"http://localhost:5173"}), store
+	return NewRouter(logger, svc, store, nil, nil, []string{"http://localhost:5173"}), store
 }
 
 func doJSON(t *testing.T, h http.Handler, method, path string, body interface{}) *httptest.ResponseRecorder {
@@ -494,7 +494,7 @@ func TestPermanentDeleteDeletedPerson(t *testing.T) {
 func TestHandlersReturnInternalErrors(t *testing.T) {
 	store := &errorStore{fakeStore: newFakeStore(), err: errors.New("database unavailable")}
 	svc := person.NewService(store)
-	h := NewRouter(slog.Default(), svc, store, nil, nil)
+	h := NewRouter(slog.Default(), svc, store, nil, nil, nil)
 	id := uuid.NewString()
 	for _, tc := range []struct {
 		method, path string

@@ -1,19 +1,81 @@
 package google
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"slices"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/google/uuid"
+	"golang.org/x/oauth2"
 
 	"github.com/scottfridlund/contacts/backend/internal/contactsync"
+	"github.com/scottfridlund/contacts/backend/internal/person"
 )
 
-// Adapter is the first provider target for the sync framework.
-type Adapter struct{}
+const (
+	localIDUserDefinedKey = "contacts_local_id"
+	remoteNameCustomKey   = "google_resource_name"
+	remoteUpdatedFieldKey = "_google_updated_at"
+)
 
-// NewAdapter constructs a Google adapter placeholder.
-func NewAdapter() *Adapter {
-	return &Adapter{}
+// Config controls OAuth and API endpoints for Google sync.
+type Config struct {
+	ClientID      string
+	ClientSecret  string
+	RedirectURL   string
+	AuthURL       string
+	TokenURL      string
+	PeopleBaseURL string
+	Scopes        []string
+}
+
+type accountStateStore interface {
+	Update(context.Context, *contactsync.Account) (*contactsync.Account, error)
+}
+
+type personService interface {
+	Get(context.Context, uuid.UUID) (*person.Person, error)
+	Create(context.Context, person.CreateInput) (*person.Person, person.ValidationErrors, error)
+	Update(context.Context, uuid.UUID, person.UpdateInput) (*person.Person, person.ValidationErrors, error)
+	Delete(context.Context, uuid.UUID) error
+	List(context.Context, person.ListParams) ([]person.Person, int, error)
+}
+
+// Adapter implements OAuth and People API operations for Google Contacts.
+type Adapter struct {
+	cfg      Config
+	http     *http.Client
+	accounts accountStateStore
+	people   personService
+}
+
+// NewAdapter constructs a Google adapter.
+func NewAdapter(cfg Config, accounts accountStateStore, people personService, client *http.Client) *Adapter {
+	if cfg.AuthURL == "" {
+		cfg.AuthURL = "https://accounts.google.com/o/oauth2/v2/auth"
+	}
+	if cfg.TokenURL == "" {
+		cfg.TokenURL = "https://oauth2.googleapis.com/token"
+	}
+	if cfg.PeopleBaseURL == "" {
+		cfg.PeopleBaseURL = "https://people.googleapis.com/v1"
+	}
+	if len(cfg.Scopes) == 0 {
+		cfg.Scopes = []string{"https://www.googleapis.com/auth/contacts"}
+	}
+	if client == nil {
+		client = &http.Client{Timeout: 20 * time.Second}
+	}
+	return &Adapter{cfg: cfg, accounts: accounts, people: people, http: client}
 }
 
 // ProviderName returns the provider key used by the sync registry.
@@ -29,42 +91,829 @@ func (a *Adapter) Capabilities() contactsync.Capabilities {
 	}
 }
 
-// BeginAuthorization is not implemented yet.
-func (a *Adapter) BeginAuthorization(context.Context, string, string) (contactsync.AuthRequest, error) {
-	return contactsync.AuthRequest{}, errors.New("google sync not implemented yet")
+func (a *Adapter) oauthConfig(redirectURI string) *oauth2.Config {
+	if redirectURI == "" {
+		redirectURI = a.cfg.RedirectURL
+	}
+	return &oauth2.Config{
+		ClientID:     a.cfg.ClientID,
+		ClientSecret: a.cfg.ClientSecret,
+		RedirectURL:  redirectURI,
+		Scopes:       append([]string(nil), a.cfg.Scopes...),
+		Endpoint: oauth2.Endpoint{
+			AuthURL:  a.cfg.AuthURL,
+			TokenURL: a.cfg.TokenURL,
+		},
+	}
 }
 
-// CompleteAuthorization is not implemented yet.
-func (a *Adapter) CompleteAuthorization(context.Context, string) (contactsync.AuthSession, error) {
-	return contactsync.AuthSession{}, errors.New("google sync not implemented yet")
+// BeginAuthorization starts the OAuth authorization flow.
+func (a *Adapter) BeginAuthorization(_ context.Context, redirectURI string, state string) (contactsync.AuthRequest, error) {
+	if strings.TrimSpace(state) == "" {
+		return contactsync.AuthRequest{}, errors.New("oauth state is required")
+	}
+	if strings.TrimSpace(a.cfg.ClientID) == "" || strings.TrimSpace(a.cfg.ClientSecret) == "" {
+		return contactsync.AuthRequest{}, errors.New("google oauth is not configured")
+	}
+	url := a.oauthConfig(redirectURI).AuthCodeURL(
+		state,
+		oauth2.AccessTypeOffline,
+		oauth2.SetAuthURLParam("prompt", "consent"),
+		oauth2.SetAuthURLParam("include_granted_scopes", "true"),
+	)
+	return contactsync.AuthRequest{AuthorizationURL: url, State: state}, nil
 }
 
-// RefreshAuthorization is not implemented yet.
-func (a *Adapter) RefreshAuthorization(context.Context, contactsync.AuthSession) (contactsync.AuthSession, error) {
-	return contactsync.AuthSession{}, errors.New("google sync not implemented yet")
+// CompleteAuthorization exchanges the callback code and returns the auth session.
+func (a *Adapter) CompleteAuthorization(ctx context.Context, code string) (contactsync.AuthSession, error) {
+	if strings.TrimSpace(code) == "" {
+		return contactsync.AuthSession{}, errors.New("oauth code is required")
+	}
+	tok, err := a.oauthConfig("").Exchange(ctx, code)
+	if err != nil {
+		return contactsync.AuthSession{}, fmt.Errorf("google oauth exchange failed: %w", err)
+	}
+	profile, err := a.getContact(ctx, tok.AccessToken, "people/me")
+	if err != nil {
+		return contactsync.AuthSession{}, err
+	}
+	providerAccountID := strings.TrimSpace(profile.ResourceName)
+	if providerAccountID == "" {
+		providerAccountID = "people/me"
+	}
+	scope, _ := tok.Extra("scope").(string)
+	if strings.TrimSpace(scope) == "" {
+		scope = strings.Join(a.cfg.Scopes, " ")
+	}
+	return contactsync.AuthSession{
+		ProviderAccountID: providerAccountID,
+		AccessToken:       tok.AccessToken,
+		RefreshToken:      tok.RefreshToken,
+		ExpiresAt:         tok.Expiry.UTC(),
+		Scope:             scope,
+	}, nil
 }
 
-// ListChanges is not implemented yet.
-func (a *Adapter) ListChanges(context.Context, contactsync.AuthSession, string) (contactsync.ChangePage, error) {
-	return contactsync.ChangePage{}, errors.New("google sync not implemented yet")
+// RefreshAuthorization refreshes a Google OAuth token using the refresh token.
+func (a *Adapter) RefreshAuthorization(ctx context.Context, session contactsync.AuthSession) (contactsync.AuthSession, error) {
+	if strings.TrimSpace(session.RefreshToken) == "" {
+		return contactsync.AuthSession{}, errors.New("google refresh token is missing")
+	}
+	source := a.oauthConfig("").TokenSource(ctx, &oauth2.Token{RefreshToken: session.RefreshToken})
+	tok, err := source.Token()
+	if err != nil {
+		return contactsync.AuthSession{}, fmt.Errorf("google oauth refresh failed: %w", err)
+	}
+	refreshed := session
+	if tok.AccessToken != "" {
+		refreshed.AccessToken = tok.AccessToken
+	}
+	if tok.RefreshToken != "" {
+		refreshed.RefreshToken = tok.RefreshToken
+	}
+	if !tok.Expiry.IsZero() {
+		refreshed.ExpiresAt = tok.Expiry.UTC()
+	}
+	if scope, _ := tok.Extra("scope").(string); strings.TrimSpace(scope) != "" {
+		refreshed.Scope = scope
+	}
+	return refreshed, nil
 }
 
-// FetchRecord is not implemented yet.
-func (a *Adapter) FetchRecord(context.Context, contactsync.AuthSession, string) (contactsync.ProviderRecord, error) {
-	return contactsync.ProviderRecord{}, errors.New("google sync not implemented yet")
+// ListChanges lists incremental remote updates since the previous sync token.
+func (a *Adapter) ListChanges(ctx context.Context, session contactsync.AuthSession, cursor string) (contactsync.ChangePage, error) {
+	values := url.Values{}
+	values.Set("personFields", "names,phoneNumbers,metadata,userDefined")
+	values.Set("pageSize", "200")
+	values.Set("requestSyncToken", "true")
+	if cursor != "" {
+		values.Set("syncToken", cursor)
+	}
+	body := googleConnectionsResponse{}
+	if err := a.getJSON(ctx, session.AccessToken, "/people/me/connections?"+values.Encode(), &body); err != nil {
+		return contactsync.ChangePage{}, err
+	}
+	records := make([]contactsync.ProviderRecord, 0, len(body.Connections))
+	for _, entry := range body.Connections {
+		records = append(records, toProviderRecord(entry))
+	}
+	nextCursor := strings.TrimSpace(body.NextSyncToken)
+	if nextCursor == "" {
+		nextCursor = strings.TrimSpace(cursor)
+	}
+	if body.NextPageToken != "" {
+		nextCursor = body.NextPageToken
+	}
+	return contactsync.ChangePage{
+		Records:    records,
+		NextCursor: nextCursor,
+		HasMore:    body.NextPageToken != "",
+	}, nil
 }
 
-// UpsertRecord is not implemented yet.
-func (a *Adapter) UpsertRecord(context.Context, contactsync.AuthSession, contactsync.Record) (contactsync.ProviderRecord, error) {
-	return contactsync.ProviderRecord{}, errors.New("google sync not implemented yet")
+// FetchRecord fetches one remote Google contact.
+func (a *Adapter) FetchRecord(ctx context.Context, session contactsync.AuthSession, remoteID string) (contactsync.ProviderRecord, error) {
+	personBody, err := a.getContact(ctx, session.AccessToken, remoteID)
+	if err != nil {
+		return contactsync.ProviderRecord{}, err
+	}
+	return toProviderRecord(personBody), nil
 }
 
-// DeleteRecord is not implemented yet.
-func (a *Adapter) DeleteRecord(context.Context, contactsync.AuthSession, string) error {
-	return errors.New("google sync not implemented yet")
+// UpsertRecord creates or updates one remote contact.
+func (a *Adapter) UpsertRecord(ctx context.Context, session contactsync.AuthSession, record contactsync.Record) (contactsync.ProviderRecord, error) {
+	if strings.TrimSpace(record.ExternalID) == "" {
+		payload := toGooglePerson(record, "")
+		var created googlePerson
+		if err := a.postJSON(ctx, session.AccessToken, "/people:createContact", payload, &created); err != nil {
+			return contactsync.ProviderRecord{}, err
+		}
+		return toProviderRecord(created), nil
+	}
+	current, err := a.getContact(ctx, session.AccessToken, record.ExternalID)
+	if err != nil {
+		return contactsync.ProviderRecord{}, err
+	}
+	payload := toGooglePerson(record, current.ETag)
+	values := url.Values{}
+	values.Set("updatePersonFields", "names,phoneNumbers,userDefined")
+	var updated googlePerson
+	if err := a.patchJSON(ctx, session.AccessToken, "/"+record.ExternalID+":updateContact?"+values.Encode(), payload, &updated); err != nil {
+		return contactsync.ProviderRecord{}, err
+	}
+	return toProviderRecord(updated), nil
 }
 
-// Sync is not implemented yet.
-func (a *Adapter) Sync(context.Context, contactsync.Account, contactsync.Job) error {
-	return fmt.Errorf("google sync not implemented yet")
+// DeleteRecord deletes one remote Google contact.
+func (a *Adapter) DeleteRecord(ctx context.Context, session contactsync.AuthSession, remoteID string) error {
+	if strings.TrimSpace(remoteID) == "" {
+		return nil
+	}
+	return a.delete(ctx, session.AccessToken, "/"+remoteID+":deleteContact")
+}
+
+// Sync performs two-way synchronization for the current job and account state.
+func (a *Adapter) Sync(ctx context.Context, account contactsync.Account, job contactsync.Job) error {
+	if a == nil {
+		return nil
+	}
+	if a.accounts == nil || a.people == nil {
+		return errors.New("google sync adapter dependencies are not configured")
+	}
+
+	session, err := sessionFromAccount(account)
+	if err != nil {
+		return a.markAccountFailed(ctx, &account, err)
+	}
+	session, err = a.ensureSession(ctx, &account, session)
+	if err != nil {
+		return a.markAccountFailed(ctx, &account, err)
+	}
+
+	if job.PersonID != uuid.Nil {
+		if err := a.syncLocalJob(ctx, session, job); err != nil {
+			return a.markAccountFailed(ctx, &account, err)
+		}
+	}
+
+	initialSync := strings.TrimSpace(account.SyncCursor) == ""
+	nextCursor, err := a.pullRemote(ctx, session, account.SyncCursor)
+	if err != nil {
+		return a.markAccountFailed(ctx, &account, err)
+	}
+	account.SyncCursor = nextCursor
+
+	if initialSync {
+		if err := a.exportLocal(ctx, session); err != nil {
+			return a.markAccountFailed(ctx, &account, err)
+		}
+	}
+
+	now := time.Now().UTC()
+	account.LastSyncedAt = &now
+	account.LastError = nil
+	account.Status = "connected"
+	if _, err := a.accounts.Update(ctx, &account); err != nil {
+		return fmt.Errorf("updating sync account state: %w", err)
+	}
+	return nil
+}
+
+func (a *Adapter) syncLocalJob(ctx context.Context, session contactsync.AuthSession, job contactsync.Job) error {
+	remoteID := extractRemoteID(job.Snapshot.CustomFields)
+	if job.Kind == contactsync.ChangeKindDeleted || job.Kind == contactsync.ChangeKindHardDeleted {
+		return a.DeleteRecord(ctx, session, remoteID)
+	}
+	record := snapshotToRecord(job.Snapshot)
+	record.ExternalID = remoteID
+	providerRecord, err := a.UpsertRecord(ctx, session, record)
+	if err != nil {
+		return err
+	}
+	if providerRecord.Record.ExternalID != "" {
+		_ = a.attachRemoteID(ctx, job.Snapshot.ID, providerRecord.Record.ExternalID)
+	}
+	return nil
+}
+
+func (a *Adapter) pullRemote(ctx context.Context, session contactsync.AuthSession, cursor string) (string, error) {
+	current := cursor
+	for {
+		page, err := a.ListChanges(ctx, session, current)
+		if err != nil {
+			var apiErr *apiError
+			if errors.As(err, &apiErr) && apiErr.Status == http.StatusGone && current != "" {
+				current = ""
+				continue
+			}
+			return cursor, err
+		}
+		for _, remote := range page.Records {
+			if err := a.mergeRemoteRecord(ctx, session, remote); err != nil {
+				return cursor, err
+			}
+		}
+		current = page.NextCursor
+		if !page.HasMore {
+			break
+		}
+	}
+	return current, nil
+}
+
+func (a *Adapter) exportLocal(ctx context.Context, session contactsync.AuthSession) error {
+	page := 1
+	for {
+		rows, total, err := a.people.List(ctx, person.ListParams{Page: page, PageSize: 100, SortField: "updated_at", SortDesc: false})
+		if err != nil {
+			return fmt.Errorf("listing local persons for export: %w", err)
+		}
+		for i := range rows {
+			record := personToRecord(rows[i])
+			providerRecord, upsertErr := a.UpsertRecord(ctx, session, record)
+			if upsertErr != nil {
+				return upsertErr
+			}
+			if providerRecord.Record.ExternalID != "" {
+				_ = a.attachRemoteID(ctx, rows[i].ID, providerRecord.Record.ExternalID)
+			}
+		}
+		if page*100 >= total || len(rows) == 0 {
+			break
+		}
+		page++
+	}
+	return nil
+}
+
+func (a *Adapter) mergeRemoteRecord(ctx context.Context, session contactsync.AuthSession, remote contactsync.ProviderRecord) error {
+	remoteModel, localID := remoteToLocal(remote)
+	if localID == nil {
+		created, _, err := a.people.Create(contactsync.WithSyncOrigin(ctx), remoteModel)
+		if err != nil {
+			return fmt.Errorf("creating local person from google record %s: %w", remote.Record.ExternalID, err)
+		}
+		out, upsertErr := a.UpsertRecord(ctx, session, personToRecord(*created))
+		if upsertErr != nil {
+			return upsertErr
+		}
+		if out.Record.ExternalID != "" {
+			_ = a.attachRemoteID(ctx, created.ID, out.Record.ExternalID)
+		}
+		return nil
+	}
+
+	local, err := a.people.Get(ctx, *localID)
+	if err != nil {
+		if !errors.Is(err, person.ErrNotFound) {
+			return fmt.Errorf("loading local person %s: %w", localID.String(), err)
+		}
+		created, _, createErr := a.people.Create(contactsync.WithSyncOrigin(ctx), remoteModel)
+		if createErr != nil {
+			return fmt.Errorf("creating local person for missing mapping: %w", createErr)
+		}
+		out, upsertErr := a.UpsertRecord(ctx, session, personToRecord(*created))
+		if upsertErr != nil {
+			return upsertErr
+		}
+		if out.Record.ExternalID != "" {
+			_ = a.attachRemoteID(ctx, created.ID, out.Record.ExternalID)
+		}
+		return nil
+	}
+
+	remoteUpdatedAt := extractUpdatedAt(remote)
+	if remote.Record.Tombstone.Deleted {
+		if remoteUpdatedAt.After(local.UpdatedAt) {
+			if err := a.people.Delete(contactsync.WithSyncOrigin(ctx), local.ID); err != nil && !errors.Is(err, person.ErrNotFound) {
+				return fmt.Errorf("deleting local person %s: %w", local.ID.String(), err)
+			}
+		} else {
+			_, upsertErr := a.UpsertRecord(ctx, session, personToRecord(*local))
+			if upsertErr != nil {
+				return upsertErr
+			}
+		}
+		return nil
+	}
+
+	if remoteUpdatedAt.After(local.UpdatedAt) {
+		update := person.UpdateInput{
+			FirstName:       stringPtr(remoteModel.FirstName),
+			FirstNameSet:    true,
+			MiddleNames:     &remoteModel.MiddleNames,
+			MiddleNamesSet:  true,
+			LastName:        stringPtr(remoteModel.LastName),
+			LastNameSet:     true,
+			PhoneNumbers:    &remoteModel.PhoneNumbers,
+			PhoneNumbersSet: true,
+			CustomFields:    withRemoteName(local.CustomFields, remote.Record.ExternalID),
+			CustomFieldsSet: true,
+		}
+		if _, _, err := a.people.Update(contactsync.WithSyncOrigin(ctx), local.ID, update); err != nil {
+			return fmt.Errorf("updating local person %s: %w", local.ID.String(), err)
+		}
+		return nil
+	}
+
+	if local.UpdatedAt.After(remoteUpdatedAt) {
+		_, err := a.UpsertRecord(ctx, session, personToRecord(*local))
+		return err
+	}
+	return nil
+}
+
+func (a *Adapter) attachRemoteID(ctx context.Context, personID uuid.UUID, resourceName string) error {
+	if personID == uuid.Nil || strings.TrimSpace(resourceName) == "" {
+		return nil
+	}
+	local, err := a.people.Get(ctx, personID)
+	if err != nil {
+		return err
+	}
+	if existing := extractRemoteID(local.CustomFields); existing == resourceName {
+		return nil
+	}
+	custom := withRemoteName(local.CustomFields, resourceName)
+	update := person.UpdateInput{CustomFields: custom, CustomFieldsSet: true}
+	_, _, err = a.people.Update(contactsync.WithSyncOrigin(ctx), personID, update)
+	return err
+}
+
+func (a *Adapter) ensureSession(ctx context.Context, account *contactsync.Account, session contactsync.AuthSession) (contactsync.AuthSession, error) {
+	if session.AccessToken == "" {
+		return contactsync.AuthSession{}, errors.New("google access token is missing")
+	}
+	if session.ExpiresAt.IsZero() || session.ExpiresAt.After(time.Now().Add(2*time.Minute)) {
+		return session, nil
+	}
+	refreshed, err := a.RefreshAuthorization(ctx, session)
+	if err != nil {
+		return contactsync.AuthSession{}, err
+	}
+	account.AccessToken = stringPtr(refreshed.AccessToken)
+	account.RefreshToken = stringPtr(refreshed.RefreshToken)
+	if !refreshed.ExpiresAt.IsZero() {
+		expiresAt := refreshed.ExpiresAt.UTC()
+		account.ExpiresAt = &expiresAt
+	}
+	account.Scope = refreshed.Scope
+	if _, err := a.accounts.Update(ctx, account); err != nil {
+		return contactsync.AuthSession{}, fmt.Errorf("persisting refreshed google token: %w", err)
+	}
+	return refreshed, nil
+}
+
+func (a *Adapter) markAccountFailed(ctx context.Context, account *contactsync.Account, syncErr error) error {
+	message := syncErr.Error()
+	account.LastError = &message
+	account.Status = "reconnect_required"
+	var apiErr *apiError
+	if errors.As(syncErr, &apiErr) && apiErr.Status >= 500 {
+		account.Status = "error"
+	}
+	_, _ = a.accounts.Update(ctx, account)
+	return syncErr
+}
+
+func sessionFromAccount(account contactsync.Account) (contactsync.AuthSession, error) {
+	if account.AccessToken == nil || strings.TrimSpace(*account.AccessToken) == "" {
+		return contactsync.AuthSession{}, errors.New("sync account is missing google access token")
+	}
+	session := contactsync.AuthSession{
+		ProviderAccountID: account.ProviderAccountID,
+		AccessToken:       strings.TrimSpace(*account.AccessToken),
+		Scope:             account.Scope,
+	}
+	if account.RefreshToken != nil {
+		session.RefreshToken = strings.TrimSpace(*account.RefreshToken)
+	}
+	if account.ExpiresAt != nil {
+		session.ExpiresAt = account.ExpiresAt.UTC()
+	}
+	return session, nil
+}
+
+func snapshotToRecord(snapshot contactsync.PersonSnapshot) contactsync.Record {
+	record := contactsync.Record{
+		Tombstone: contactsync.Tombstone{Deleted: snapshot.DeletedAt != nil, UpdatedAt: snapshot.UpdatedAt},
+		Fields:    map[string]contactsync.FieldState{},
+	}
+	record.Fields["first_name"] = contactsync.FieldState{IsSet: true, Value: snapshot.FirstName, UpdatedAt: snapshot.UpdatedAt}
+	record.Fields["middle_names"] = contactsync.FieldState{IsSet: true, Value: append([]string(nil), snapshot.MiddleNames...), UpdatedAt: snapshot.UpdatedAt}
+	record.Fields["last_name"] = contactsync.FieldState{IsSet: true, Value: snapshot.LastName, UpdatedAt: snapshot.UpdatedAt}
+	record.Fields["phone_numbers"] = contactsync.FieldState{IsSet: true, Value: append([]string(nil), snapshot.PhoneNumbers...), UpdatedAt: snapshot.UpdatedAt}
+	if snapshot.ID != uuid.Nil {
+		record.Fields["local_id"] = contactsync.FieldState{IsSet: true, Value: snapshot.ID.String(), UpdatedAt: snapshot.UpdatedAt}
+	}
+	return record
+}
+
+func personToRecord(p person.Person) contactsync.Record {
+	record := contactsync.Record{
+		ExternalID: extractRemoteID(p.CustomFields),
+		Tombstone: contactsync.Tombstone{
+			Deleted:   p.DeletedAt != nil,
+			UpdatedAt: p.UpdatedAt,
+		},
+		Fields: map[string]contactsync.FieldState{
+			"first_name":    {IsSet: true, Value: p.FirstName, UpdatedAt: p.UpdatedAt},
+			"middle_names":  {IsSet: true, Value: append([]string(nil), p.MiddleNames...), UpdatedAt: p.UpdatedAt},
+			"last_name":     {IsSet: true, Value: p.LastName, UpdatedAt: p.UpdatedAt},
+			"phone_numbers": {IsSet: true, Value: append([]string(nil), p.PhoneNumbers...), UpdatedAt: p.UpdatedAt},
+			"local_id":      {IsSet: true, Value: p.ID.String(), UpdatedAt: p.UpdatedAt},
+		},
+	}
+	return record
+}
+
+func remoteToLocal(record contactsync.ProviderRecord) (person.CreateInput, *uuid.UUID) {
+	firstName := fieldString(record.Record.Fields, "first_name")
+	middleNames := fieldStrings(record.Record.Fields, "middle_names")
+	lastName := fieldString(record.Record.Fields, "last_name")
+	phoneNumbers := fieldStrings(record.Record.Fields, "phone_numbers")
+	if firstName == "" {
+		firstName = "Unknown"
+	}
+	if lastName == "" {
+		lastName = "Unknown"
+	}
+	custom := map[string]any{}
+	if record.Record.ExternalID != "" {
+		custom[remoteNameCustomKey] = record.Record.ExternalID
+	}
+	create := person.CreateInput{
+		FirstName:    firstName,
+		MiddleNames:  middleNames,
+		LastName:     lastName,
+		PhoneNumbers: normalizePhones(phoneNumbers),
+		CustomFields: custom,
+	}
+	localIDRaw := fieldString(record.Record.Fields, "local_id")
+	if localIDRaw == "" {
+		return create, nil
+	}
+	parsed, err := uuid.Parse(localIDRaw)
+	if err != nil {
+		return create, nil
+	}
+	return create, &parsed
+}
+
+func extractUpdatedAt(record contactsync.ProviderRecord) time.Time {
+	updated := fieldString(record.Record.Fields, remoteUpdatedFieldKey)
+	if updated == "" {
+		return time.Time{}
+	}
+	t, err := time.Parse(time.RFC3339Nano, updated)
+	if err != nil {
+		return time.Time{}
+	}
+	return t.UTC()
+}
+
+func extractRemoteID(custom map[string]any) string {
+	if custom == nil {
+		return ""
+	}
+	v, _ := custom[remoteNameCustomKey].(string)
+	return strings.TrimSpace(v)
+}
+
+func withRemoteName(custom map[string]any, resourceName string) map[string]any {
+	cloned := map[string]any{}
+	for k, v := range custom {
+		cloned[k] = v
+	}
+	cloned[remoteNameCustomKey] = resourceName
+	return cloned
+}
+
+func stringPtr(v string) *string {
+	s := v
+	return &s
+}
+
+func normalizePhones(values []string) []string {
+	if len(values) > 10 {
+		values = values[:10]
+	}
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		trimmed := strings.TrimSpace(value)
+		if trimmed == "" {
+			continue
+		}
+		if len(trimmed) > 50 {
+			trimmed = trimmed[:50]
+		}
+		out = append(out, trimmed)
+	}
+	if out == nil {
+		return []string{}
+	}
+	return out
+}
+
+func fieldString(fields map[string]contactsync.FieldState, key string) string {
+	field, ok := fields[key]
+	if !ok || !field.IsSet || field.Value == nil {
+		return ""
+	}
+	value, _ := field.Value.(string)
+	return strings.TrimSpace(value)
+}
+
+func fieldStrings(fields map[string]contactsync.FieldState, key string) []string {
+	field, ok := fields[key]
+	if !ok || !field.IsSet || field.Value == nil {
+		return []string{}
+	}
+	switch values := field.Value.(type) {
+	case []string:
+		return append([]string(nil), values...)
+	case []any:
+		out := make([]string, 0, len(values))
+		for _, value := range values {
+			if s, ok := value.(string); ok {
+				out = append(out, s)
+			}
+		}
+		return out
+	default:
+		return []string{}
+	}
+}
+
+type googleConnectionsResponse struct {
+	Connections   []googlePerson `json:"connections"`
+	NextPageToken string         `json:"nextPageToken"`
+	NextSyncToken string         `json:"nextSyncToken"`
+}
+
+type googlePerson struct {
+	ResourceName string              `json:"resourceName"`
+	ETag         string              `json:"etag"`
+	Metadata     googleMetadata      `json:"metadata"`
+	Names        []googleName        `json:"names"`
+	PhoneNumbers []googlePhoneNumber `json:"phoneNumbers"`
+	UserDefined  []googleUserDefined `json:"userDefined"`
+}
+
+type googleMetadata struct {
+	Deleted bool           `json:"deleted"`
+	Sources []googleSource `json:"sources"`
+}
+
+type googleSource struct {
+	UpdateTime string `json:"updateTime"`
+}
+
+type googleName struct {
+	DisplayName string `json:"displayName"`
+	GivenName   string `json:"givenName"`
+	MiddleName  string `json:"middleName"`
+	FamilyName  string `json:"familyName"`
+	Metadata    struct {
+		Primary bool `json:"primary"`
+	} `json:"metadata"`
+}
+
+type googlePhoneNumber struct {
+	Value string `json:"value"`
+}
+
+type googleUserDefined struct {
+	Key   string `json:"key"`
+	Value string `json:"value"`
+}
+
+func toProviderRecord(in googlePerson) contactsync.ProviderRecord {
+	fields := map[string]contactsync.FieldState{}
+	updatedAt := parseRemoteUpdatedAt(in.Metadata)
+	name := selectName(in.Names)
+	fields["first_name"] = contactsync.FieldState{IsSet: name.GivenName != "", Value: name.GivenName, UpdatedAt: updatedAt}
+	middle := []string{}
+	if strings.TrimSpace(name.MiddleName) != "" {
+		middle = []string{name.MiddleName}
+	}
+	fields["middle_names"] = contactsync.FieldState{IsSet: true, Value: middle, UpdatedAt: updatedAt}
+	fields["last_name"] = contactsync.FieldState{IsSet: name.FamilyName != "", Value: name.FamilyName, UpdatedAt: updatedAt}
+	phones := make([]string, 0, len(in.PhoneNumbers))
+	for _, number := range in.PhoneNumbers {
+		if strings.TrimSpace(number.Value) != "" {
+			phones = append(phones, number.Value)
+		}
+	}
+	fields["phone_numbers"] = contactsync.FieldState{IsSet: true, Value: normalizePhones(phones), UpdatedAt: updatedAt}
+	fields[remoteUpdatedFieldKey] = contactsync.FieldState{IsSet: true, Value: updatedAt.Format(time.RFC3339Nano), UpdatedAt: updatedAt}
+	for _, item := range in.UserDefined {
+		if item.Key == localIDUserDefinedKey {
+			fields["local_id"] = contactsync.FieldState{IsSet: true, Value: item.Value, UpdatedAt: updatedAt}
+			break
+		}
+	}
+	return contactsync.ProviderRecord{
+		Record: contactsync.Record{
+			ExternalID: in.ResourceName,
+			Tombstone: contactsync.Tombstone{
+				Deleted:   in.Metadata.Deleted,
+				UpdatedAt: updatedAt,
+			},
+			Fields: fields,
+		},
+		ETag: in.ETag,
+	}
+}
+
+func toGooglePerson(record contactsync.Record, etag string) googlePerson {
+	firstName := fieldString(record.Fields, "first_name")
+	middleNames := fieldStrings(record.Fields, "middle_names")
+	lastName := fieldString(record.Fields, "last_name")
+	if firstName == "" {
+		firstName = "Unknown"
+	}
+	if lastName == "" {
+		lastName = "Unknown"
+	}
+	middleName := ""
+	if len(middleNames) > 0 {
+		middleName = middleNames[0]
+	}
+	phones := fieldStrings(record.Fields, "phone_numbers")
+	phoneValues := make([]googlePhoneNumber, 0, len(phones))
+	for _, number := range normalizePhones(phones) {
+		phoneValues = append(phoneValues, googlePhoneNumber{Value: number})
+	}
+	userDefined := []googleUserDefined{}
+	localID := fieldString(record.Fields, "local_id")
+	if localID != "" {
+		userDefined = append(userDefined, googleUserDefined{Key: localIDUserDefinedKey, Value: localID})
+	}
+	return googlePerson{
+		ResourceName: record.ExternalID,
+		ETag:         etag,
+		Names: []googleName{{
+			GivenName:  firstName,
+			MiddleName: middleName,
+			FamilyName: lastName,
+		}},
+		PhoneNumbers: phoneValues,
+		UserDefined:  userDefined,
+	}
+}
+
+func selectName(names []googleName) googleName {
+	for _, name := range names {
+		if name.Metadata.Primary {
+			return name
+		}
+	}
+	if len(names) == 0 {
+		return googleName{}
+	}
+	return names[0]
+}
+
+func parseRemoteUpdatedAt(metadata googleMetadata) time.Time {
+	timestamps := make([]time.Time, 0, len(metadata.Sources))
+	for _, source := range metadata.Sources {
+		parsed, err := time.Parse(time.RFC3339Nano, source.UpdateTime)
+		if err == nil {
+			timestamps = append(timestamps, parsed.UTC())
+		}
+	}
+	if len(timestamps) == 0 {
+		return time.Now().UTC()
+	}
+	slices.SortFunc(timestamps, func(a, b time.Time) int {
+		switch {
+		case a.Before(b):
+			return -1
+		case a.After(b):
+			return 1
+		default:
+			return 0
+		}
+	})
+	return timestamps[len(timestamps)-1]
+}
+
+func (a *Adapter) getContact(ctx context.Context, token string, resource string) (googlePerson, error) {
+	resource = strings.TrimPrefix(resource, "/")
+	values := url.Values{}
+	values.Set("personFields", "names,phoneNumbers,metadata,userDefined")
+	var out googlePerson
+	if err := a.getJSON(ctx, token, "/"+resource+"?"+values.Encode(), &out); err != nil {
+		return googlePerson{}, err
+	}
+	return out, nil
+}
+
+type apiError struct {
+	Status int
+	Body   string
+}
+
+func (e *apiError) Error() string {
+	if e.Body == "" {
+		return "google api error: status " + strconv.Itoa(e.Status)
+	}
+	return "google api error: status " + strconv.Itoa(e.Status) + ": " + e.Body
+}
+
+func (a *Adapter) getJSON(ctx context.Context, accessToken string, path string, out any) error {
+	req, err := a.newRequest(ctx, http.MethodGet, path, accessToken, nil)
+	if err != nil {
+		return err
+	}
+	return a.do(req, out)
+}
+
+func (a *Adapter) postJSON(ctx context.Context, accessToken string, path string, body any, out any) error {
+	data, err := json.Marshal(body)
+	if err != nil {
+		return fmt.Errorf("marshalling google request body: %w", err)
+	}
+	req, err := a.newRequest(ctx, http.MethodPost, path, accessToken, bytes.NewReader(data))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	return a.do(req, out)
+}
+
+func (a *Adapter) patchJSON(ctx context.Context, accessToken string, path string, body any, out any) error {
+	data, err := json.Marshal(body)
+	if err != nil {
+		return fmt.Errorf("marshalling google request body: %w", err)
+	}
+	req, err := a.newRequest(ctx, http.MethodPatch, path, accessToken, bytes.NewReader(data))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	return a.do(req, out)
+}
+
+func (a *Adapter) delete(ctx context.Context, accessToken string, path string) error {
+	req, err := a.newRequest(ctx, http.MethodDelete, path, accessToken, nil)
+	if err != nil {
+		return err
+	}
+	return a.do(req, nil)
+}
+
+func (a *Adapter) newRequest(ctx context.Context, method string, path string, accessToken string, body io.Reader) (*http.Request, error) {
+	u := strings.TrimRight(a.cfg.PeopleBaseURL, "/") + "/" + strings.TrimPrefix(path, "/")
+	req, err := http.NewRequestWithContext(ctx, method, u, body)
+	if err != nil {
+		return nil, fmt.Errorf("creating google api request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(accessToken))
+	req.Header.Set("Accept", "application/json")
+	return req, nil
+}
+
+func (a *Adapter) do(req *http.Request, out any) error {
+	resp, err := a.http.Do(req)
+	if err != nil {
+		return fmt.Errorf("google api request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, readErr := io.ReadAll(resp.Body)
+	if readErr != nil {
+		return fmt.Errorf("reading google api response: %w", readErr)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return &apiError{Status: resp.StatusCode, Body: strings.TrimSpace(string(body))}
+	}
+	if out == nil || len(body) == 0 {
+		return nil
+	}
+	if err := json.Unmarshal(body, out); err != nil {
+		return fmt.Errorf("decoding google api response: %w", err)
+	}
+	return nil
 }

@@ -1,0 +1,180 @@
+package httpapi
+
+import (
+	"context"
+	"encoding/json"
+	"io"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+	"time"
+
+	"github.com/scottfridlund/contacts/backend/internal/contactsync"
+	"github.com/scottfridlund/contacts/backend/internal/person"
+)
+
+type fakeGoogleAdapter struct {
+	authRequest contactsync.AuthRequest
+	authSession contactsync.AuthSession
+	beginErr    error
+	completeErr error
+	syncErr     error
+	syncCalls   int
+}
+
+func (f *fakeGoogleAdapter) ProviderName() string { return "google" }
+
+func (f *fakeGoogleAdapter) Capabilities() contactsync.Capabilities {
+	return contactsync.Capabilities{}
+}
+
+func (f *fakeGoogleAdapter) BeginAuthorization(context.Context, string, string) (contactsync.AuthRequest, error) {
+	if f.beginErr != nil {
+		return contactsync.AuthRequest{}, f.beginErr
+	}
+	return f.authRequest, nil
+}
+
+func (f *fakeGoogleAdapter) CompleteAuthorization(context.Context, string) (contactsync.AuthSession, error) {
+	if f.completeErr != nil {
+		return contactsync.AuthSession{}, f.completeErr
+	}
+	return f.authSession, nil
+}
+
+func (f *fakeGoogleAdapter) RefreshAuthorization(context.Context, contactsync.AuthSession) (contactsync.AuthSession, error) {
+	return contactsync.AuthSession{}, nil
+}
+
+func (f *fakeGoogleAdapter) ListChanges(context.Context, contactsync.AuthSession, string) (contactsync.ChangePage, error) {
+	return contactsync.ChangePage{}, nil
+}
+
+func (f *fakeGoogleAdapter) FetchRecord(context.Context, contactsync.AuthSession, string) (contactsync.ProviderRecord, error) {
+	return contactsync.ProviderRecord{}, nil
+}
+
+func (f *fakeGoogleAdapter) UpsertRecord(context.Context, contactsync.AuthSession, contactsync.Record) (contactsync.ProviderRecord, error) {
+	return contactsync.ProviderRecord{}, nil
+}
+
+func (f *fakeGoogleAdapter) DeleteRecord(context.Context, contactsync.AuthSession, string) error {
+	return nil
+}
+
+func (f *fakeGoogleAdapter) Sync(context.Context, contactsync.Account, contactsync.Job) error {
+	f.syncCalls++
+	return f.syncErr
+}
+
+func testSyncGoogleRouter(adapter contactsync.Adapter) http.Handler {
+	personStore := newFakeStore()
+	personSvc := person.NewService(personStore)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	return NewRouter(logger, personSvc, personStore, newFakeSyncAccountStore(), adapter, []string{"http://localhost:5173"})
+}
+
+func TestGoogleOAuthBegin(t *testing.T) {
+	adapter := &fakeGoogleAdapter{authRequest: contactsync.AuthRequest{AuthorizationURL: "https://accounts.google.com/o/oauth2/v2/auth?state=abc", State: "abc"}}
+	h := testSyncGoogleRouter(adapter)
+
+	rec := doJSON(t, h, http.MethodGet, "/api/v1/sync/google/begin", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if len(rec.Result().Cookies()) == 0 {
+		t.Fatal("expected oauth state cookie")
+	}
+	var out googleBeginResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.AuthorizationURL == "" || out.State == "" {
+		t.Fatalf("unexpected begin payload: %+v", out)
+	}
+}
+
+func TestGoogleOAuthCallbackInvalidState(t *testing.T) {
+	adapter := &fakeGoogleAdapter{}
+	h := testSyncGoogleRouter(adapter)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/sync/google/callback?state=bad&code=ok", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestGoogleOAuthCallbackUpsertAndSync(t *testing.T) {
+	adapter := &fakeGoogleAdapter{
+		authRequest: contactsync.AuthRequest{AuthorizationURL: "https://accounts.google.com/o/oauth2/v2/auth?state=abc", State: "abc"},
+		authSession: contactsync.AuthSession{
+			ProviderAccountID: "people/123",
+			AccessToken:       "access-token",
+			RefreshToken:      "refresh-token",
+			ExpiresAt:         time.Now().Add(time.Hour).UTC(),
+			Scope:             "https://www.googleapis.com/auth/contacts",
+		},
+	}
+	h := testSyncGoogleRouter(adapter)
+
+	begin := doJSON(t, h, http.MethodGet, "/api/v1/sync/google/begin", nil)
+	if begin.Code != http.StatusOK {
+		t.Fatalf("begin status = %d body=%s", begin.Code, begin.Body.String())
+	}
+	cookies := begin.Result().Cookies()
+	if len(cookies) == 0 {
+		t.Fatal("expected oauth cookie")
+	}
+
+	var beginPayload googleBeginResponse
+	if err := json.Unmarshal(begin.Body.Bytes(), &beginPayload); err != nil {
+		t.Fatal(err)
+	}
+
+	cbReq := httptest.NewRequest(http.MethodGet, "/api/v1/sync/google/callback?state="+beginPayload.State+"&code=valid", nil)
+	cbReq.AddCookie(cookies[0])
+	cbRec := httptest.NewRecorder()
+	h.ServeHTTP(cbRec, cbReq)
+	if cbRec.Code != http.StatusOK {
+		t.Fatalf("callback status = %d body=%s", cbRec.Code, cbRec.Body.String())
+	}
+	if adapter.syncCalls != 1 {
+		t.Fatalf("sync calls = %d, want 1", adapter.syncCalls)
+	}
+
+	list := doJSON(t, h, http.MethodGet, "/api/v1/sync-accounts", nil)
+	if list.Code != http.StatusOK {
+		t.Fatalf("list status = %d", list.Code)
+	}
+	var accounts syncAccountListResponse
+	if err := json.Unmarshal(list.Body.Bytes(), &accounts); err != nil {
+		t.Fatal(err)
+	}
+	if len(accounts.Data) != 1 || accounts.Data[0].Provider != "google" {
+		t.Fatalf("unexpected account list: %+v", accounts)
+	}
+}
+
+func TestGoogleOAuthCallbackSyncFailure(t *testing.T) {
+	adapter := &fakeGoogleAdapter{
+		authRequest: contactsync.AuthRequest{AuthorizationURL: "https://accounts.google.com/o/oauth2/v2/auth?state=abc", State: "abc"},
+		authSession: contactsync.AuthSession{ProviderAccountID: "people/123", AccessToken: "access-token"},
+		syncErr:     context.DeadlineExceeded,
+	}
+	h := testSyncGoogleRouter(adapter)
+
+	begin := doJSON(t, h, http.MethodGet, "/api/v1/sync/google/begin", nil)
+	var beginPayload googleBeginResponse
+	_ = json.Unmarshal(begin.Body.Bytes(), &beginPayload)
+	cookies := begin.Result().Cookies()
+	cbReq := httptest.NewRequest(http.MethodGet, "/api/v1/sync/google/callback?state="+beginPayload.State+"&code=valid", nil)
+	cbReq.AddCookie(cookies[0])
+	cbRec := httptest.NewRecorder()
+	h.ServeHTTP(cbRec, cbReq)
+	if cbRec.Code != http.StatusBadGateway {
+		t.Fatalf("callback status = %d body=%s", cbRec.Code, cbRec.Body.String())
+	}
+}

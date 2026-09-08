@@ -79,7 +79,7 @@ func testSyncRouter() http.Handler {
 	personStore := newFakeStore()
 	personSvc := person.NewService(personStore)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	return NewRouter(logger, personSvc, personStore, newFakeSyncAccountStore(), []string{"http://localhost:5173"})
+	return NewRouter(logger, personSvc, personStore, newFakeSyncAccountStore(), nil, []string{"http://localhost:5173"})
 }
 
 func TestCreateSyncAccount(t *testing.T) {

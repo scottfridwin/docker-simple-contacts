@@ -27,6 +27,9 @@ type Config struct {
 	AuthentikSecret    string
 	AuthentikRedirect  string
 	SessionSecret      []byte
+	GoogleClientID     string
+	GoogleClientSecret string
+	GoogleRedirectURL  string
 }
 
 // IsProduction reports whether the server runs in a production environment.
@@ -113,6 +116,25 @@ func Load() (Config, error) {
 			return Config{}, fmt.Errorf("PURGE_AFTER_DAYS must be a positive integer, got %q", v)
 		}
 		cfg.PurgeAfterDays = days
+	}
+
+	googleClientIDFile := firstEnv("GOOGLE_CLIENT_ID_FILE")
+	googleClientID := firstEnv("GOOGLE_CLIENT_ID")
+	googleClientSecretFile := firstEnv("GOOGLE_CLIENT_SECRET_FILE")
+	googleClientSecret := firstEnv("GOOGLE_CLIENT_SECRET")
+	cfg.GoogleRedirectURL = firstEnv("GOOGLE_REDIRECT_URL", "GOOGLE_REDIRECT_URI")
+	if googleClientID != "" || googleClientSecret != "" || cfg.GoogleRedirectURL != "" {
+		if (googleClientID == "" && googleClientIDFile == "") || (googleClientSecret == "" && googleClientSecretFile == "") || cfg.GoogleRedirectURL == "" {
+			return Config{}, errors.New("GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, and GOOGLE_REDIRECT_URL are required when Google sync is configured")
+		}
+		cfg.GoogleClientID, err = resolveSecretValue(googleClientIDFile, googleClientID, "GOOGLE_CLIENT_ID")
+		if err != nil {
+			return Config{}, err
+		}
+		cfg.GoogleClientSecret, err = resolveSecretValue(googleClientSecretFile, googleClientSecret, "GOOGLE_CLIENT_SECRET")
+		if err != nil {
+			return Config{}, err
+		}
 	}
 
 	if err := cfg.validate(); err != nil {

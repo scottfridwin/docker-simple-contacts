@@ -113,6 +113,11 @@ The backend is configured entirely through environment variables.
 | `AUTHENTIK_CLIENT_SECRET_FILE` | —    | Docker secret file for the OAuth client secret.         |
 | `AUTHENTIK_CLIENT_SECRET` | —        | Inline OAuth client secret fallback.                    |
 | `AUTHENTIK_REDIRECT_URL` | —         | Backend callback URL (`/auth/callback`).                |
+| `GOOGLE_CLIENT_ID`   | —           | Google OAuth client ID for contact sync.                 |
+| `GOOGLE_CLIENT_ID_FILE` | —        | Docker secret file for Google OAuth client ID.           |
+| `GOOGLE_CLIENT_SECRET` | —         | Google OAuth client secret for contact sync.             |
+| `GOOGLE_CLIENT_SECRET_FILE` | —    | Docker secret file for Google OAuth client secret.       |
+| `GOOGLE_REDIRECT_URL` | —          | Backend Google sync callback URL (`/api/v1/sync/google/callback`). |
 | `SESSION_SECRET_FILE`   | —           | Docker secret file containing a 32+ byte session key.   |
 | `SESSION_SECRET`        | —           | Inline session key fallback.                            |
 | `CONTACTS_VERSION`     | `latest`    | Tag used for both published application images.         |
@@ -180,6 +185,7 @@ by a background job.
 - Endpoints: `POST/GET /persons`, `GET/PATCH/DELETE /persons/{id}`, `GET /persons/deleted`,
   `POST /persons/{id}/restore`, and `DELETE /persons/{id}/permanent`
 - Sync account management: `GET/POST /sync-accounts`, `GET/PATCH/DELETE /sync-accounts/{id}`
+- Google sync OAuth: `GET /sync/google/begin`, `GET /sync/google/callback`
 - List defaults: page size 25 (max 100), default sort `display_name desc`,
   filters `first_name` and `last_name`.
 - The recycle bin lists soft-deleted contacts and supports restoring or permanently
