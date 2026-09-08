@@ -29,7 +29,7 @@ services:
     ports:
       - "${POSTGRES_PUBLISH_PORT:-5432}:5432"
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      - pgdata:/var/lib/postgresql
     tmpfs:
       - /tmp:uid=${POSTGRES_UID:-70},gid=${POSTGRES_GID:-70},mode=1777
       - /var/run/postgresql:uid=${POSTGRES_UID:-70},gid=${POSTGRES_GID:-70},mode=2775
