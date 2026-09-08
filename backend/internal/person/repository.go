@@ -162,7 +162,7 @@ func (r *Repository) ListDeleted(ctx context.Context, params ListParams) ([]Pers
 		return nil, 0, fmt.Errorf("listing deleted persons: %w", err)
 	}
 	defer rows.Close()
-	persons := make([]Person, 0, pageSize)
+	persons := make([]Person, 0, 100)
 	for rows.Next() {
 		p, scanErr := scanPerson(rows)
 		if scanErr != nil {
