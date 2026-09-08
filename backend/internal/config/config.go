@@ -22,6 +22,11 @@ type Config struct {
 	DBSSLMode          string
 	CORSAllowedOrigins []string
 	PurgeAfterDays     int
+	AuthentikIssuer    string
+	AuthentikClientID  string
+	AuthentikSecret    string
+	AuthentikRedirect  string
+	SessionSecret      []byte
 }
 
 // IsProduction reports whether the server runs in a production environment.
@@ -63,6 +68,40 @@ func Load() (Config, error) {
 		"CORS_ALLOWED_ORIGINS",
 		"http://localhost:5173,http://127.0.0.1:5173",
 	))
+
+	cfg.AuthentikIssuer = firstEnv("AUTHENTIK_ISSUER", "AUTHENTIK_ISSUER_URL", "OIDC_ISSUER_URL")
+	cfg.AuthentikRedirect = firstEnv("AUTHENTIK_REDIRECT_URL", "AUTHENTIK_REDIRECT_URI", "OIDC_REDIRECT_URI")
+	clientIDFile := firstEnv("AUTHENTIK_CLIENT_ID_FILE", "OIDC_CLIENT_ID_FILE")
+	clientID := firstEnv("AUTHENTIK_CLIENT_ID", "OIDC_CLIENT_ID")
+	if cfg.AuthentikIssuer != "" || clientID != "" || clientIDFile != "" || cfg.AuthentikRedirect != "" || os.Getenv("AUTHENTIK_CLIENT_SECRET") != "" || os.Getenv("AUTHENTIK_CLIENT_SECRET_FILE") != "" || os.Getenv("OIDC_CLIENT_SECRET") != "" || os.Getenv("OIDC_CLIENT_SECRET_FILE") != "" {
+		if cfg.AuthentikIssuer == "" || (clientID == "" && clientIDFile == "") || cfg.AuthentikRedirect == "" {
+			return Config{}, errors.New("AUTHENTIK_ISSUER, AUTHENTIK_CLIENT_ID, and AUTHENTIK_REDIRECT_URL are required when Authentik is configured")
+		}
+		cfg.AuthentikClientID, err = resolveSecretValue(clientIDFile, clientID, "AUTHENTIK_CLIENT_ID")
+		if err != nil {
+			return Config{}, err
+		}
+		cfg.AuthentikSecret, err = resolveSecretValue(
+			firstEnv("AUTHENTIK_CLIENT_SECRET_FILE", "OIDC_CLIENT_SECRET_FILE"),
+			firstEnv("AUTHENTIK_CLIENT_SECRET", "OIDC_CLIENT_SECRET"),
+			"AUTHENTIK_CLIENT_SECRET",
+		)
+		if err != nil {
+			return Config{}, err
+		}
+		secret, secretErr := resolveSecretValue(
+			firstEnv("SESSION_SECRET_FILE"),
+			firstEnv("SESSION_SECRET"),
+			"SESSION_SECRET",
+		)
+		if secretErr != nil {
+			return Config{}, secretErr
+		}
+		if len(secret) < 32 {
+			return Config{}, errors.New("SESSION_SECRET must be at least 32 bytes")
+		}
+		cfg.SessionSecret = []byte(secret)
+	}
 
 	if v := os.Getenv("PURGE_AFTER_DAYS"); v != "" {
 		days, convErr := strconv.Atoi(v)
@@ -112,6 +151,24 @@ func resolvePassword() (string, error) {
 	return "", errors.New("database password required: set DB_PASSWORD_FILE or DB_PASSWORD")
 }
 
+func resolveSecretValue(filePath, value, label string) (string, error) {
+	if filePath != "" {
+		data, err := os.ReadFile(filePath) //nolint:gosec // path is operator-supplied config
+		if err != nil {
+			return "", fmt.Errorf("reading %s_FILE %q: %w", label, filePath, err)
+		}
+		secret := strings.TrimRight(string(data), "\r\n")
+		if secret == "" {
+			return "", fmt.Errorf("%s_FILE %q is empty", label, filePath)
+		}
+		return secret, nil
+	}
+	if value != "" {
+		return value, nil
+	}
+	return "", fmt.Errorf("%s or %s_FILE is required", label, label)
+}
+
 func parseOrigins(raw string) []string {
 	parts := strings.Split(raw, ",")
 	origins := make([]string, 0, len(parts))
@@ -128,4 +185,13 @@ func getEnv(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+func firstEnv(keys ...string) string {
+	for _, key := range keys {
+		if value := os.Getenv(key); value != "" {
+			return value
+		}
+	}
+	return ""
 }

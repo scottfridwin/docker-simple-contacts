@@ -15,8 +15,8 @@ A self-hosted **contact management system**:
 - **Delivery** — Docker images for backend and frontend; Docker Compose for local
   development; GitHub Actions for CI and tagged releases.
 
-It is designed to run behind a reverse proxy that handles authentication — the
-API itself has **no auth** in v1.
+It can run behind a reverse proxy, or use the built-in Authentik OIDC
+integration for account authentication.
 
 [chi]: https://github.com/go-chi/chi
 [pgx]: https://github.com/jackc/pgx
@@ -82,8 +82,10 @@ docs/design/            authoritative design documents
   promotes (re-tags) the current `main` image to `vX.Y.Z`/`X.Y.Z`/`latest` — no
   rebuild. See the README release section.
 - **Coverage**: CI enforces ≥ 70% on `config`, `httpapi`, `person`.
-- **Scope**: v1 only. Do NOT add auth, SSO, multi-tenancy, sync integrations,
-  background queues, file attachments, or offline PWA support.
+- **Scope**: v2 authentication is limited to Authentik OIDC SSO and
+  account-owned Person records. Do NOT add passwords, local accounts, SSO
+  providers other than Authentik, sync integrations, background queues, file
+  attachments, or offline PWA support.
 
 ## Conventions
 
@@ -141,7 +143,8 @@ docker run --rm -v "$PWD/frontend":/app -w /app node:20-bookworm-slim sh -c "npm
 4. Migrations are forward-only and apply cleanly (`up` then `down`).
 5. No secrets, `.env`, `node_modules`, build output, or coverage files committed
    (see `.gitignore`).
-6. Changes stay within v1 scope.
+6. Changes stay within the released v1 data model and the v2 Authentik SSO
+   feature scope.
 
 ## Safety / operational notes
 

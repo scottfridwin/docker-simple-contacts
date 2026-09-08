@@ -1,0 +1,3 @@
+DROP INDEX IF EXISTS idx_persons_owner_id;
+ALTER TABLE persons DROP COLUMN IF EXISTS owner_id;
+DROP TABLE IF EXISTS users;

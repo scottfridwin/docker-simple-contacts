@@ -3,6 +3,12 @@ name: contacts
 secrets:
   db_password:
     file: ${DB_PASSWORD_SECRET_FILE:-./secrets/db_password}
+  authentik_client_secret:
+    file: ${AUTHENTIK_CLIENT_SECRET_FILE:-/dev/null}
+  authentik_client_id:
+    file: ${AUTHENTIK_CLIENT_ID_FILE:-/dev/null}
+  session_secret:
+    file: ${SESSION_SECRET_FILE:-/dev/null}
 
 services:
   postgres:
@@ -13,6 +19,9 @@ services:
     pids_limit: ${POSTGRES_PIDS_LIMIT:-256}
     secrets:
       - db_password
+      - authentik_client_secret
+      - authentik_client_id
+      - session_secret
     environment:
       POSTGRES_USER: ${DB_USER:-contacts}
       POSTGRES_PASSWORD_FILE: /run/secrets/db_password
@@ -51,6 +60,12 @@ services:
       DB_SSLMODE: disable
       CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173}
       PURGE_AFTER_DAYS: ${PURGE_AFTER_DAYS:-30}
+      AUTHENTIK_ISSUER: ${AUTHENTIK_ISSUER:-}
+      AUTHENTIK_CLIENT_ID: ${AUTHENTIK_CLIENT_ID:-}
+      AUTHENTIK_CLIENT_ID_FILE: /run/secrets/authentik_client_id
+      AUTHENTIK_CLIENT_SECRET_FILE: /run/secrets/authentik_client_secret
+      AUTHENTIK_REDIRECT_URL: ${AUTHENTIK_REDIRECT_URL:-}
+      SESSION_SECRET_FILE: /run/secrets/session_secret
     ports:
       - "${APP_PUBLISH_PORT:-8080}:8080"
     tmpfs:

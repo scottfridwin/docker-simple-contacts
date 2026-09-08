@@ -12,11 +12,13 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/scottfridlund/contacts/backend/internal/auth"
 	"github.com/scottfridlund/contacts/backend/internal/config"
 	"github.com/scottfridlund/contacts/backend/internal/db"
 	"github.com/scottfridlund/contacts/backend/internal/httpapi"
 	"github.com/scottfridlund/contacts/backend/internal/logging"
 	"github.com/scottfridlund/contacts/backend/internal/person"
+	"github.com/scottfridlund/contacts/backend/internal/user"
 )
 
 func main() {
@@ -84,11 +86,25 @@ func run() error {
 
 	repo := person.NewRepository(pool)
 	svc := person.NewService(repo)
+	accountRepo := user.NewRepository(pool)
 
 	purgeWindow := time.Duration(cfg.PurgeAfterDays) * 24 * time.Hour
 	go runPurgeLoop(ctx, logger, svc, purgeWindow)
 
-	handler := httpapi.NewRouter(logger, svc, repo, cfg.CORSAllowedOrigins)
+	var provider *auth.Provider
+	if cfg.AuthentikIssuer != "" {
+		provider, err = auth.New(ctx, auth.Config{
+			Issuer:       cfg.AuthentikIssuer,
+			ClientID:     cfg.AuthentikClientID,
+			ClientSecret: cfg.AuthentikSecret,
+			RedirectURL:  cfg.AuthentikRedirect,
+			SessionKey:   cfg.SessionSecret,
+		}, accountRepo)
+		if err != nil {
+			return err
+		}
+	}
+	handler := httpapi.NewRouter(logger, svc, repo, cfg.CORSAllowedOrigins, provider)
 	srv := &http.Server{
 		Addr:              ":" + cfg.Port,
 		Handler:           handler,

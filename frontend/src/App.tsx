@@ -21,7 +21,11 @@ export default function App() {
       const res = await listPersons({ sort: 'display_name', order: 'desc' });
       setPersons(res.data);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load contacts');
+      if (err instanceof ApiRequestError && err.status === 401) {
+        setError('Authentication required');
+      } else {
+        setError(err instanceof Error ? err.message : 'Failed to load contacts');
+      }
     } finally {
       setLoading(false);
     }
@@ -95,6 +99,11 @@ export default function App() {
       {error && (
         <div className="banner error" role="alert">
           {error}
+          {error === 'Authentication required' && (
+            <a href="/auth/login" className="login-link">
+              Sign in with Authentik
+            </a>
+          )}
         </div>
       )}
 
