@@ -11,8 +11,9 @@ file overrides the development guide on any conflict.
 
 ## Golden rules
 
-- Stay within **v1 scope**. Do not add auth, SSO, multi-tenancy, sync
-  integrations, background queues, file attachments, or offline PWA support.
+- Stay within **v2 scope**. Authentication is Authentik OIDC only; do not add
+  passwords, local accounts, alternate SSO providers, sync integrations,
+  background queues, file attachments, or offline PWA support.
 - Keep dependencies **minimal** (Renovate-friendly).
 - Whenever API behavior changes, update `api/openapi.yaml`, the tests, and the
   README together.
@@ -40,6 +41,9 @@ file overrides the development guide on any conflict.
 - Soft delete + 30-day purge. List defaults: page 25 / max 100, sort
   `display_name desc`.
 - Config: `DB_PASSWORD_FILE` overrides `DB_PASSWORD`; fail startup if neither set.
+- Auth config uses `AUTHENTIK_*` and `SESSION_SECRET(_FILE)`; file secrets take
+  precedence over inline values. Authenticated Person queries must be account
+  scoped.
 
 ## Validate before finishing
 

@@ -7,11 +7,12 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/cors"
 
+	"github.com/scottfridlund/contacts/backend/internal/auth"
 	"github.com/scottfridlund/contacts/backend/internal/person"
 )
 
 // NewRouter builds the application's HTTP handler.
-func NewRouter(logger *slog.Logger, svc *person.Service, ready pinger, allowedOrigins []string) http.Handler {
+func NewRouter(logger *slog.Logger, svc *person.Service, ready pinger, allowedOrigins []string, providers ...*auth.Provider) http.Handler {
 	r := chi.NewRouter()
 
 	r.Use(requestID)
@@ -22,9 +23,13 @@ func NewRouter(logger *slog.Logger, svc *person.Service, ready pinger, allowedOr
 		AllowedMethods:   []string{http.MethodGet, http.MethodPost, http.MethodPatch, http.MethodDelete, http.MethodOptions},
 		AllowedHeaders:   []string{"Accept", "Content-Type", requestIDHeader},
 		ExposedHeaders:   []string{requestIDHeader},
-		AllowCredentials: false,
+		AllowCredentials: true,
 		MaxAge:           300,
 	}))
+	if len(providers) > 0 && providers[0] != nil {
+		r.Use(providers[0].Middleware)
+		providers[0].Routes(r)
+	}
 
 	r.Get("/healthz", healthHandler)
 	r.Get("/readyz", readyHandler(ready))

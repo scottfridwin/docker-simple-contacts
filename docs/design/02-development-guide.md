@@ -13,7 +13,7 @@ Build a self-hosted contact management system with:
 - A PWA frontend for create/read/update/delete (CRUD) operations on contact records.
 - Container image output as the primary deployment artifact.
 
-## Scope for v1
+## Scope for the released v1 baseline and v2 authentication
 ### In scope
 - Single entity domain: Person.
 - Standard fields plus user-defined custom fields.
@@ -24,9 +24,9 @@ Build a self-hosted contact management system with:
 - CI workflows for lint, test, build, and release.
 
 ### Out of scope
-- Built-in authentication and authorization.
-- SSO integration (including Authentik).
-- Multi-tenant support.
+- Password or local-account authentication.
+- SSO providers other than Authentik.
+- Sharing contacts between accounts.
 - Contact sync integrations (Google, Outlook, LDAP, etc.).
 - Background jobs/queues.
 - File attachments.
@@ -115,12 +115,14 @@ The backend must support configuration through environment variables:
 - If neither is present, startup fails with explicit error.
 
 ## Security and Trust Model
-- Application assumes upstream reverse proxy handles authentication and authorization.
+- Authentik OIDC authentication is used when configured; a reverse proxy may
+  still provide additional network-level protection.
 - Application still must enforce:
   - strict input validation
   - secure defaults for HTTP headers where applicable
   - safe logging without secret leakage
-- No auth middleware is required in v1.
+- Authentik OIDC middleware is required when configured; all Person queries must
+  be account-scoped.
 
 ## Observability and Operations
 - Structured logging required.

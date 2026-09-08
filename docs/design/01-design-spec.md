@@ -17,5 +17,7 @@ Design Statements:
 - Any external dependencies will be defined such that "Renovate" can automatically create changes and pull requests as necessary. 
 - The output of the project is a container image; there is no intention of providing a standalone installation of the project (at least for now). 
 - The backend database will be a separate hosted docker container running Postgresql. The project should allow for setting the host, port, user, and password as environment variables into the docker container. In the case of password, a file path is also allowed in order to support docker secrets. The project should use a single database with multiple tables if necessary. The name of the database can be an optional environment variable that defaults to "postgres". 
-- The application is intended to be hosted behind a reverse proxy with authentication/authorization. There is no built-in authentication/authorization mechanism. Adding support for SSO via Authentik will be a 2.0 feature enhancement. 
+- The application supports Authentik OIDC SSO for v2. When configured, the
+  backend creates account sessions and scopes Person records to the current
+  Authentik subject. No password or alternate login mechanism is supported.
 - For the first iteration we only want to consider Person records. A Person will have a set of pre-defined standard fields but will also have room for unstructured fields that can be defined by the user. For example, in addition to the name "Scott Fridlund" my record could also have a custom value for "Blood Type". 

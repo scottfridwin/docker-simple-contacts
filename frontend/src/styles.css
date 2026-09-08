@@ -49,6 +49,87 @@ body {
   padding: 1rem;
 }
 
+.landing-page {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 1.5rem;
+  background:
+    radial-gradient(circle at top left, rgba(30, 58, 138, 0.22), transparent 38%), var(--bg);
+}
+
+.landing-card {
+  width: min(100%, 30rem);
+  max-width: 30rem;
+  padding: 2.5rem;
+  text-align: center;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 1.25rem;
+  box-shadow: 0 1.5rem 4rem rgba(15, 23, 42, 0.16);
+}
+
+.landing-banner {
+  height: 7rem;
+  margin: -2.5rem -2.5rem 2rem;
+  display: grid;
+  place-items: center;
+  border-radius: 1.25rem 1.25rem 0 0;
+  background: linear-gradient(135deg, #1e3a8a, #2563eb);
+}
+
+.landing-mark {
+  display: grid;
+  place-items: center;
+  width: 4rem;
+  height: 4rem;
+  border: 2px solid rgba(255, 255, 255, 0.75);
+  border-radius: 1rem;
+  color: #fff;
+  font-size: 1.25rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+}
+
+.landing-eyebrow {
+  margin: 0 0 0.75rem;
+  color: var(--muted);
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+}
+
+.landing-card h1 {
+  margin: 0;
+  font-size: clamp(1.75rem, 5vw, 2.5rem);
+}
+
+.landing-description {
+  margin: 1rem auto 2rem;
+  max-width: 26rem;
+  color: var(--muted);
+}
+
+.sso-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.65rem;
+  padding: 0.8rem 1.25rem;
+  border-radius: 0.5rem;
+  background: #1e3a8a;
+  color: #fff;
+  font-weight: 700;
+  text-decoration: none;
+  transition:
+    background-color 0.2s ease,
+    transform 0.2s ease;
+}
+
+.sso-button:hover {
+  background: #1d4ed8;
+  transform: translateY(-1px);
+}
+
 .app-header {
   display: flex;
   align-items: center;
@@ -227,6 +308,14 @@ button:disabled {
 }
 
 @media (max-width: 560px) {
+  .landing-card {
+    padding: 2rem 1.5rem;
+  }
+
+  .landing-banner {
+    margin: -2rem -1.5rem 2rem;
+  }
+
   .person-item {
     flex-direction: column;
     align-items: flex-start;

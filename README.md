@@ -4,10 +4,9 @@ A self-hosted contact management system. It exposes a RESTful Go API backed by
 PostgreSQL and ships an installable React PWA for managing contacts. The primary
 deployment artifact is a set of container images.
 
-> v1 scope: a single `Person` entity with standard fields plus user-defined
-> custom fields, full CRUD via API and UI, and containerized delivery. There is
-> no built-in authentication — deploy behind a reverse proxy that handles
-> authn/authz.
+> v2 scope: a single `Person` entity with standard fields plus user-defined
+> custom fields, full CRUD via API and UI, and optional Authentik OIDC SSO.
+> When Authentik is configured, each account can access only its own contacts.
 
 ## Architecture
 
@@ -109,6 +108,13 @@ The backend is configured entirely through environment variables.
 | `DB_SSLMODE`           | `disable`   | `libpq` sslmode.                                        |
 | `CORS_ALLOWED_ORIGINS` | dev origins | Comma-separated allow-list of browser origins.          |
 | `PURGE_AFTER_DAYS`     | `30`        | Recycle-bin retention before soft-deleted rows purge.   |
+| `AUTHENTIK_ISSUER`     | —           | Authentik OIDC issuer/discovery URL; enables SSO.        |
+| `AUTHENTIK_CLIENT_ID`  | —           | Authentik OAuth client ID.                              |
+| `AUTHENTIK_CLIENT_SECRET_FILE` | —    | Docker secret file for the OAuth client secret.         |
+| `AUTHENTIK_CLIENT_SECRET` | —        | Inline OAuth client secret fallback.                    |
+| `AUTHENTIK_REDIRECT_URL` | —         | Backend callback URL (`/auth/callback`).                |
+| `SESSION_SECRET_FILE`   | —           | Docker secret file containing a 32+ byte session key.   |
+| `SESSION_SECRET`        | —           | Inline session key fallback.                            |
 | `CONTACTS_VERSION`     | `latest`    | Tag used for both published application images.         |
 | `BACKEND_IMAGE`        | GHCR image  | Optional override for the backend image repository.     |
 | `FRONTEND_IMAGE`       | GHCR image  | Optional override for the frontend image repository.    |
@@ -138,6 +144,15 @@ the password from the `db_password` Docker secret mounted from
 `DB_PASSWORD_SECRET_FILE`. If neither is set, startup fails with an explicit
 error. All logs go to stdout/stderr only — the container runtime owns log
 collection.
+
+### Authentik SSO
+
+Set all Authentik and session variables to enable OIDC authorization-code login.
+The application exposes `GET /auth/login`, `GET /auth/callback`, and
+`POST /auth/logout`. Client and session secrets support Docker secret files,
+which take precedence over inline values. Once enabled, unauthenticated API
+requests receive `401`, and all Person reads and writes are scoped to the
+authenticated Authentik subject.
 
 ## Data model
 

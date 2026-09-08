@@ -3,15 +3,32 @@ info:
   title: Contacts API
   version: 1.0.0
   description: >-
-    Self-hosted contact management API. v1 supports a single Person entity with
-    standard fields and user-defined custom fields. Authentication is handled by
-    an upstream reverse proxy; the API itself is unauthenticated.
+    Self-hosted contact management API. Supports Person records and optional
+    Authentik OIDC SSO. When SSO is configured, Person records are account-scoped.
   license:
     name: Apache-2.0
     url: https://www.apache.org/licenses/LICENSE-2.0
 servers:
   - url: /api/v1
 paths:
+  /auth/login:
+    get:
+      summary: Start Authentik login
+      operationId: startLogin
+      responses:
+        '302': { description: Redirect to Authentik }
+  /auth/callback:
+    get:
+      summary: Complete Authentik login
+      operationId: completeLogin
+      responses:
+        '302': { description: Redirect to the application }
+  /auth/logout:
+    post:
+      summary: End the current session
+      operationId: logout
+      responses:
+        '204': { description: Session ended }
   /persons:
     get:
       summary: List persons
@@ -164,6 +181,11 @@ paths:
         '204': { description: Permanently deleted }
         '404': { $ref: '#/components/responses/NotFound' }
 components:
+  securitySchemes:
+    contactsSession:
+      type: apiKey
+      in: cookie
+      name: contacts_session
   schemas:
     CustomFieldValue:
       description: A scalar custom field value. Dates are ISO-8601 strings.
