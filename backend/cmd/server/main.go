@@ -46,11 +46,12 @@ func runHealthcheck() int {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
+	//nolint:gosec // local loopback probe for container healthcheck only
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://127.0.0.1:"+port+"/healthz", nil)
 	if err != nil {
 		return 1
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := http.DefaultClient.Do(req) //nolint:gosec // local loopback probe for container healthcheck only
 	if err != nil {
 		return 1
 	}

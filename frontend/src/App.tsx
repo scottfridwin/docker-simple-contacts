@@ -56,7 +56,9 @@ export default function App() {
   }, [page, search, showDeleted]);
 
   useEffect(() => {
-    void refresh();
+    queueMicrotask(() => {
+      void refresh();
+    });
   }, [refresh]);
 
   if (authenticationRequired) {
