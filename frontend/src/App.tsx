@@ -113,7 +113,8 @@ export default function App() {
   };
 
   const handlePermanentDelete = async (person: Person) => {
-    if (!window.confirm(`Permanently delete ${person.display_name}? This cannot be undone.`)) return;
+    if (!window.confirm(`Permanently delete ${person.display_name}? This cannot be undone.`))
+      return;
     setError(null);
     try {
       await permanentlyDeletePerson(person.id);
@@ -143,17 +144,36 @@ export default function App() {
       {view.mode === 'list' && (
         <>
           <div className="list-controls">
-            {!showDeleted && <>
-              <input aria-label="filter first name" placeholder="First name" value={search.firstName}
-                onChange={(e) => { setPage(1); setSearch((s) => ({ ...s, firstName: e.target.value })); }} />
-              <input aria-label="filter last name" placeholder="Last name" value={search.lastName}
-                onChange={(e) => { setPage(1); setSearch((s) => ({ ...s, lastName: e.target.value })); }} />
-            </>}
-            <button type="button" onClick={() => {
-              setPage(1);
-              setSearch({ firstName: '', lastName: '' });
-              setShowDeleted((v) => !v);
-            }}>
+            {!showDeleted && (
+              <>
+                <input
+                  aria-label="filter first name"
+                  placeholder="First name"
+                  value={search.firstName}
+                  onChange={(e) => {
+                    setPage(1);
+                    setSearch((s) => ({ ...s, firstName: e.target.value }));
+                  }}
+                />
+                <input
+                  aria-label="filter last name"
+                  placeholder="Last name"
+                  value={search.lastName}
+                  onChange={(e) => {
+                    setPage(1);
+                    setSearch((s) => ({ ...s, lastName: e.target.value }));
+                  }}
+                />
+              </>
+            )}
+            <button
+              type="button"
+              onClick={() => {
+                setPage(1);
+                setSearch({ firstName: '', lastName: '' });
+                setShowDeleted((v) => !v);
+              }}
+            >
               {showDeleted ? 'Active contacts' : 'Recycle bin'}
             </button>
           </div>
@@ -169,11 +189,23 @@ export default function App() {
               onPermanentDelete={handlePermanentDelete}
             />
           )}
-          {totalPages > 1 && <nav aria-label="pagination">
-            <button type="button" disabled={page === 1} onClick={() => setPage((p) => p - 1)}>Previous</button>
-            <span>Page {page} of {totalPages}</span>
-            <button type="button" disabled={page >= totalPages} onClick={() => setPage((p) => p + 1)}>Next</button>
-          </nav>}
+          {totalPages > 1 && (
+            <nav aria-label="pagination">
+              <button type="button" disabled={page === 1} onClick={() => setPage((p) => p - 1)}>
+                Previous
+              </button>
+              <span>
+                Page {page} of {totalPages}
+              </span>
+              <button
+                type="button"
+                disabled={page >= totalPages}
+                onClick={() => setPage((p) => p + 1)}
+              >
+                Next
+              </button>
+            </nav>
+          )}
         </>
       )}
 
