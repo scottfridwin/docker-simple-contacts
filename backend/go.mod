@@ -1,6 +1,6 @@
 module github.com/scottfridlund/contacts/backend
 
-go 1.24.0
+go 1.26.0
 
 require (
 	github.com/coreos/go-oidc/v3 v3.14.1
@@ -9,7 +9,7 @@ require (
 	github.com/golang-migrate/migrate/v4 v4.19.1
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.7.1
-	golang.org/x/oauth2 v0.30.0
+	golang.org/x/oauth2 v0.37.0
 )
 
 require (
