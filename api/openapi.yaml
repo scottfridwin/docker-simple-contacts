@@ -76,6 +76,15 @@ paths:
         - name: page_size
           in: query
           schema: { type: integer, minimum: 1, maximum: 100, default: 25 }
+        - name: sort
+          in: query
+          schema:
+            type: string
+            enum: [display_name, first_name, last_name, created_at, updated_at]
+            default: display_name
+        - name: order
+          in: query
+          schema: { type: string, enum: [asc, desc], default: desc }
       responses:
         '200':
           description: A page of deleted persons
