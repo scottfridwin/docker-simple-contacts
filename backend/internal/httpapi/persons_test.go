@@ -36,6 +36,9 @@ func (s *errorStore) List(context.Context, person.ListParams) ([]person.Person, 
 func (s *errorStore) ListDeleted(context.Context, person.ListParams) ([]person.Person, int, error) {
 	return nil, 0, s.err
 }
+func (s *errorStore) GetDeletedByID(context.Context, uuid.UUID) (*person.Person, error) {
+	return nil, s.err
+}
 func (s *errorStore) Update(context.Context, uuid.UUID, *person.Person) (*person.Person, error) {
 	return nil, s.err
 }
@@ -60,6 +63,15 @@ func (f *fakeStore) Create(_ context.Context, p *person.Person) (*person.Person,
 func (f *fakeStore) GetByID(_ context.Context, id uuid.UUID) (*person.Person, error) {
 	p, ok := f.items[id]
 	if !ok || p.DeletedAt != nil {
+		return nil, person.ErrNotFound
+	}
+	out := *p
+	return &out, nil
+}
+
+func (f *fakeStore) GetDeletedByID(_ context.Context, id uuid.UUID) (*person.Person, error) {
+	p, ok := f.items[id]
+	if !ok || p.DeletedAt == nil {
 		return nil, person.ErrNotFound
 	}
 	out := *p
@@ -137,7 +149,7 @@ func testRouter() (http.Handler, *fakeStore) {
 	store := newFakeStore()
 	svc := person.NewService(store)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	return NewRouter(logger, svc, store, []string{"http://localhost:5173"}), store
+	return NewRouter(logger, svc, store, nil, []string{"http://localhost:5173"}), store
 }
 
 func doJSON(t *testing.T, h http.Handler, method, path string, body interface{}) *httptest.ResponseRecorder {
@@ -482,7 +494,7 @@ func TestPermanentDeleteDeletedPerson(t *testing.T) {
 func TestHandlersReturnInternalErrors(t *testing.T) {
 	store := &errorStore{fakeStore: newFakeStore(), err: errors.New("database unavailable")}
 	svc := person.NewService(store)
-	h := NewRouter(slog.Default(), svc, store, nil)
+	h := NewRouter(slog.Default(), svc, store, nil, nil)
 	id := uuid.NewString()
 	for _, tc := range []struct {
 		method, path string

@@ -79,6 +79,25 @@ func (r *Repository) GetByID(ctx context.Context, id uuid.UUID) (*Person, error)
 	return person, err
 }
 
+// GetDeletedByID returns a soft-deleted Person by ID.
+func (r *Repository) GetDeletedByID(ctx context.Context, id uuid.UUID) (*Person, error) {
+	q := `
+		SELECT id, first_name, middle_names, last_name, display_name, nickname, pronouns, birthdate, phone_numbers, custom_fields,
+		       created_at, updated_at, deleted_at
+		FROM persons
+		WHERE id = $1 AND deleted_at IS NOT NULL`
+	args := []any{id}
+	if ownerID, ok := authn.UserID(ctx); ok {
+		q = strings.Replace(q, "WHERE id = $1", "WHERE id = $1 AND owner_id = $2", 1)
+		args = append(args, ownerID)
+	}
+	person, err := scanPerson(r.pool.QueryRow(ctx, q, args...))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	return person, err
+}
+
 // List returns a page of non-deleted Persons and the total matching count.
 func (r *Repository) List(ctx context.Context, params ListParams) ([]Person, int, error) {
 	where := []string{"deleted_at IS NULL"}
