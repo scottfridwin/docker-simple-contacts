@@ -118,6 +118,37 @@ func TestIsProduction(t *testing.T) {
 	}
 }
 
+func TestLoadIgnoresAuthentikSecretFilesWithoutIssuer(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("DB_HOST", "localhost")
+	t.Setenv("DB_USER", "app")
+	t.Setenv("DB_PASSWORD", "secret")
+	// Docker Compose always passes these, backed by /dev/null when SSO is unused.
+	t.Setenv("AUTHENTIK_CLIENT_ID_FILE", "/dev/null")
+	t.Setenv("AUTHENTIK_CLIENT_SECRET_FILE", "/dev/null")
+	t.Setenv("SESSION_SECRET_FILE", "/dev/null")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.AuthentikIssuer != "" || cfg.AuthentikClientID != "" || cfg.AuthentikSecret != "" {
+		t.Errorf("expected Authentik to be disabled, got %#v", cfg)
+	}
+}
+
+func TestLoadFailsWithInlineAuthentikSecretOnly(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("DB_HOST", "localhost")
+	t.Setenv("DB_USER", "app")
+	t.Setenv("DB_PASSWORD", "secret")
+	t.Setenv("AUTHENTIK_CLIENT_SECRET", "inline-secret")
+
+	if _, err := Load(); err == nil {
+		t.Fatal("expected error when only an inline client secret is set")
+	}
+}
+
 func TestLoadAuthentikConfigurationUsesSecretFiles(t *testing.T) {
 	clearEnv(t)
 	dir := t.TempDir()

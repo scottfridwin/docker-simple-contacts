@@ -73,7 +73,11 @@ func Load() (Config, error) {
 	cfg.AuthentikRedirect = firstEnv("AUTHENTIK_REDIRECT_URL", "AUTHENTIK_REDIRECT_URI", "OIDC_REDIRECT_URI")
 	clientIDFile := firstEnv("AUTHENTIK_CLIENT_ID_FILE", "OIDC_CLIENT_ID_FILE")
 	clientID := firstEnv("AUTHENTIK_CLIENT_ID", "OIDC_CLIENT_ID")
-	if cfg.AuthentikIssuer != "" || clientID != "" || clientIDFile != "" || cfg.AuthentikRedirect != "" || os.Getenv("AUTHENTIK_CLIENT_SECRET") != "" || os.Getenv("AUTHENTIK_CLIENT_SECRET_FILE") != "" || os.Getenv("OIDC_CLIENT_SECRET") != "" || os.Getenv("OIDC_CLIENT_SECRET_FILE") != "" {
+	// Authentik is considered configured when an issuer, client ID, redirect
+	// URL, or inline client secret is supplied. Docker Compose always passes
+	// secret-file paths (backed by /dev/null when SSO is unused), so *_FILE
+	// variables alone must not enable SSO.
+	if cfg.AuthentikIssuer != "" || clientID != "" || cfg.AuthentikRedirect != "" || firstEnv("AUTHENTIK_CLIENT_SECRET", "OIDC_CLIENT_SECRET") != "" {
 		if cfg.AuthentikIssuer == "" || (clientID == "" && clientIDFile == "") || cfg.AuthentikRedirect == "" {
 			return Config{}, errors.New("AUTHENTIK_ISSUER, AUTHENTIK_CLIENT_ID, and AUTHENTIK_REDIRECT_URL are required when Authentik is configured")
 		}
