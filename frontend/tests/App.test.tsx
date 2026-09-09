@@ -129,17 +129,17 @@ describe('App sync integration', () => {
     });
 
     render(<App />);
+    await userEvent.click(screen.getByRole('button', { name: /open sync settings/i }));
 
     expect(await screen.findByRole('heading', { name: /connected accounts/i })).toBeInTheDocument();
     expect(screen.getByText('google')).toBeInTheDocument();
-    expect(screen.getByRole('combobox', { name: /sync status/i })).toHaveValue('connected');
     expect(screen.getByRole('spinbutton', { name: /sync frequency minutes/i })).toHaveValue(30);
-    expect(screen.getByText(/people\/abc/i)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /connect google/i })).toBeInTheDocument();
   });
 
   it('starts the google connect flow from the ui', async () => {
     render(<App />);
+    await userEvent.click(screen.getByRole('button', { name: /open sync settings/i }));
 
     await userEvent.click(screen.getByRole('button', { name: /connect google/i }));
 
@@ -159,6 +159,7 @@ describe('App sync integration', () => {
   it('falls back to same-tab navigation when popup is blocked', async () => {
     (window.open as unknown as ReturnType<typeof vi.fn>).mockReturnValueOnce(null);
     render(<App />);
+    await userEvent.click(screen.getByRole('button', { name: /open sync settings/i }));
 
     await userEvent.click(screen.getByRole('button', { name: /connect google/i }));
 
@@ -166,6 +167,22 @@ describe('App sync integration', () => {
       expect(window.location.assign).toHaveBeenCalledWith(
         'https://accounts.google.com/o/oauth2/v2/auth?state=abc',
       );
+    });
+  });
+
+  it('opens and closes the sync drawer', async () => {
+    render(<App />);
+
+    expect(screen.queryByRole('heading', { name: /connected accounts/i })).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole('button', { name: /open sync settings/i }));
+    expect(await screen.findByRole('heading', { name: /connected accounts/i })).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole('button', { name: /close sync settings/i }));
+    await waitFor(() => {
+      expect(
+        screen.queryByRole('heading', { name: /connected accounts/i }),
+      ).not.toBeInTheDocument();
     });
   });
 
@@ -193,6 +210,7 @@ describe('App sync integration', () => {
     });
 
     render(<App />);
+    await userEvent.click(screen.getByRole('button', { name: /open sync settings/i }));
 
     const saveButton = await screen.findByRole('button', { name: /save changes/i });
     expect(saveButton).toBeDisabled();
@@ -206,7 +224,6 @@ describe('App sync integration', () => {
     await waitFor(() => {
       expect(mocks.updateSyncAccount).toHaveBeenCalledWith('1', {
         sync_frequency_minutes: 45,
-        status: 'connected',
       });
     });
   });
@@ -235,6 +252,7 @@ describe('App sync integration', () => {
     });
 
     render(<App />);
+    await userEvent.click(screen.getByRole('button', { name: /open sync settings/i }));
 
     expect(await screen.findByText(/syncing/i)).toBeInTheDocument();
   });

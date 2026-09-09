@@ -15,12 +15,12 @@ import {
 import type { Person, SyncAccount } from './types';
 import { PersonForm, type PersonFormValues } from './components/PersonForm';
 import { PersonList } from './components/PersonList';
+import { CloseIcon, PlusIcon, SyncIcon, TrashIcon } from './icons';
 
 type View = { mode: 'list' } | { mode: 'create' } | { mode: 'edit'; person: Person };
 
 type SyncAccountDraft = {
   sync_frequency_minutes: string;
-  status: string;
 };
 
 function getAppPathname() {
@@ -108,9 +108,11 @@ export default function App() {
   const [persons, setPersons] = useState<Person[]>([]);
   const [syncAccounts, setSyncAccounts] = useState<SyncAccount[]>([]);
   const [syncDrafts, setSyncDrafts] = useState<Record<string, SyncAccountDraft>>({});
+  const [syncDrawerOpen, setSyncDrawerOpen] = useState(false);
   const [view, setView] = useState<View>({ mode: 'list' });
   const [loading, setLoading] = useState(false);
   const [syncLoading, setSyncLoading] = useState(false);
+  const [syncLoaded, setSyncLoaded] = useState(false);
   const [syncConnecting, setSyncConnecting] = useState(false);
   const [syncSavingId, setSyncSavingId] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -162,17 +164,19 @@ export default function App() {
     try {
       const res = await listSyncAccounts();
       setSyncAccounts(res.data);
-      setSyncDrafts(
-        Object.fromEntries(
-          res.data.map((account) => [
-            account.id,
-            {
-              sync_frequency_minutes: String(account.sync_frequency_minutes),
-              status: account.status,
-            },
-          ]),
-        ),
-      );
+      setSyncDrafts((prev) => {
+        const next: Record<string, SyncAccountDraft> = {};
+        for (const account of res.data) {
+          const committed = String(account.sync_frequency_minutes);
+          const existing = prev[account.id];
+          // Keep an in-progress edit instead of clobbering it with a background poll.
+          next[account.id] =
+            existing && existing.sync_frequency_minutes !== committed
+              ? existing
+              : { sync_frequency_minutes: committed };
+        }
+        return next;
+      });
     } catch (err) {
       if (err instanceof ApiRequestError && err.status === 401) {
         setSyncAccounts([]);
@@ -181,6 +185,7 @@ export default function App() {
       }
     } finally {
       setSyncLoading(false);
+      setSyncLoaded(true);
     }
   }, [isPrivacyPage]);
 
@@ -251,6 +256,17 @@ export default function App() {
     return () => window.clearInterval(id);
   }, [authenticationRequired, isPrivacyPage, refreshSyncAccounts, syncAccounts]);
 
+  useEffect(() => {
+    if (!syncDrawerOpen) {
+      return;
+    }
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setSyncDrawerOpen(false);
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [syncDrawerOpen]);
+
   if (isPrivacyPage) {
     return <PrivacyPolicyPage />;
   }
@@ -283,22 +299,20 @@ export default function App() {
   const getSyncDraftState = (account: SyncAccount) => {
     const draft = syncDrafts[account.id];
     const frequency = Number(draft?.sync_frequency_minutes ?? account.sync_frequency_minutes);
-    const status = draft?.status ?? account.status;
     const validFrequency =
       Number.isFinite(frequency) && Number.isInteger(frequency) && frequency >= 5;
-    const changed = frequency !== account.sync_frequency_minutes || status !== account.status;
-    return { draft, frequency, status, validFrequency, changed };
+    const changed = frequency !== account.sync_frequency_minutes;
+    return { draft, frequency, validFrequency, changed };
   };
 
   const saveSyncAccount = async (account: SyncAccount) => {
-    const { frequency, status, validFrequency, changed } = getSyncDraftState(account);
+    const { frequency, validFrequency, changed } = getSyncDraftState(account);
     if (!changed || !validFrequency) return;
     setSyncError(null);
     setSyncSavingId(account.id);
     try {
       await updateSyncAccount(account.id, {
         sync_frequency_minutes: frequency,
-        status,
       });
       await refreshSyncAccounts();
     } catch (err) {
@@ -384,20 +398,50 @@ export default function App() {
     }
   };
 
+  const hasReconnectIssue = syncAccounts.some(
+    (account) => account.status === 'error' || account.status === 'reconnect_required',
+  );
+
   return (
     <main className="app">
       <header className="app-header">
-        <h1>Contacts</h1>
-        <div className="app-header-actions">
-          <button type="button" className="ghost" onClick={refreshSyncAccounts}>
-            Refresh sync
+        <div className="app-header-title">
+          <button
+            type="button"
+            className="icon-button"
+            onClick={() => setSyncDrawerOpen(true)}
+            aria-label="Open sync settings"
+          >
+            <SyncIcon />
           </button>
-          {view.mode === 'list' && !showDeleted && (
-            <button type="button" onClick={() => setView({ mode: 'create' })}>
-              Add contact
-            </button>
-          )}
+          <h1>Contacts</h1>
         </div>
+        {view.mode === 'list' && (
+          <div className="app-header-actions">
+            {!showDeleted && (
+              <button
+                type="button"
+                className="btn-with-icon"
+                onClick={() => setView({ mode: 'create' })}
+              >
+                <PlusIcon />
+                Add contact
+              </button>
+            )}
+            <button
+              type="button"
+              className="ghost btn-with-icon"
+              onClick={() => {
+                setPage(1);
+                setSearch({ firstName: '', lastName: '' });
+                setShowDeleted((v) => !v);
+              }}
+            >
+              <TrashIcon />
+              {showDeleted ? 'Active contacts' : 'Recycle bin'}
+            </button>
+          </div>
+        )}
       </header>
 
       {error && (
@@ -411,14 +455,31 @@ export default function App() {
         </div>
       )}
 
-      <section className="sync-panel" aria-labelledby="sync-panel-title">
-        <div className="sync-panel-header">
+      {syncDrawerOpen && (
+        <div
+          className="drawer-backdrop"
+          onClick={() => setSyncDrawerOpen(false)}
+          aria-hidden="true"
+        />
+      )}
+      <aside
+        className={`sync-drawer${syncDrawerOpen ? ' sync-drawer-open' : ''}`}
+        aria-label="Sync settings"
+        aria-hidden={!syncDrawerOpen}
+        inert={!syncDrawerOpen}
+      >
+        <div className="sync-drawer-header">
           <div>
             <p className="section-eyebrow">SYNC</p>
             <h2 id="sync-panel-title">Connected accounts</h2>
           </div>
-          <button type="button" onClick={handleConnectGoogle} disabled={syncConnecting}>
-            {syncConnecting ? 'Starting Google…' : 'Connect Google'}
+          <button
+            type="button"
+            className="icon-button"
+            onClick={() => setSyncDrawerOpen(false)}
+            aria-label="Close sync settings"
+          >
+            <CloseIcon />
           </button>
         </div>
         <p className="sync-panel-description">
@@ -430,7 +491,24 @@ export default function App() {
             {syncError}
           </div>
         )}
-        {syncLoading ? (
+        <div className="sync-drawer-actions">
+          <button type="button" onClick={handleConnectGoogle} disabled={syncConnecting}>
+            {syncConnecting
+              ? 'Starting Google…'
+              : hasReconnectIssue
+                ? 'Reconnect Google'
+                : 'Connect Google'}
+          </button>
+          <button
+            type="button"
+            className="ghost"
+            onClick={() => void refreshSyncAccounts()}
+            disabled={syncLoading}
+          >
+            {syncLoading ? 'Refreshing…' : 'Refresh sync'}
+          </button>
+        </div>
+        {!syncLoaded ? (
           <p>Loading sync accounts…</p>
         ) : syncAccounts.length === 0 ? (
           <p className="empty">No sync accounts configured yet.</p>
@@ -453,10 +531,6 @@ export default function App() {
                     </span>
                   </div>
                   <dl className="sync-account-details">
-                    <div>
-                      <dt>Account</dt>
-                      <dd>{account.provider_account_id}</dd>
-                    </div>
                     <div>
                       <dt>Last sync</dt>
                       <dd>
@@ -492,24 +566,6 @@ export default function App() {
                         />
                       </dd>
                     </div>
-                    <div>
-                      <dt>Cursor</dt>
-                      <dd>{account.sync_cursor || '—'}</dd>
-                    </div>
-                    <div>
-                      <dt>Status</dt>
-                      <dd>
-                        <select
-                          aria-label="Sync status"
-                          value={syncDrafts[account.id]?.status ?? account.status}
-                          onChange={(e) => updateSyncDraft(account.id, { status: e.target.value })}
-                        >
-                          <option value="connected">connected</option>
-                          <option value="reconnect_required">reconnect_required</option>
-                          <option value="error">error</option>
-                        </select>
-                      </dd>
-                    </div>
                   </dl>
                   <div className="sync-account-actions">
                     <button
@@ -526,7 +582,7 @@ export default function App() {
             })}
           </ul>
         )}
-      </section>
+      </aside>
 
       {view.mode === 'list' && (
         <>
@@ -553,16 +609,6 @@ export default function App() {
                 />
               </>
             )}
-            <button
-              type="button"
-              onClick={() => {
-                setPage(1);
-                setSearch({ firstName: '', lastName: '' });
-                setShowDeleted((v) => !v);
-              }}
-            >
-              {showDeleted ? 'Active contacts' : 'Recycle bin'}
-            </button>
           </div>
           {loading ? (
             <p>Loading…</p>
