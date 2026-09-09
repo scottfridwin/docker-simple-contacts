@@ -13,9 +13,9 @@ deployment artifact is a set of container images.
 ```mermaid
 flowchart LR
   U[Browser / PWA] -->|/api/v1| RP[Reverse proxy]
-  RP --> API[Go API (net/http + chi)]
+  RP --> API["Go API (net/http + chi)"]
   API --> DB[(PostgreSQL)]
-  RP --> FE[Static PWA (nginx)]
+  RP --> FE["Static PWA (nginx)"]
 ```
 
 - **Backend** — Go (`net/http` + [chi] router), [pgx] for PostgreSQL access,
