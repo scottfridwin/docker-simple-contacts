@@ -65,6 +65,44 @@ function PrivacyPolicyPage() {
   );
 }
 
+function HomeInfoPage() {
+  return (
+    <main className="landing-page">
+      <section className="landing-card" aria-labelledby="landing-title">
+        <div className="landing-banner" aria-hidden="true">
+          <span className="landing-mark">FW</span>
+        </div>
+        <p className="landing-eyebrow">FRIDWIN CONTACTS</p>
+        <h1 id="landing-title">Family contact manager with optional Google sync</h1>
+        <p className="landing-description">
+          This private app helps a small family group store contact details, keep records organized,
+          and optionally sync with Google Contacts.
+        </p>
+        <div className="landing-purpose" aria-label="app purpose">
+          <p>
+            You can review this page without signing in. Sign-in is only required to access and edit
+            private contact data.
+          </p>
+          <ul>
+            <li>Manage names, phone numbers, and custom profile fields.</li>
+            <li>Connect Google Contacts to synchronize records you choose.</li>
+            <li>Control your own data retention with soft delete and purge behavior.</li>
+          </ul>
+        </div>
+        <div className="landing-actions">
+          <a className="sso-button" href="/auth/login">
+            <span aria-hidden="true">→</span>
+            Sign in with FridWin
+          </a>
+          <a className="landing-link" href="/privacy">
+            Privacy Policy
+          </a>
+        </div>
+      </section>
+    </main>
+  );
+}
+
 export default function App() {
   const isPrivacyPage = getAppPathname() === '/privacy';
   const [persons, setPersons] = useState<Person[]>([]);
@@ -178,6 +216,20 @@ export default function App() {
     return () => window.removeEventListener('focus', onFocus);
   }, [isPrivacyPage, refreshSyncAccounts]);
 
+  useEffect(() => {
+    if (isPrivacyPage) {
+      return;
+    }
+    const onMessage = (event: MessageEvent) => {
+      if (event.origin !== window.location.origin) return;
+      if (event.data?.type === 'google-sync-complete') {
+        void refreshSyncAccounts();
+      }
+    };
+    window.addEventListener('message', onMessage);
+    return () => window.removeEventListener('message', onMessage);
+  }, [isPrivacyPage, refreshSyncAccounts]);
+
   if (isPrivacyPage) {
     return <PrivacyPolicyPage />;
   }
@@ -199,17 +251,6 @@ export default function App() {
       setSyncConnecting(false);
     }
   };
-
-  useEffect(() => {
-    const onMessage = (event: MessageEvent) => {
-      if (event.origin !== window.location.origin) return;
-      if (event.data?.type === 'google-sync-complete') {
-        void refreshSyncAccounts();
-      }
-    };
-    window.addEventListener('message', onMessage);
-    return () => window.removeEventListener('message', onMessage);
-  }, [refreshSyncAccounts]);
 
   const updateSyncDraft = (id: string, patch: Partial<SyncAccountDraft>) => {
     setSyncDrafts((prev) => ({
@@ -246,24 +287,7 @@ export default function App() {
   };
 
   if (authenticationRequired) {
-    return (
-      <main className="landing-page">
-        <section className="landing-card" aria-labelledby="landing-title">
-          <div className="landing-banner" aria-hidden="true">
-            <span className="landing-mark">FW</span>
-          </div>
-          <p className="landing-eyebrow">FRIDWIN CONTACTS</p>
-          <h1 id="landing-title">Your contacts, all in one place.</h1>
-          <p className="landing-description">
-            Sign in to securely access and manage your contacts.
-          </p>
-          <a className="sso-button" href="/auth/login">
-            <span aria-hidden="true">→</span>
-            Sign in with FridWin
-          </a>
-        </section>
-      </main>
-    );
+    return <HomeInfoPage />;
   }
 
   const handleSubmit = async (values: PersonFormValues) => {

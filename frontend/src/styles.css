@@ -110,6 +110,42 @@ body {
   color: var(--muted);
 }
 
+.landing-purpose {
+  margin: 0 auto 1.5rem;
+  max-width: 26rem;
+  text-align: left;
+  color: var(--text);
+}
+
+.landing-purpose p {
+  margin: 0 0 0.7rem;
+  color: var(--muted);
+}
+
+.landing-purpose ul {
+  margin: 0;
+  padding-left: 1.1rem;
+  display: grid;
+  gap: 0.35rem;
+}
+
+.landing-actions {
+  display: grid;
+  justify-items: center;
+  gap: 0.85rem;
+}
+
+.landing-link {
+  color: var(--muted);
+  text-decoration: none;
+  font-weight: 600;
+}
+
+.landing-link:hover {
+  color: var(--text);
+  text-decoration: underline;
+}
+
 .privacy-card {
   text-align: left;
 }
