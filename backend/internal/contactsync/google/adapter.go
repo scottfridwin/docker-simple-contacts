@@ -58,6 +58,9 @@ type personService interface {
 	Update(context.Context, uuid.UUID, person.UpdateInput) (*person.Person, person.ValidationErrors, error)
 	Delete(context.Context, uuid.UUID) error
 	List(context.Context, person.ListParams) ([]person.Person, int, error)
+	ListRelationships(context.Context, uuid.UUID) ([]person.RelationshipView, error)
+	ReplaceRelationships(context.Context, uuid.UUID, []person.RelationshipInput) error
+	FindByDisplayName(context.Context, string) ([]person.Person, error)
 }
 
 // Adapter implements OAuth and People API operations for Google Contacts.
@@ -372,6 +375,60 @@ func (a *Adapter) linkRecord(ctx context.Context, accountID, personID uuid.UUID,
 	})
 }
 
+// attachRelationsForExport loads personID's current relationships (resolving
+// live display names) and attaches them to record's "relations" field, since
+// relationships can't be populated by the plain Person.Snapshot()/
+// personToRecord() path - they require a database join, not just the
+// person's own row.
+func (a *Adapter) attachRelationsForExport(ctx context.Context, personID uuid.UUID, updatedAt time.Time, record contactsync.Record) contactsync.Record {
+	views, err := a.people.ListRelationships(ctx, personID)
+	if err != nil {
+		a.logger.Warn("failed to load relationships for export", "person_id", personID, "error", err)
+		return record
+	}
+	relations := make([]contactsync.LabeledValue, 0, len(views))
+	for _, v := range views {
+		if v.RelatedPersonName == "" {
+			continue
+		}
+		relations = append(relations, contactsync.LabeledValue{Label: string(v.Type), Value: v.RelatedPersonName})
+	}
+	record.Fields["relations"] = contactsync.FieldState{IsSet: true, Value: relations, UpdatedAt: updatedAt}
+	return record
+}
+
+// reconcileRelationships replaces personID's relationships with the ones
+// reported by the remote provider, resolving each provider-supplied name to
+// an existing local contact when there's exactly one exact display-name
+// match, and otherwise keeping it as an unlinked, name-only relationship so
+// the information isn't lost.
+func (a *Adapter) reconcileRelationships(ctx context.Context, personID uuid.UUID, fields map[string]contactsync.FieldState) {
+	raw := fieldLabeledValues(fields, "relations")
+	inputs := make([]person.RelationshipInput, 0, len(raw))
+	for _, rel := range raw {
+		relType := person.RelationType(rel.Label)
+		if !relType.Valid() {
+			continue
+		}
+		name := strings.TrimSpace(rel.Value)
+		if name == "" {
+			continue
+		}
+		in := person.RelationshipInput{Type: relType}
+		if matches, err := a.people.FindByDisplayName(ctx, name); err == nil && len(matches) == 1 && matches[0].ID != personID {
+			relatedID := matches[0].ID
+			in.RelatedPersonID = &relatedID
+		} else {
+			relatedName := name
+			in.RelatedPersonName = &relatedName
+		}
+		inputs = append(inputs, in)
+	}
+	if err := a.people.ReplaceRelationships(ctx, personID, inputs); err != nil {
+		a.logger.Warn("failed to reconcile relationships from google", "person_id", personID, "error", err)
+	}
+}
+
 func (a *Adapter) syncLocalJob(ctx context.Context, accountID uuid.UUID, session contactsync.AuthSession, job contactsync.Job) error {
 	remoteID := a.remoteIDFor(ctx, accountID, job.PersonID)
 	if job.Kind == contactsync.ChangeKindDeleted || job.Kind == contactsync.ChangeKindHardDeleted {
@@ -379,6 +436,7 @@ func (a *Adapter) syncLocalJob(ctx context.Context, accountID uuid.UUID, session
 	}
 	record := snapshotToRecord(job.Snapshot)
 	record.ExternalID = remoteID
+	record = a.attachRelationsForExport(ctx, job.Snapshot.ID, job.Snapshot.UpdatedAt, record)
 	providerRecord, err := a.UpsertRecord(ctx, session, record)
 	if err != nil {
 		return err
@@ -426,7 +484,7 @@ func (a *Adapter) exportLocal(ctx context.Context, accountID uuid.UUID, session 
 		}
 		for i := range rows {
 			remoteID := a.remoteIDFor(ctx, accountID, rows[i].ID)
-			record := personToRecord(rows[i], remoteID)
+			record := a.attachRelationsForExport(ctx, rows[i].ID, rows[i].UpdatedAt, personToRecord(rows[i], remoteID))
 			providerRecord, upsertErr := a.UpsertRecord(ctx, session, record)
 			if upsertErr != nil {
 				return upsertErr
@@ -459,7 +517,8 @@ func (a *Adapter) mergeRemoteRecord(ctx context.Context, accountID uuid.UUID, se
 		if err != nil {
 			return fmt.Errorf("creating local person from google record %s: %w", remote.Record.ExternalID, err)
 		}
-		out, upsertErr := a.UpsertRecord(ctx, session, personToRecord(*created, remote.Record.ExternalID))
+		a.reconcileRelationships(ctx, created.ID, remote.Record.Fields)
+		out, upsertErr := a.UpsertRecord(ctx, session, a.attachRelationsForExport(ctx, created.ID, created.UpdatedAt, personToRecord(*created, remote.Record.ExternalID)))
 		if upsertErr != nil {
 			return upsertErr
 		}
@@ -481,7 +540,8 @@ func (a *Adapter) mergeRemoteRecord(ctx context.Context, accountID uuid.UUID, se
 		if createErr != nil {
 			return fmt.Errorf("creating local person for missing mapping: %w", createErr)
 		}
-		out, upsertErr := a.UpsertRecord(ctx, session, personToRecord(*created, remote.Record.ExternalID))
+		a.reconcileRelationships(ctx, created.ID, remote.Record.Fields)
+		out, upsertErr := a.UpsertRecord(ctx, session, a.attachRelationsForExport(ctx, created.ID, created.UpdatedAt, personToRecord(*created, remote.Record.ExternalID)))
 		if upsertErr != nil {
 			return upsertErr
 		}
@@ -502,7 +562,7 @@ func (a *Adapter) mergeRemoteRecord(ctx context.Context, accountID uuid.UUID, se
 				return fmt.Errorf("deleting local person %s: %w", local.ID.String(), err)
 			}
 		} else {
-			_, upsertErr := a.UpsertRecord(ctx, session, personToRecord(*local, remote.Record.ExternalID))
+			_, upsertErr := a.UpsertRecord(ctx, session, a.attachRelationsForExport(ctx, local.ID, local.UpdatedAt, personToRecord(*local, remote.Record.ExternalID)))
 			if upsertErr != nil {
 				return upsertErr
 			}
@@ -532,11 +592,12 @@ func (a *Adapter) mergeRemoteRecord(ctx context.Context, accountID uuid.UUID, se
 		if _, _, err := a.people.Update(contactsync.WithSyncOrigin(ctx), local.ID, update); err != nil {
 			return fmt.Errorf("updating local person %s: %w", local.ID.String(), err)
 		}
+		a.reconcileRelationships(ctx, local.ID, remote.Record.Fields)
 		return nil
 	}
 
 	if local.UpdatedAt.After(remoteUpdatedAt) {
-		_, err := a.UpsertRecord(ctx, session, personToRecord(*local, remote.Record.ExternalID))
+		_, err := a.UpsertRecord(ctx, session, a.attachRelationsForExport(ctx, local.ID, local.UpdatedAt, personToRecord(*local, remote.Record.ExternalID)))
 		return err
 	}
 	return nil
@@ -739,8 +800,8 @@ func stringPtr(v string) *string {
 // masks we read and write, respectively. Keep these in sync with the mapping
 // logic in toProviderRecord/toGooglePerson below.
 const (
-	googlePersonFields       = "names,nicknames,emailAddresses,phoneNumbers,addresses,organizations,biographies,birthdays,metadata,userDefined"
-	googleUpdatePersonFields = "names,nicknames,emailAddresses,phoneNumbers,addresses,organizations,biographies,birthdays,userDefined"
+	googlePersonFields       = "names,nicknames,emailAddresses,phoneNumbers,addresses,organizations,biographies,birthdays,relations,metadata,userDefined"
+	googleUpdatePersonFields = "names,nicknames,emailAddresses,phoneNumbers,addresses,organizations,biographies,birthdays,relations,userDefined"
 )
 
 func fieldString(fields map[string]contactsync.FieldState, key string) string {
@@ -867,6 +928,7 @@ type googlePerson struct {
 	Organizations  []googleOrganization `json:"organizations"`
 	Biographies    []googleBiography    `json:"biographies"`
 	Birthdays      []googleBirthday     `json:"birthdays"`
+	Relations      []googleRelation     `json:"relations"`
 	UserDefined    []googleUserDefined  `json:"userDefined"`
 }
 
@@ -933,9 +995,40 @@ type googleDate struct {
 	Day   int `json:"day,omitempty"`
 }
 
+type googleRelation struct {
+	Person string `json:"person,omitempty"`
+	Type   string `json:"type,omitempty"`
+}
+
 type googleUserDefined struct {
 	Key   string `json:"key"`
 	Value string `json:"value"`
+}
+
+// googleRelationTypeMap maps Google's relation type strings to our fixed
+// enum. Relation types we don't support (friend, relative, manager,
+// assistant, referredBy, colleague, etc.) aren't listed here and are skipped
+// on import, since custom relationship types aren't supported.
+var googleRelationTypeMap = map[string]person.RelationType{
+	"parent":          person.RelationParent,
+	"mother":          person.RelationParent,
+	"father":          person.RelationParent,
+	"child":           person.RelationChild,
+	"son":             person.RelationChild,
+	"daughter":        person.RelationChild,
+	"spouse":          person.RelationSpouse,
+	"sibling":         person.RelationSibling,
+	"brother":         person.RelationSibling,
+	"sister":          person.RelationSibling,
+	"partner":         person.RelationPartner,
+	"domesticpartner": person.RelationPartner,
+}
+
+// mapGoogleRelationType maps a Google relation type string to our fixed
+// enum, reporting false for unsupported types.
+func mapGoogleRelationType(googleType string) (person.RelationType, bool) {
+	t, ok := googleRelationTypeMap[strings.ToLower(strings.TrimSpace(googleType))]
+	return t, ok
 }
 
 // dedupeLabeledValues drops exact (label, value) duplicates while preserving
@@ -1028,6 +1121,17 @@ func toProviderRecord(in googlePerson) contactsync.ProviderRecord {
 	if birthdate := formatGoogleBirthday(in.Birthdays); birthdate != nil {
 		fields["birthdate"] = contactsync.FieldState{IsSet: true, Value: *birthdate, UpdatedAt: updatedAt}
 	}
+	relations := make([]contactsync.LabeledValue, 0, len(in.Relations))
+	for _, rel := range in.Relations {
+		name := strings.TrimSpace(rel.Person)
+		if name == "" {
+			continue
+		}
+		if t, ok := mapGoogleRelationType(rel.Type); ok {
+			relations = append(relations, contactsync.LabeledValue{Label: string(t), Value: name})
+		}
+	}
+	fields["relations"] = contactsync.FieldState{IsSet: true, Value: relations, UpdatedAt: updatedAt}
 	fields[remoteUpdatedFieldKey] = contactsync.FieldState{IsSet: true, Value: updatedAt.Format(time.RFC3339Nano), UpdatedAt: updatedAt}
 	for _, item := range in.UserDefined {
 		if item.Key == localIDUserDefinedKey {
@@ -1105,6 +1209,11 @@ func toGooglePerson(record contactsync.Record, etag string) googlePerson {
 	if localID != "" {
 		userDefined = append(userDefined, googleUserDefined{Key: localIDUserDefinedKey, Value: localID})
 	}
+	relations := fieldLabeledValues(record.Fields, "relations")
+	relationValues := make([]googleRelation, 0, len(relations))
+	for _, rel := range relations {
+		relationValues = append(relationValues, googleRelation{Person: rel.Value, Type: rel.Label})
+	}
 	return googlePerson{
 		ResourceName: record.ExternalID,
 		ETag:         etag,
@@ -1120,6 +1229,7 @@ func toGooglePerson(record contactsync.Record, etag string) googlePerson {
 		Organizations:  organizations,
 		Biographies:    biographies,
 		Birthdays:      toGoogleBirthday(birthdate),
+		Relations:      relationValues,
 		UserDefined:    userDefined,
 	}
 }

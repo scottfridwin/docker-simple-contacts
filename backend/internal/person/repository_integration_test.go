@@ -167,3 +167,76 @@ func createTestUser(t *testing.T, ctx context.Context, pool *pgxpool.Pool, subje
 	t.Cleanup(func() { _, _ = pool.Exec(ctx, "DELETE FROM users WHERE id = $1", id) })
 	return id
 }
+
+// TestRepositoryRelationships exercises the real UNION-based
+// forward/reverse query, the unique-linked-relationship constraint, cascade
+// deletion when the related person is hard-deleted, and cross-owner
+// isolation against a real Postgres instance (the in-memory fakes used by
+// unit tests can't catch SQL-level bugs).
+func TestRepositoryRelationships(t *testing.T) {
+	pool := newTestPool(t)
+	repo := NewRepository(pool)
+	ctx := context.Background()
+	owner := createTestUser(t, ctx, pool, "rel-owner")
+	other := createTestUser(t, ctx, pool, "rel-other")
+	ownerCtx := authn.WithUserID(ctx, owner)
+	otherCtx := authn.WithUserID(ctx, other)
+
+	a, err := repo.Create(ownerCtx, &Person{FirstName: "A", LastName: "Parent", DisplayName: "A Parent", CustomFields: map[string]any{}})
+	if err != nil {
+		t.Fatalf("create A: %v", err)
+	}
+	b, err := repo.Create(ownerCtx, &Person{FirstName: "B", LastName: "Child", DisplayName: "B Child", CustomFields: map[string]any{}})
+	if err != nil {
+		t.Fatalf("create B: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = pool.Exec(ctx, "DELETE FROM persons WHERE id IN ($1, $2)", a.ID, b.ID)
+	})
+
+	view, err := repo.CreateRelationship(ownerCtx, a.ID, RelationshipInput{Type: RelationParent, RelatedPersonID: &b.ID})
+	if err != nil {
+		t.Fatalf("CreateRelationship: %v", err)
+	}
+	if view.Type != RelationParent || view.RelatedPersonName != "B Child" {
+		t.Fatalf("unexpected view: %+v", view)
+	}
+
+	// Duplicate linked relationship of the same type is rejected.
+	if _, err := repo.CreateRelationship(ownerCtx, a.ID, RelationshipInput{Type: RelationParent, RelatedPersonID: &b.ID}); !errors.Is(err, ErrRelationshipExists) {
+		t.Fatalf("expected ErrRelationshipExists, got %v", err)
+	}
+
+	// B's list shows the computed inverse via the real UNION query.
+	bViews, err := repo.ListRelationships(ownerCtx, b.ID)
+	if err != nil {
+		t.Fatalf("ListRelationships(B): %v", err)
+	}
+	if len(bViews) != 1 || bViews[0].Type != RelationChild || bViews[0].RelatedPersonName != "A Parent" {
+		t.Fatalf("B's relationships = %+v", bViews)
+	}
+
+	// A different owner must not see this relationship at all.
+	otherViews, err := repo.ListRelationships(otherCtx, a.ID)
+	if err != nil {
+		t.Fatalf("ListRelationships (other owner): %v", err)
+	}
+	if len(otherViews) != 0 {
+		t.Fatalf("expected no relationships visible to a different owner, got %+v", otherViews)
+	}
+
+	// Hard-deleting the related person cascades and removes the relationship.
+	if err := repo.SoftDelete(ownerCtx, b.ID); err != nil {
+		t.Fatalf("soft delete B: %v", err)
+	}
+	if err := repo.HardDelete(ownerCtx, b.ID); err != nil {
+		t.Fatalf("hard delete B: %v", err)
+	}
+	aViews, err := repo.ListRelationships(ownerCtx, a.ID)
+	if err != nil {
+		t.Fatalf("ListRelationships(A) after related person hard-deleted: %v", err)
+	}
+	if len(aViews) != 0 {
+		t.Fatalf("expected relationship to cascade-delete with the related person, got %+v", aViews)
+	}
+}

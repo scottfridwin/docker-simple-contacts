@@ -7,6 +7,7 @@ interface PersonListProps {
   deleted?: boolean;
   onRestore?: (person: Person) => void;
   onPermanentDelete?: (person: Person) => void;
+  onToggleFavorite?: (person: Person) => void;
 }
 
 const RESERVED_SYNC_FIELDS = new Set([
@@ -22,6 +23,7 @@ export function PersonList({
   deleted,
   onRestore,
   onPermanentDelete,
+  onToggleFavorite,
 }: PersonListProps) {
   if (persons.length === 0) {
     return (
@@ -69,6 +71,19 @@ export function PersonList({
               </>
             ) : (
               <>
+                <button
+                  type="button"
+                  className={`btn-icon btn-star${person.is_favorite ? ' is-favorite' : ''}`}
+                  onClick={() => onToggleFavorite?.(person)}
+                  aria-label={
+                    person.is_favorite
+                      ? `unfavorite ${person.display_name}`
+                      : `favorite ${person.display_name}`
+                  }
+                  aria-pressed={person.is_favorite}
+                >
+                  {person.is_favorite ? '★' : '☆'}
+                </button>
                 <button type="button" onClick={() => onEdit(person)}>
                   Edit
                 </button>

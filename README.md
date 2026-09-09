@@ -182,6 +182,9 @@ A `Person` has:
 - `organization` (optional single object: `{name, title, department}`)
 - `notes` (optional free-text string, max 4096 chars)
 - `custom_fields` (JSONB map)
+- `is_favorite` (boolean, default false) - starred contacts are shown in an
+  always-visible Favorites section in the UI, separate from the main list's
+  page/sort/search
 - `created_at`, `updated_at`, `deleted_at` (soft delete)
 
 **Custom fields policy:** lowercase `snake_case` keys; scalar values of type
@@ -189,6 +192,20 @@ string, number, boolean, or date; max 64 fields; key max 64 chars; string value
 max 1024 chars. JSON has no date type, so dates are ISO-8601 strings
 (`YYYY-MM-DD` or RFC 3339). `null` values are rejected — omit a field to remove
 it.
+
+**Relationships:** a `Person` can be related to another `Person` (or, if the
+other person isn't in your contacts, just a free-text name) via one of five
+fixed types: `parent`, `child`, `spouse`, `sibling`, `partner` (no custom
+types). A single relationship is stored from the creating person's
+perspective; the reverse side is computed automatically (e.g. "A is Parent of
+B" also shows as "B is Child of A" without a second stored row - Spouse/
+Sibling/Partner are symmetric). Manage relationships via `GET/POST
+/persons/{id}/relationships` and `DELETE /persons/{id}/relationships/{relationshipId}`
+(there is no update endpoint - delete and recreate to change a relationship's
+type). Google sync only stores a relation as a free-text name with no link to
+a real record; on import we link to an existing contact only when its display
+name matches exactly and unambiguously, otherwise the relationship is kept as
+name-only so the information isn't lost.
 
 **Delete behavior:** soft delete with recycle-bin semantics. Deleted records are
 excluded from reads and permanently purged after `PURGE_AFTER_DAYS` (default 30)
@@ -199,6 +216,8 @@ by a background job.
 - Base path: `/api/v1`
 - Endpoints: `POST/GET /persons`, `GET/PATCH/DELETE /persons/{id}`, `GET /persons/deleted`,
   `POST /persons/{id}/restore`, and `DELETE /persons/{id}/permanent`
+- Relationships: `GET/POST /persons/{id}/relationships`, `DELETE
+  /persons/{id}/relationships/{relationshipId}`
 - Sync account management: `GET/POST /sync-accounts`, `GET/PATCH/DELETE /sync-accounts/{id}`
 - Google sync OAuth: `GET /sync/google/begin`, `GET /sync/google/callback`
 - Multiple Google accounts can be connected at once (via the sync drawer's
@@ -209,8 +228,8 @@ by a background job.
 - Public privacy policy: `GET /privacy`
 - Public homepage purpose page: `GET /` remains readable without authentication and
   explains what the app does (required for Google OAuth verification)
-- List defaults: page size 25 (max 100), default sort `display_name desc`,
-  filters `first_name` and `last_name`.
+- List defaults: page size 25 (max 100), default sort `last_name, first_name asc`,
+  filters `first_name`, `last_name`, and `favorite` (boolean).
 - The recycle bin lists soft-deleted contacts and supports restoring or permanently
   deleting them before the retention purge.
 - OpenAPI specification: [api/openapi.yaml](api/openapi.yaml) (validated in CI).

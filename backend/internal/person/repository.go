@@ -28,12 +28,35 @@ func NewRepository(pool *pgxpool.Pool) *Repository {
 	return &Repository{pool: pool}
 }
 
-var allowedSortFields = map[string]string{
-	"display_name": "display_name",
-	"first_name":   "first_name",
-	"last_name":    "last_name",
-	"created_at":   "created_at",
-	"updated_at":   "updated_at",
+// allowedSortFields maps a UI-facing sort key to the SQL columns used to
+// order by, in priority order. "last_name" sorts by last name then first
+// name so ties break predictably (the default: "Last Name, First Name").
+var allowedSortFields = map[string][]string{
+	"display_name": {"display_name"},
+	"first_name":   {"first_name"},
+	"last_name":    {"last_name", "first_name"},
+	"created_at":   {"created_at"},
+	"updated_at":   {"updated_at"},
+}
+
+// buildOrderBy resolves a sort key to a full ORDER BY clause (without the
+// "ORDER BY" keyword), applying the requested direction to every column and
+// always breaking remaining ties on id for stable pagination.
+func buildOrderBy(sortField string, desc bool) string {
+	cols := allowedSortFields[sortField]
+	if len(cols) == 0 {
+		cols = allowedSortFields["last_name"]
+	}
+	direction := "ASC"
+	if desc {
+		direction = "DESC"
+	}
+	parts := make([]string, 0, len(cols)+1)
+	for _, c := range cols {
+		parts = append(parts, c+" "+direction)
+	}
+	parts = append(parts, "id ASC")
+	return strings.Join(parts, ", ")
 }
 
 // Create inserts a new Person and returns the stored record.
@@ -41,20 +64,20 @@ func (r *Repository) Create(ctx context.Context, p *Person) (*Person, error) {
 	normalizePersonSlices(p)
 	ownerID, owned := authn.UserID(ctx)
 	const qOwned = `
-		INSERT INTO persons (owner_id, first_name, middle_names, last_name, display_name, nickname, pronouns, birthdate, emails, phone_numbers, addresses, organization, notes, custom_fields)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
-		RETURNING id, first_name, middle_names, last_name, display_name, nickname, pronouns, birthdate, emails, phone_numbers, addresses, organization, notes, custom_fields,
+		INSERT INTO persons (owner_id, first_name, middle_names, last_name, display_name, nickname, pronouns, birthdate, emails, phone_numbers, addresses, organization, notes, custom_fields, is_favorite)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+		RETURNING id, first_name, middle_names, last_name, display_name, nickname, pronouns, birthdate, emails, phone_numbers, addresses, organization, notes, custom_fields, is_favorite,
 		          created_at, updated_at, deleted_at`
 	const qLegacy = `
-		INSERT INTO persons (first_name, middle_names, last_name, display_name, nickname, pronouns, birthdate, emails, phone_numbers, addresses, organization, notes, custom_fields)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
-		RETURNING id, first_name, middle_names, last_name, display_name, nickname, pronouns, birthdate, emails, phone_numbers, addresses, organization, notes, custom_fields,
+		INSERT INTO persons (first_name, middle_names, last_name, display_name, nickname, pronouns, birthdate, emails, phone_numbers, addresses, organization, notes, custom_fields, is_favorite)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+		RETURNING id, first_name, middle_names, last_name, display_name, nickname, pronouns, birthdate, emails, phone_numbers, addresses, organization, notes, custom_fields, is_favorite,
 		          created_at, updated_at, deleted_at`
 	var row pgx.Row
 	if owned {
-		row = r.pool.QueryRow(ctx, qOwned, ownerID, p.FirstName, p.MiddleNames, p.LastName, p.DisplayName, p.Nickname, p.Pronouns, p.Birthdate, p.Emails, p.PhoneNumbers, p.Addresses, p.Organization, p.Notes, p.CustomFields)
+		row = r.pool.QueryRow(ctx, qOwned, ownerID, p.FirstName, p.MiddleNames, p.LastName, p.DisplayName, p.Nickname, p.Pronouns, p.Birthdate, p.Emails, p.PhoneNumbers, p.Addresses, p.Organization, p.Notes, p.CustomFields, p.IsFavorite)
 	} else {
-		row = r.pool.QueryRow(ctx, qLegacy, p.FirstName, p.MiddleNames, p.LastName, p.DisplayName, p.Nickname, p.Pronouns, p.Birthdate, p.Emails, p.PhoneNumbers, p.Addresses, p.Organization, p.Notes, p.CustomFields)
+		row = r.pool.QueryRow(ctx, qLegacy, p.FirstName, p.MiddleNames, p.LastName, p.DisplayName, p.Nickname, p.Pronouns, p.Birthdate, p.Emails, p.PhoneNumbers, p.Addresses, p.Organization, p.Notes, p.CustomFields, p.IsFavorite)
 	}
 	return scanPerson(row)
 }
@@ -62,7 +85,7 @@ func (r *Repository) Create(ctx context.Context, p *Person) (*Person, error) {
 // GetByID returns a single non-deleted Person by ID.
 func (r *Repository) GetByID(ctx context.Context, id uuid.UUID) (*Person, error) {
 	q := `
-		SELECT id, first_name, middle_names, last_name, display_name, nickname, pronouns, birthdate, emails, phone_numbers, addresses, organization, notes, custom_fields,
+		SELECT id, first_name, middle_names, last_name, display_name, nickname, pronouns, birthdate, emails, phone_numbers, addresses, organization, notes, custom_fields, is_favorite,
 		       created_at, updated_at, deleted_at
 		FROM persons
 		WHERE id = $1 AND deleted_at IS NULL`
@@ -81,7 +104,7 @@ func (r *Repository) GetByID(ctx context.Context, id uuid.UUID) (*Person, error)
 // GetDeletedByID returns a soft-deleted Person by ID.
 func (r *Repository) GetDeletedByID(ctx context.Context, id uuid.UUID) (*Person, error) {
 	q := `
-		SELECT id, first_name, middle_names, last_name, display_name, nickname, pronouns, birthdate, emails, phone_numbers, addresses, organization, notes, custom_fields,
+		SELECT id, first_name, middle_names, last_name, display_name, nickname, pronouns, birthdate, emails, phone_numbers, addresses, organization, notes, custom_fields, is_favorite,
 		       created_at, updated_at, deleted_at
 		FROM persons
 		WHERE id = $1 AND deleted_at IS NOT NULL`
@@ -119,6 +142,12 @@ func (r *Repository) List(ctx context.Context, params ListParams) ([]Person, int
 		args = append(args, "%"+params.LastName+"%")
 		idx++
 	}
+
+	if params.Favorite != nil {
+		where = append(where, fmt.Sprintf("is_favorite = $%d", idx))
+		args = append(args, *params.Favorite)
+		idx++
+	}
 	whereClause := strings.Join(where, " AND ")
 
 	var total int
@@ -127,26 +156,19 @@ func (r *Repository) List(ctx context.Context, params ListParams) ([]Person, int
 		return nil, 0, fmt.Errorf("counting persons: %w", err)
 	}
 
-	sortColumn := allowedSortFields[params.SortField]
-	if sortColumn == "" {
-		sortColumn = "display_name"
-	}
-	direction := "ASC"
-	if params.SortDesc {
-		direction = "DESC"
-	}
+	orderBy := buildOrderBy(params.SortField, params.SortDesc)
 
 	limit := params.PageSize
 	offset := (params.Page - 1) * params.PageSize
 
 	// Secondary sort on id keeps ordering deterministic across pages.
 	listQ := fmt.Sprintf(`
-		SELECT id, first_name, middle_names, last_name, display_name, nickname, pronouns, birthdate, emails, phone_numbers, addresses, organization, notes, custom_fields,
+		SELECT id, first_name, middle_names, last_name, display_name, nickname, pronouns, birthdate, emails, phone_numbers, addresses, organization, notes, custom_fields, is_favorite,
 		       created_at, updated_at, deleted_at
 		FROM persons
 		WHERE %s
-		ORDER BY %s %s, id ASC
-		LIMIT $%d OFFSET $%d`, whereClause, sortColumn, direction, idx, idx+1)
+		ORDER BY %s
+		LIMIT $%d OFFSET $%d`, whereClause, orderBy, idx, idx+1)
 	args = append(args, limit, offset)
 
 	rows, err := r.pool.Query(ctx, listQ, args...)
@@ -186,14 +208,7 @@ func (r *Repository) ListDeleted(ctx context.Context, params ListParams) ([]Pers
 	if err := r.pool.QueryRow(ctx, countQ, args...).Scan(&total); err != nil {
 		return nil, 0, fmt.Errorf("counting deleted persons: %w", err)
 	}
-	sortColumn := allowedSortFields[params.SortField]
-	if sortColumn == "" {
-		sortColumn = "display_name"
-	}
-	direction := "ASC"
-	if params.SortDesc {
-		direction = "DESC"
-	}
+	orderBy := buildOrderBy(params.SortField, params.SortDesc)
 	pageSize := params.PageSize
 	if pageSize < 1 {
 		pageSize = 1
@@ -202,10 +217,10 @@ func (r *Repository) ListDeleted(ctx context.Context, params ListParams) ([]Pers
 		pageSize = 100
 	}
 	q := fmt.Sprintf(`
-		SELECT id, first_name, middle_names, last_name, display_name, nickname, pronouns, birthdate, emails, phone_numbers, addresses, organization, notes, custom_fields,
+		SELECT id, first_name, middle_names, last_name, display_name, nickname, pronouns, birthdate, emails, phone_numbers, addresses, organization, notes, custom_fields, is_favorite,
 		       created_at, updated_at, deleted_at
 		FROM persons WHERE %s
-		ORDER BY %s %s, id ASC LIMIT $%d OFFSET $%d`, whereClause, sortColumn, direction, idx, idx+1)
+		ORDER BY %s LIMIT $%d OFFSET $%d`, whereClause, orderBy, idx, idx+1)
 	args = append(args, pageSize, (params.Page-1)*pageSize)
 	rows, err := r.pool.Query(ctx, q, args...)
 	if err != nil {
@@ -233,13 +248,13 @@ func (r *Repository) Update(ctx context.Context, id uuid.UUID, p *Person) (*Pers
 		UPDATE persons
 		SET first_name = $2, middle_names = $3, last_name = $4,
 		    display_name = $5, nickname = $6, pronouns = $7, birthdate = $8,
-		    emails = $9, phone_numbers = $10, addresses = $11, organization = $12, notes = $13, custom_fields = $14, updated_at = now()
+		    emails = $9, phone_numbers = $10, addresses = $11, organization = $12, notes = $13, custom_fields = $14, is_favorite = $15, updated_at = now()
 		WHERE id = $1 AND deleted_at IS NULL
-		RETURNING id, first_name, middle_names, last_name, display_name, nickname, pronouns, birthdate, emails, phone_numbers, addresses, organization, notes, custom_fields,
+		RETURNING id, first_name, middle_names, last_name, display_name, nickname, pronouns, birthdate, emails, phone_numbers, addresses, organization, notes, custom_fields, is_favorite,
 		          created_at, updated_at, deleted_at`
-	args := []any{id, p.FirstName, p.MiddleNames, p.LastName, p.DisplayName, p.Nickname, p.Pronouns, p.Birthdate, p.Emails, p.PhoneNumbers, p.Addresses, p.Organization, p.Notes, p.CustomFields}
+	args := []any{id, p.FirstName, p.MiddleNames, p.LastName, p.DisplayName, p.Nickname, p.Pronouns, p.Birthdate, p.Emails, p.PhoneNumbers, p.Addresses, p.Organization, p.Notes, p.CustomFields, p.IsFavorite}
 	if ownerID, ok := authn.UserID(ctx); ok {
-		q = strings.Replace(q, "WHERE id = $1", "WHERE id = $1 AND owner_id = $15", 1)
+		q = strings.Replace(q, "WHERE id = $1", "WHERE id = $1 AND owner_id = $16", 1)
 		args = append(args, ownerID)
 	}
 	person, err := scanPerson(r.pool.QueryRow(ctx, q, args...))
@@ -331,7 +346,7 @@ func scanPerson(s scanner) (*Person, error) {
 	if err := s.Scan(
 		&p.ID, &p.FirstName, &p.MiddleNames, &p.LastName, &p.DisplayName,
 		&p.Nickname, &p.Pronouns, &p.Birthdate, &p.Emails, &p.PhoneNumbers, &p.Addresses, &p.Organization, &p.Notes,
-		&p.CustomFields, &p.CreatedAt, &p.UpdatedAt, &p.DeletedAt,
+		&p.CustomFields, &p.IsFavorite, &p.CreatedAt, &p.UpdatedAt, &p.DeletedAt,
 	); err != nil {
 		return nil, err
 	}

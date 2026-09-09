@@ -19,7 +19,16 @@ import (
 
 // fakeStore is an in-memory person store for endpoint tests.
 type fakeStore struct {
-	items map[uuid.UUID]*person.Person
+	items         map[uuid.UUID]*person.Person
+	relationships []fakeRelationship
+}
+
+type fakeRelationship struct {
+	id              uuid.UUID
+	personID        uuid.UUID
+	relatedPersonID *uuid.UUID
+	relatedName     *string
+	relType         person.RelationType
 }
 
 type errorStore struct {
@@ -144,6 +153,101 @@ func (f *fakeStore) HardDelete(_ context.Context, id uuid.UUID) error {
 func (f *fakeStore) PurgeExpired(_ context.Context, _ time.Duration) (int64, error) { return 0, nil }
 
 func (f *fakeStore) Ping(_ context.Context) error { return nil }
+
+func (f *fakeStore) CreateRelationship(_ context.Context, personID uuid.UUID, in person.RelationshipInput) (*person.RelationshipView, error) {
+	if in.RelatedPersonID != nil {
+		if _, ok := f.items[*in.RelatedPersonID]; !ok {
+			return nil, person.ErrRelatedPersonNotFound
+		}
+	}
+	for _, existing := range f.relationships {
+		if existing.personID == personID && in.RelatedPersonID != nil && existing.relatedPersonID != nil &&
+			*existing.relatedPersonID == *in.RelatedPersonID && existing.relType == in.Type {
+			return nil, person.ErrRelationshipExists
+		}
+	}
+	id := uuid.New()
+	f.relationships = append(f.relationships, fakeRelationship{
+		id: id, personID: personID, relatedPersonID: in.RelatedPersonID, relatedName: in.RelatedPersonName, relType: in.Type,
+	})
+	name := ""
+	if in.RelatedPersonName != nil {
+		name = *in.RelatedPersonName
+	}
+	if in.RelatedPersonID != nil {
+		if p, ok := f.items[*in.RelatedPersonID]; ok {
+			name = p.DisplayName
+		}
+	}
+	return &person.RelationshipView{ID: id, Type: in.Type, RelatedPersonID: in.RelatedPersonID, RelatedPersonName: name}, nil
+}
+
+func (f *fakeStore) ListRelationships(_ context.Context, personID uuid.UUID) ([]person.RelationshipView, error) {
+	var views []person.RelationshipView
+	for _, rel := range f.relationships {
+		switch {
+		case rel.personID == personID:
+			name := ""
+			if rel.relatedName != nil {
+				name = *rel.relatedName
+			}
+			if rel.relatedPersonID != nil {
+				if p, ok := f.items[*rel.relatedPersonID]; ok {
+					name = p.DisplayName
+				}
+			}
+			views = append(views, person.RelationshipView{ID: rel.id, Type: rel.relType, RelatedPersonID: rel.relatedPersonID, RelatedPersonName: name})
+		case rel.relatedPersonID != nil && *rel.relatedPersonID == personID:
+			name := ""
+			if p, ok := f.items[rel.personID]; ok {
+				name = p.DisplayName
+			}
+			id := rel.personID
+			views = append(views, person.RelationshipView{ID: rel.id, Type: rel.relType.Inverse(), RelatedPersonID: &id, RelatedPersonName: name})
+		}
+	}
+	return views, nil
+}
+
+func (f *fakeStore) DeleteRelationship(_ context.Context, personID, relationshipID uuid.UUID) error {
+	for i, rel := range f.relationships {
+		if rel.id != relationshipID {
+			continue
+		}
+		if rel.personID != personID && (rel.relatedPersonID == nil || *rel.relatedPersonID != personID) {
+			continue
+		}
+		f.relationships = append(f.relationships[:i], f.relationships[i+1:]...)
+		return nil
+	}
+	return person.ErrNotFound
+}
+
+func (f *fakeStore) ReplaceRelationships(_ context.Context, personID uuid.UUID, desired []person.RelationshipInput) error {
+	kept := f.relationships[:0]
+	for _, rel := range f.relationships {
+		if rel.personID != personID {
+			kept = append(kept, rel)
+		}
+	}
+	f.relationships = kept
+	for _, in := range desired {
+		f.relationships = append(f.relationships, fakeRelationship{
+			id: uuid.New(), personID: personID, relatedPersonID: in.RelatedPersonID, relatedName: in.RelatedPersonName, relType: in.Type,
+		})
+	}
+	return nil
+}
+
+func (f *fakeStore) FindByDisplayName(_ context.Context, name string) ([]person.Person, error) {
+	var out []person.Person
+	for _, p := range f.items {
+		if p.DisplayName == name && p.DeletedAt == nil {
+			out = append(out, *p)
+		}
+	}
+	return out, nil
+}
 
 func testRouter() (http.Handler, *fakeStore) {
 	store := newFakeStore()
@@ -432,7 +536,7 @@ func TestDecodeUpdateFields(t *testing.T) {
 		`{"emails":[{"label":"home","value":"a@example.com"}]}`,
 		`{"addresses":[{"label":"home","city":"Springfield"}]}`,
 		`{"organization":{"name":"Acme","title":"Engineer"}}`, `{"organization":null}`,
-		`{"notes":"hello"}`, `{"custom_fields":{"x":"y"}}`,
+		`{"notes":"hello"}`, `{"custom_fields":{"x":"y"}}`, `{"is_favorite":true}`,
 	}
 	for _, body := range cases {
 		req := httptest.NewRequest(http.MethodPatch, "/", bytes.NewBufferString(body))
@@ -448,7 +552,7 @@ func TestDecodeUpdateRejectsMalformedFields(t *testing.T) {
 		`{"nickname":1}`, `{"pronouns":1}`, `{"birthdate":1}`,
 		`{"phone_numbers":"x"}`, `{"phone_numbers":["555"]}`,
 		`{"emails":"x"}`, `{"addresses":"x"}`, `{"organization":"x"}`, `{"notes":1}`,
-		`{"custom_fields":"x"}`, `{"unknown":true}`,
+		`{"custom_fields":"x"}`, `{"is_favorite":"x"}`, `{"unknown":true}`,
 	}
 
 	for _, body := range cases {
@@ -458,6 +562,34 @@ func TestDecodeUpdateRejectsMalformedFields(t *testing.T) {
 		}
 	}
 
+}
+
+// TestParseListParamsDefaultsToLastNameAscending guards the default sort
+// fix: the contact list should default to "Last Name, First Name" ascending
+// instead of display_name descending.
+func TestParseListParamsDefaultsToLastNameAscending(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/persons", nil)
+	params := parseListParams(req)
+	if params.SortField != "last_name" {
+		t.Errorf("SortField = %q, want last_name", params.SortField)
+	}
+	if params.SortDesc {
+		t.Error("SortDesc = true, want ascending by default")
+	}
+}
+
+func TestParseListParamsParsesFavoriteFilter(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/persons?favorite=true", nil)
+	params := parseListParams(req)
+	if params.Favorite == nil || !*params.Favorite {
+		t.Errorf("Favorite = %v, want true", params.Favorite)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/persons", nil)
+	params = parseListParams(req)
+	if params.Favorite != nil {
+		t.Errorf("Favorite = %v, want nil when not specified", params.Favorite)
+	}
 }
 
 func TestDecodeJSONRejectsTrailingPayload(t *testing.T) {

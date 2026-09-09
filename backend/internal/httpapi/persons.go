@@ -204,17 +204,24 @@ func parseListParams(r *http.Request) person.ListParams {
 		pageSize = maxPageSize
 	}
 
-	// Default sort: display_name desc.
-	sortField := "display_name"
+	// Default sort: last name, first name ascending.
+	sortField := "last_name"
 	if s := q.Get("sort"); s != "" {
 		sortField = s
 	}
-	sortDesc := true
+	sortDesc := false
 	switch q.Get("order") {
 	case "asc":
 		sortDesc = false
 	case "desc":
 		sortDesc = true
+	}
+
+	var favorite *bool
+	if v := q.Get("favorite"); v != "" {
+		if parsed, err := strconv.ParseBool(v); err == nil {
+			favorite = &parsed
+		}
 	}
 
 	return person.ListParams{
@@ -224,6 +231,7 @@ func parseListParams(r *http.Request) person.ListParams {
 		SortDesc:  sortDesc,
 		FirstName: q.Get("first_name"),
 		LastName:  q.Get("last_name"),
+		Favorite:  favorite,
 	}
 }
 
@@ -258,7 +266,7 @@ func decodeUpdate(w http.ResponseWriter, r *http.Request) (person.UpdateInput, e
 		"first_name": {}, "middle_names": {}, "last_name": {},
 		"nickname": {}, "pronouns": {}, "birthdate": {},
 		"emails": {}, "phone_numbers": {}, "addresses": {},
-		"organization": {}, "notes": {}, "custom_fields": {},
+		"organization": {}, "notes": {}, "custom_fields": {}, "is_favorite": {},
 	}
 	for key := range fields {
 		if _, ok := allowed[key]; !ok {
@@ -354,6 +362,12 @@ func decodeUpdate(w http.ResponseWriter, r *http.Request) (person.UpdateInput, e
 		}
 		in.CustomFields = cf
 		in.CustomFieldsSet = true
+	}
+	if raw, ok := fields["is_favorite"]; ok {
+		if err := json.Unmarshal(raw, &in.IsFavorite); err != nil {
+			return person.UpdateInput{}, errors.New("is_favorite must be a boolean")
+		}
+		in.IsFavoriteSet = true
 	}
 	return in, nil
 }

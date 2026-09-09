@@ -65,15 +65,32 @@ docs/design/            authoritative design documents
   `{label, street, city, region, postal_code, country}`, each string field
   ≤ 255 chars), `organization` (optional single `{name, title, department}`
   object), `notes` (optional free-text string, max 4096 chars),
-  `custom_fields` (JSONB), `created_at`, `updated_at`, `deleted_at` optional.
+  `custom_fields` (JSONB), `is_favorite` (boolean, default false),
+  `created_at`, `updated_at`, `deleted_at` optional.
+- **Relationships**: a `Person` can be related to another `Person` (or a
+  free-text name, for someone not in the account's contacts) via exactly one
+  of five fixed types: `parent`, `child`, `spouse`, `sibling`, `partner` — no
+  custom types. One row is stored per relationship, from the creating
+  person's perspective; the reverse view is computed by inverting the type
+  (Parent↔Child; Spouse/Sibling/Partner are self-inverse), so there is never a
+  second row to keep in sync. There is no update endpoint for a relationship —
+  delete and recreate to change its type. Google sync only stores a relation
+  as a free-text name (no record link); import links to an existing contact
+  only on an exact, unambiguous display-name match, otherwise the
+  relationship stays name-only.
 - **Custom fields**: lowercase `snake_case` keys; scalar values of type
   string / number / boolean / date; max 64 fields; key ≤ 64 chars; string ≤ 1024
   chars. Dates are ISO-8601 strings (JSON has no date type). `null` is rejected —
   omit a field to remove it.
 - **Delete**: soft delete (recycle bin); a background job purges rows soft-deleted
   more than `PURGE_AFTER_DAYS` (default 30) ago.
-- **List**: page size 25 (max 100); default sort `display_name desc`; filters
-  `first_name`, `last_name`.
+- **List**: page size 25 (max 100); default sort `last_name, first_name asc`;
+  filters `first_name`, `last_name`, `favorite`.
+- **Favorites**: `Person.is_favorite` (boolean). The UI shows favorited
+  contacts in an always-visible Favorites section, independent of the main
+  list's page/sort/search — implemented client-side by fetching favorites
+  separately (`GET /persons?favorite=true`), not by reordering the main
+  list's results.
 - **CORS**: explicit allow-list (dev: `http://localhost:5173`,
   `http://127.0.0.1:5173`). In the Compose setup the frontend nginx proxies
   same-origin, so CORS is not exercised locally.

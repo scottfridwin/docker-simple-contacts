@@ -37,6 +37,8 @@ func (s scanStub) Scan(dest ...any) error {
 			*d = value.(*string)
 		case *map[string]any:
 			*d = value.(map[string]any)
+		case *bool:
+			*d = value.(bool)
 		case *time.Time:
 			*d = value.(time.Time)
 		case **time.Time:
@@ -52,7 +54,7 @@ func TestScanPersonNormalizesNilCollections(t *testing.T) {
 		uuid.New(), "First", []string(nil), "Last", "First Last",
 		(*string)(nil), (*string)(nil), (*string)(nil),
 		[]contactsync.LabeledValue(nil), []contactsync.LabeledValue(nil), []contactsync.Address(nil),
-		(*contactsync.Organization)(nil), (*string)(nil), map[string]any(nil),
+		(*contactsync.Organization)(nil), (*string)(nil), map[string]any(nil), false,
 		now, now, (*time.Time)(nil),
 	}})
 	if err != nil {
@@ -79,13 +81,34 @@ func TestScanPersonPreservesValues(t *testing.T) {
 		uuid.New(), "First", []string{"M"}, "Last", "First M Last",
 		&nickname, (*string)(nil), &nickname,
 		[]contactsync.LabeledValue{{Value: "a@example.com"}}, []contactsync.LabeledValue{{Value: "555"}}, []contactsync.Address{{City: "Springfield"}},
-		&contactsync.Organization{Name: "Acme"}, &nickname, map[string]any{"x": "y"},
+		&contactsync.Organization{Name: "Acme"}, &nickname, map[string]any{"x": "y"}, true,
 		now, now, &deleted,
 	}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(p.MiddleNames) != 1 || len(p.PhoneNumbers) != 1 || p.CustomFields["x"] != "y" || p.DeletedAt == nil {
+	if len(p.MiddleNames) != 1 || len(p.PhoneNumbers) != 1 || p.CustomFields["x"] != "y" || p.DeletedAt == nil || !p.IsFavorite {
 		t.Fatalf("values were not preserved: %+v", p)
+	}
+}
+
+func TestBuildOrderBy(t *testing.T) {
+	cases := []struct {
+		field string
+		desc  bool
+		want  string
+	}{
+		{"last_name", false, "last_name ASC, first_name ASC, id ASC"},
+		{"last_name", true, "last_name DESC, first_name DESC, id ASC"},
+		{"first_name", false, "first_name ASC, id ASC"},
+		{"display_name", true, "display_name DESC, id ASC"},
+		{"created_at", false, "created_at ASC, id ASC"},
+		{"updated_at", true, "updated_at DESC, id ASC"},
+		{"unknown_field", false, "last_name ASC, first_name ASC, id ASC"},
+	}
+	for _, tc := range cases {
+		if got := buildOrderBy(tc.field, tc.desc); got != tc.want {
+			t.Errorf("buildOrderBy(%q, %v) = %q, want %q", tc.field, tc.desc, got, tc.want)
+		}
 	}
 }

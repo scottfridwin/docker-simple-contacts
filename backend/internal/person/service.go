@@ -2,6 +2,7 @@ package person
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/google/uuid"
@@ -22,6 +23,11 @@ type store interface {
 	Restore(ctx context.Context, id uuid.UUID) error
 	HardDelete(ctx context.Context, id uuid.UUID) error
 	PurgeExpired(ctx context.Context, olderThan time.Duration) (int64, error)
+	CreateRelationship(ctx context.Context, personID uuid.UUID, in RelationshipInput) (*RelationshipView, error)
+	ListRelationships(ctx context.Context, personID uuid.UUID) ([]RelationshipView, error)
+	DeleteRelationship(ctx context.Context, personID, relationshipID uuid.UUID) error
+	ReplaceRelationships(ctx context.Context, personID uuid.UUID, desired []RelationshipInput) error
+	FindByDisplayName(ctx context.Context, name string) ([]Person, error)
 }
 
 // syncNotifier is implemented by the sync engine to enqueue follow-up work.
@@ -86,6 +92,7 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (*Person, Validati
 		Organization: in.Organization,
 		Notes:        in.Notes,
 		CustomFields: customFields,
+		IsFavorite:   in.IsFavorite,
 	}
 	created, err := s.repo.Create(ctx, p)
 	if err == nil {
@@ -174,6 +181,53 @@ func (s *Service) PurgeExpired(ctx context.Context, olderThan time.Duration) (in
 	return s.repo.PurgeExpired(ctx, olderThan)
 }
 
+// CreateRelationship validates and stores a relationship from personID's
+// perspective, first confirming personID itself exists (and is owned by the
+// caller).
+func (s *Service) CreateRelationship(ctx context.Context, personID uuid.UUID, in RelationshipInput) (*RelationshipView, ValidationErrors, error) {
+	if _, err := s.repo.GetByID(ctx, personID); err != nil {
+		return nil, nil, err
+	}
+	if errs := ValidateRelationshipInput(personID, in); errs.HasErrors() {
+		return nil, errs, nil
+	}
+	view, err := s.repo.CreateRelationship(ctx, personID, in)
+	if errors.Is(err, ErrRelatedPersonNotFound) {
+		return nil, ValidationErrors{{Field: "related_person_id", Message: "related person not found"}}, nil
+	}
+	if errors.Is(err, ErrRelationshipExists) {
+		return nil, ValidationErrors{{Field: "type", Message: "this relationship already exists"}}, nil
+	}
+	return view, nil, err
+}
+
+// ListRelationships returns every relationship involving personID.
+func (s *Service) ListRelationships(ctx context.Context, personID uuid.UUID) ([]RelationshipView, error) {
+	if _, err := s.repo.GetByID(ctx, personID); err != nil {
+		return nil, err
+	}
+	return s.repo.ListRelationships(ctx, personID)
+}
+
+// DeleteRelationship removes a relationship visible from personID's side.
+func (s *Service) DeleteRelationship(ctx context.Context, personID, relationshipID uuid.UUID) error {
+	return s.repo.DeleteRelationship(ctx, personID, relationshipID)
+}
+
+// ReplaceRelationships replaces every relationship personID created with the
+// given set. Used by sync adapters to reconcile relationships pulled from an
+// external provider on each sync.
+func (s *Service) ReplaceRelationships(ctx context.Context, personID uuid.UUID, desired []RelationshipInput) error {
+	return s.repo.ReplaceRelationships(ctx, personID, desired)
+}
+
+// FindByDisplayName returns every owner-scoped Person with an exact
+// display_name match. Used by sync adapters to resolve a provider-supplied
+// relationship name to a local contact when possible.
+func (s *Service) FindByDisplayName(ctx context.Context, name string) ([]Person, error) {
+	return s.repo.FindByDisplayName(ctx, name)
+}
+
 func applyUpdate(current *Person, in UpdateInput) {
 	if in.FirstNameSet && in.FirstName != nil {
 		current.FirstName = *in.FirstName
@@ -230,6 +284,9 @@ func applyUpdate(current *Person, in UpdateInput) {
 		} else {
 			current.CustomFields = map[string]any{}
 		}
+	}
+	if in.IsFavoriteSet && in.IsFavorite != nil {
+		current.IsFavorite = *in.IsFavorite
 	}
 	// Always re-derive display name from current name parts.
 	current.DisplayName = DeriveDisplayName(current.FirstName, current.MiddleNames, current.LastName)

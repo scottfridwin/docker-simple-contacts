@@ -22,6 +22,18 @@ export interface Organization {
   department?: string;
 }
 
+export type RelationType = 'parent' | 'child' | 'spouse' | 'sibling' | 'partner';
+
+export const RELATION_TYPES: RelationType[] = ['parent', 'child', 'spouse', 'sibling', 'partner'];
+
+export interface Relationship {
+  id: string;
+  type: RelationType;
+  related_person_id?: string | null;
+  related_person_name: string;
+  related_person_deleted: boolean;
+}
+
 export interface Person {
   id: string;
   first_name: string;
@@ -37,6 +49,7 @@ export interface Person {
   organization?: Organization | null;
   notes?: string | null;
   custom_fields: Record<string, CustomFieldValue>;
+  is_favorite: boolean;
   created_at: string;
   updated_at: string;
   deleted_at?: string | null;
@@ -94,6 +107,7 @@ export interface CreatePersonInput {
   organization?: Organization | null;
   notes?: string;
   custom_fields?: Record<string, CustomFieldValue>;
+  is_favorite?: boolean;
 }
 
 export type UpdatePersonInput = Partial<CreatePersonInput>;

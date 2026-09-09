@@ -99,6 +99,55 @@ func TestValidateNewFields(t *testing.T) {
 	}
 }
 
+// TestValidateUpdateChecksEverySetField exercises ValidateUpdate with every
+// *Set flag true and an invalid value, covering the update-path branches
+// that mirror ValidateCreate's per-field validators.
+func TestValidateUpdateChecksEverySetField(t *testing.T) {
+	longName := strings.Repeat("x", MaxNameLength+1)
+	badBirthdate := "not-a-date"
+	badMiddleNames := []string{""}
+	badPhones := []contactsync.LabeledValue{{Value: ""}}
+	badEmails := []contactsync.LabeledValue{{Value: "not-an-email"}}
+	badAddresses := []contactsync.Address{{}}
+	badOrg := contactsync.Organization{Name: strings.Repeat("x", MaxOrgFieldLength+1)}
+	badNotes := strings.Repeat("x", MaxNotesLength+1)
+
+	errs := ValidateUpdate(UpdateInput{
+		FirstNameSet: true, FirstName: &longName,
+		LastNameSet: true, LastName: &longName,
+		MiddleNamesSet: true, MiddleNames: &badMiddleNames,
+		NicknameSet: true, Nickname: &longName,
+		PronounsSet: true, Pronouns: &longName,
+		BirthdateSet: true, Birthdate: &badBirthdate,
+		PhoneNumbersSet: true, PhoneNumbers: &badPhones,
+		EmailsSet: true, Emails: &badEmails,
+		AddressesSet: true, Addresses: &badAddresses,
+		OrganizationSet: true, Organization: &badOrg,
+		NotesSet: true, Notes: &badNotes,
+		CustomFieldsSet: true, CustomFields: map[string]any{"BadKey": "x"},
+	})
+	if !errs.HasErrors() {
+		t.Fatal("expected errors for every invalid field")
+	}
+	wantFields := []string{
+		"first_name", "last_name", "middle_names[0]", "nickname", "pronouns",
+		"birthdate", "phone_numbers[0].value", "emails[0].value", "addresses[0]",
+		"organization.name", "notes",
+	}
+	for _, f := range wantFields {
+		found := false
+		for _, e := range errs {
+			if e.Field == f {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("expected an error for field %q, got: %s", f, errs.Error())
+		}
+	}
+}
+
 func TestValidatePhoneNumbers(t *testing.T) {
 	tooMany := make([]contactsync.LabeledValue, MaxPhoneNumbers+1)
 	for i := range tooMany {

@@ -14,6 +14,7 @@ function makePerson(overrides: Partial<Person> = {}): Person {
     phone_numbers: [],
     addresses: [],
     custom_fields: {},
+    is_favorite: false,
     created_at: '2026-01-01T00:00:00Z',
     updated_at: '2026-01-01T00:00:00Z',
     ...overrides,
@@ -33,5 +34,24 @@ describe('PersonList', () => {
 
     expect(screen.getByText('(612) 805-3044 · (555) 000-1111')).toBeInTheDocument();
     expect(screen.queryByText(/object Object/)).not.toBeInTheDocument();
+  });
+
+  it('toggles favorite state via the star button', async () => {
+    const onToggleFavorite = vi.fn();
+    const person = makePerson({ is_favorite: false });
+
+    render(
+      <PersonList
+        persons={[person]}
+        onEdit={vi.fn()}
+        onDelete={vi.fn()}
+        onToggleFavorite={onToggleFavorite}
+      />,
+    );
+
+    const star = screen.getByRole('button', { name: /favorite ada lovelace/i });
+    expect(star).toHaveAttribute('aria-pressed', 'false');
+    star.click();
+    expect(onToggleFavorite).toHaveBeenCalledWith(person);
   });
 });

@@ -5,6 +5,7 @@ import {
   createPerson,
   deletePerson,
   deleteSyncAccount,
+  getPerson,
   listDeletedPersons,
   listSyncAccounts,
   listPersons,
@@ -125,6 +126,8 @@ export default function App() {
   const [page, setPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
   const [showDeleted, setShowDeleted] = useState(false);
+  const [favorites, setFavorites] = useState<Person[]>([]);
+  const [favoritesError, setFavoritesError] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     if (isPrivacyPage) {
@@ -135,8 +138,8 @@ export default function App() {
       const loader = showDeleted ? listDeletedPersons : listPersons;
       const res = await loader({
         page,
-        sort: 'display_name',
-        order: 'desc',
+        sort: 'last_name',
+        order: 'asc',
         firstName: search.firstName || undefined,
         lastName: search.lastName || undefined,
       });
@@ -154,6 +157,28 @@ export default function App() {
       setPersonsLoaded(true);
     }
   }, [isPrivacyPage, page, search, showDeleted]);
+
+  // Favorites are always shown in their own section regardless of the main
+  // list's current page, sort, or search - so they're fetched independently.
+  const refreshFavorites = useCallback(async () => {
+    if (isPrivacyPage) {
+      return;
+    }
+    try {
+      const res = await listPersons({
+        favorite: true,
+        pageSize: 100,
+        sort: 'last_name',
+        order: 'asc',
+      });
+      setFavorites(res.data);
+      setFavoritesError(null);
+    } catch (err) {
+      if (!(err instanceof ApiRequestError && err.status === 401)) {
+        setFavoritesError(err instanceof Error ? err.message : 'Failed to load favorites');
+      }
+    }
+  }, [isPrivacyPage]);
 
   const refreshSyncAccounts = useCallback(async () => {
     if (isPrivacyPage) {
@@ -197,6 +222,15 @@ export default function App() {
       void refresh();
     });
   }, [isPrivacyPage, refresh]);
+
+  useEffect(() => {
+    if (isPrivacyPage) {
+      return;
+    }
+    queueMicrotask(() => {
+      void refreshFavorites();
+    });
+  }, [isPrivacyPage, refreshFavorites]);
 
   useEffect(() => {
     if (isPrivacyPage) {
@@ -380,6 +414,7 @@ export default function App() {
       }
       setView({ mode: 'list' });
       await refresh();
+      await refreshFavorites();
     } catch (err) {
       if (err instanceof ApiRequestError && err.details) {
         const mapped: Record<string, string> = {};
@@ -403,6 +438,7 @@ export default function App() {
     try {
       await deletePerson(person.id);
       await refresh();
+      await refreshFavorites();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Delete failed');
     }
@@ -413,6 +449,7 @@ export default function App() {
     try {
       await restorePerson(person.id);
       await refresh();
+      await refreshFavorites();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Restore failed');
     }
@@ -425,8 +462,30 @@ export default function App() {
     try {
       await permanentlyDeletePerson(person.id);
       await refresh();
+      await refreshFavorites();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Permanent delete failed');
+    }
+  };
+
+  const handleToggleFavorite = async (person: Person) => {
+    setError(null);
+    try {
+      await updatePerson(person.id, { is_favorite: !person.is_favorite });
+      await refresh();
+      await refreshFavorites();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to update favorite');
+    }
+  };
+
+  const handleNavigateToPerson = async (personId: string) => {
+    setError(null);
+    try {
+      const person = await getPerson(personId);
+      setView({ mode: 'edit', person });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to open contact');
     }
   };
 
@@ -664,6 +723,18 @@ export default function App() {
 
       {view.mode === 'list' && (
         <>
+          {!showDeleted && favorites.length > 0 && (
+            <section className="favorites-section" aria-label="favorites">
+              <h2>Favorites</h2>
+              <PersonList
+                persons={favorites}
+                onEdit={(person) => setView({ mode: 'edit', person })}
+                onDelete={handleDelete}
+                onToggleFavorite={handleToggleFavorite}
+              />
+            </section>
+          )}
+          {favoritesError && <p className="error">{favoritesError}</p>}
           <div className="list-controls">
             {!showDeleted && (
               <>
@@ -698,6 +769,7 @@ export default function App() {
               deleted={showDeleted}
               onRestore={handleRestore}
               onPermanentDelete={handlePermanentDelete}
+              onToggleFavorite={handleToggleFavorite}
             />
           )}
           {totalPages > 1 && (
@@ -729,6 +801,7 @@ export default function App() {
             serverErrors={serverErrors}
             onSubmit={handleSubmit}
             onCancel={() => setView({ mode: 'list' })}
+            onNavigateToPerson={handleNavigateToPerson}
           />
         </section>
       )}

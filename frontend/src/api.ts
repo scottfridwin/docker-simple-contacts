@@ -3,6 +3,8 @@ import type {
   GoogleOAuthBeginResponse,
   Person,
   PersonListResponse,
+  Relationship,
+  RelationType,
   SyncAccount,
   SyncAccountListResponse,
   UpdatePersonInput,
@@ -67,6 +69,7 @@ export interface ListPersonsParams {
   order?: 'asc' | 'desc';
   firstName?: string;
   lastName?: string;
+  favorite?: boolean;
 }
 
 export function listPersons(params: ListPersonsParams = {}): Promise<PersonListResponse> {
@@ -77,6 +80,7 @@ export function listPersons(params: ListPersonsParams = {}): Promise<PersonListR
   if (params.order) query.set('order', params.order);
   if (params.firstName) query.set('first_name', params.firstName);
   if (params.lastName) query.set('last_name', params.lastName);
+  if (params.favorite !== undefined) query.set('favorite', String(params.favorite));
   const qs = query.toString();
   return request<PersonListResponse>(`/persons${qs ? `?${qs}` : ''}`);
 }
@@ -119,6 +123,32 @@ export function restorePerson(id: string): Promise<void> {
 
 export function permanentlyDeletePerson(id: string): Promise<void> {
   return request<void>(`/persons/${id}/permanent`, { method: 'DELETE' });
+}
+
+export function listRelationships(personId: string): Promise<{ data: Relationship[] }> {
+  return request<{ data: Relationship[] }>(`/persons/${personId}/relationships`);
+}
+
+export interface CreateRelationshipInput {
+  type: RelationType;
+  related_person_id?: string;
+  related_person_name?: string;
+}
+
+export function createRelationship(
+  personId: string,
+  input: CreateRelationshipInput,
+): Promise<Relationship> {
+  return request<Relationship>(`/persons/${personId}/relationships`, {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
+}
+
+export function deleteRelationship(personId: string, relationshipId: string): Promise<void> {
+  return request<void>(`/persons/${personId}/relationships/${relationshipId}`, {
+    method: 'DELETE',
+  });
 }
 
 export function listSyncAccounts(): Promise<SyncAccountListResponse> {

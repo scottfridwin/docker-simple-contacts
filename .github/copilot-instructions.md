@@ -43,11 +43,21 @@ conflict.
   `phone_numbers` (arrays of labeled entries `{label, value}`, max 10 each),
   `addresses` (array of structured entries `{label, street, city, region,
   postal_code, country}`, max 10), `organization` (single `{name, title,
-  department}` object), `notes` (free-text string, max 4096 chars).
+  department}` object), `notes` (free-text string, max 4096 chars),
+  `is_favorite` (boolean, default false).
+- Relationships: `Person` to `Person` (or free-text name) links via exactly
+  one of `parent`, `child`, `spouse`, `sibling`, `partner` (no custom types).
+  One row per relationship, from the creating person's side; the reverse
+  (e.g. Child for a Parent link) is computed by inverting the type, never
+  stored twice. No update endpoint - delete and recreate to change the type.
+  Managed via `GET/POST /persons/{id}/relationships` and
+  `DELETE /persons/{id}/relationships/{relationshipId}`.
 - Custom fields: `snake_case` keys; string/number/boolean/date values; max 64
   fields; key ≤ 64; string ≤ 1024; `null` rejected.
 - Soft delete + 30-day purge. List defaults: page 25 / max 100, sort
-  `display_name desc`.
+  `last_name, first_name asc`, filters `first_name`/`last_name`/`favorite`.
+  Favorites are shown in an always-visible UI section (separate fetch with
+  `favorite=true`), not by reordering the main list.
 - Config: `DB_PASSWORD_FILE` overrides `DB_PASSWORD`; fail startup if neither set.
 - Auth config uses `AUTHENTIK_*` and `SESSION_SECRET(_FILE)`; file secrets take
   precedence over inline values. Authenticated Person queries must be account

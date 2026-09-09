@@ -6,6 +6,7 @@ import {
   MAX_CUSTOM_FIELDS,
   type DraftCustomField,
 } from '../customFields';
+import { RelationshipsEditor } from './RelationshipsEditor';
 
 export interface PersonFormValues {
   first_name: string;
@@ -29,6 +30,7 @@ interface PersonFormProps {
   serverErrors?: Record<string, string>;
   onSubmit: (values: PersonFormValues) => void;
   onCancel: () => void;
+  onNavigateToPerson?: (personId: string) => void;
 }
 
 const RESERVED_SYNC_FIELDS = new Set([
@@ -257,6 +259,7 @@ export function PersonForm({
   serverErrors,
   onSubmit,
   onCancel,
+  onNavigateToPerson,
 }: PersonFormProps) {
   const [firstName, setFirstName] = useState(initial?.first_name ?? '');
   const [lastName, setLastName] = useState(initial?.last_name ?? '');
@@ -348,174 +351,182 @@ export function PersonForm({
   const combinedErrors = { ...errors, ...serverErrors };
 
   return (
-    <form onSubmit={handleSubmit} className="person-form" aria-label="person form">
-      <div className="field">
-        <label htmlFor="first_name">First name *</label>
-        <input
-          id="first_name"
-          value={firstName}
-          onChange={(e) => setFirstName(e.target.value)}
-          aria-required="true"
-        />
-        {combinedErrors.first_name && <span className="error">{combinedErrors.first_name}</span>}
-      </div>
-
-      <StringListField
-        label="Middle names"
-        values={middleNames}
-        onChange={setMiddleNames}
-        maxItems={16}
-      />
-
-      <div className="field">
-        <label htmlFor="last_name">Last name *</label>
-        <input
-          id="last_name"
-          value={lastName}
-          onChange={(e) => setLastName(e.target.value)}
-          aria-required="true"
-        />
-        {combinedErrors.last_name && <span className="error">{combinedErrors.last_name}</span>}
-      </div>
-
-      <div className="field">
-        <label htmlFor="nickname">Nickname</label>
-        <input id="nickname" value={nickname} onChange={(e) => setNickname(e.target.value)} />
-      </div>
-
-      <div className="field">
-        <label htmlFor="pronouns">Pronouns</label>
-        <input id="pronouns" value={pronouns} onChange={(e) => setPronouns(e.target.value)} />
-      </div>
-
-      <div className="field">
-        <label htmlFor="birthdate">Birthdate</label>
-        <input
-          id="birthdate"
-          type="date"
-          value={birthdate}
-          onChange={(e) => setBirthdate(e.target.value)}
-        />
-        {combinedErrors.birthdate && <span className="error">{combinedErrors.birthdate}</span>}
-      </div>
-
-      <LabeledListField label="Emails" values={emails} onChange={setEmails} maxItems={10} />
-
-      <LabeledListField
-        label="Phone numbers"
-        values={phoneNumbers}
-        onChange={setPhoneNumbers}
-        maxItems={10}
-      />
-
-      <AddressListField values={addresses} onChange={setAddresses} maxItems={10} />
-
-      <fieldset className="organization-field">
-        <legend>Organization</legend>
+    <>
+      <form onSubmit={handleSubmit} className="person-form" aria-label="person form">
         <div className="field">
-          <label htmlFor="org_name">Company</label>
-          <input id="org_name" value={orgName} onChange={(e) => setOrgName(e.target.value)} />
-        </div>
-        <div className="field">
-          <label htmlFor="org_title">Title</label>
-          <input id="org_title" value={orgTitle} onChange={(e) => setOrgTitle(e.target.value)} />
-        </div>
-        <div className="field">
-          <label htmlFor="org_department">Department</label>
+          <label htmlFor="first_name">First name *</label>
           <input
-            id="org_department"
-            value={orgDepartment}
-            onChange={(e) => setOrgDepartment(e.target.value)}
+            id="first_name"
+            value={firstName}
+            onChange={(e) => setFirstName(e.target.value)}
+            aria-required="true"
           />
+          {combinedErrors.first_name && <span className="error">{combinedErrors.first_name}</span>}
         </div>
-      </fieldset>
 
-      <div className="field">
-        <label htmlFor="notes">Notes</label>
-        <textarea id="notes" value={notes} onChange={(e) => setNotes(e.target.value)} rows={4} />
-      </div>
+        <StringListField
+          label="Middle names"
+          values={middleNames}
+          onChange={setMiddleNames}
+          maxItems={16}
+        />
 
-      <fieldset className="custom-fields">
-        <legend>Custom fields</legend>
-        {drafts.map((draft, index) => (
-          <div className="custom-field-row" key={index}>
-            <input
-              aria-label={`custom field key ${index}`}
-              placeholder="key_name"
-              value={draft.key}
-              onChange={(e) => updateDraft(index, { key: e.target.value })}
-            />
-            <select
-              aria-label={`custom field type ${index}`}
-              value={draft.type}
-              onChange={(e) => updateDraft(index, { type: e.target.value as CustomFieldType })}
-            >
-              {TYPES.map((t) => (
-                <option key={t} value={t}>
-                  {t}
-                </option>
-              ))}
-            </select>
-            {draft.type === 'boolean' ? (
-              <select
-                aria-label={`custom field value ${index}`}
-                value={draft.value || 'true'}
-                onChange={(e) => updateDraft(index, { value: e.target.value })}
-              >
-                <option value="true">true</option>
-                <option value="false">false</option>
-              </select>
-            ) : (
-              <input
-                aria-label={`custom field value ${index}`}
-                type={draft.type === 'date' ? 'date' : draft.type === 'number' ? 'number' : 'text'}
-                value={draft.value}
-                onChange={(e) => updateDraft(index, { value: e.target.value })}
-              />
-            )}
-            <button
-              type="button"
-              onClick={() => removeDraft(index)}
-              aria-label={`remove field ${index}`}
-            >
-              Remove
-            </button>
-            {fieldErrors[index] && <span className="error">{fieldErrors[index]}</span>}
+        <div className="field">
+          <label htmlFor="last_name">Last name *</label>
+          <input
+            id="last_name"
+            value={lastName}
+            onChange={(e) => setLastName(e.target.value)}
+            aria-required="true"
+          />
+          {combinedErrors.last_name && <span className="error">{combinedErrors.last_name}</span>}
+        </div>
+
+        <div className="field">
+          <label htmlFor="nickname">Nickname</label>
+          <input id="nickname" value={nickname} onChange={(e) => setNickname(e.target.value)} />
+        </div>
+
+        <div className="field">
+          <label htmlFor="pronouns">Pronouns</label>
+          <input id="pronouns" value={pronouns} onChange={(e) => setPronouns(e.target.value)} />
+        </div>
+
+        <div className="field">
+          <label htmlFor="birthdate">Birthdate</label>
+          <input
+            id="birthdate"
+            type="date"
+            value={birthdate}
+            onChange={(e) => setBirthdate(e.target.value)}
+          />
+          {combinedErrors.birthdate && <span className="error">{combinedErrors.birthdate}</span>}
+        </div>
+
+        <LabeledListField label="Emails" values={emails} onChange={setEmails} maxItems={10} />
+
+        <LabeledListField
+          label="Phone numbers"
+          values={phoneNumbers}
+          onChange={setPhoneNumbers}
+          maxItems={10}
+        />
+
+        <AddressListField values={addresses} onChange={setAddresses} maxItems={10} />
+
+        <fieldset className="organization-field">
+          <legend>Organization</legend>
+          <div className="field">
+            <label htmlFor="org_name">Company</label>
+            <input id="org_name" value={orgName} onChange={(e) => setOrgName(e.target.value)} />
           </div>
-        ))}
-        <button type="button" onClick={addDraft} disabled={drafts.length >= MAX_CUSTOM_FIELDS}>
-          Add custom field
-        </button>
-      </fieldset>
-
-      {(syncMetadata.googleResourceName || syncMetadata.googleUpdatedAt) && (
-        <fieldset className="sync-metadata" aria-label="sync metadata">
-          <legend>Sync metadata</legend>
-          <div className="sync-metadata-grid">
-            {syncMetadata.googleResourceName && (
-              <div>
-                <span className="sync-metadata-label">Google resource</span>
-                <code className="sync-metadata-value">{syncMetadata.googleResourceName}</code>
-              </div>
-            )}
-            {syncMetadata.googleUpdatedAt && (
-              <div>
-                <span className="sync-metadata-label">Google updated</span>
-                <code className="sync-metadata-value">{syncMetadata.googleUpdatedAt}</code>
-              </div>
-            )}
+          <div className="field">
+            <label htmlFor="org_title">Title</label>
+            <input id="org_title" value={orgTitle} onChange={(e) => setOrgTitle(e.target.value)} />
+          </div>
+          <div className="field">
+            <label htmlFor="org_department">Department</label>
+            <input
+              id="org_department"
+              value={orgDepartment}
+              onChange={(e) => setOrgDepartment(e.target.value)}
+            />
           </div>
         </fieldset>
-      )}
 
-      <div className="actions">
-        <button type="submit" disabled={submitting}>
-          {submitting ? 'Saving…' : 'Save'}
-        </button>
-        <button type="button" onClick={onCancel}>
-          Cancel
-        </button>
-      </div>
-    </form>
+        <div className="field">
+          <label htmlFor="notes">Notes</label>
+          <textarea id="notes" value={notes} onChange={(e) => setNotes(e.target.value)} rows={4} />
+        </div>
+
+        <fieldset className="custom-fields">
+          <legend>Custom fields</legend>
+          {drafts.map((draft, index) => (
+            <div className="custom-field-row" key={index}>
+              <input
+                aria-label={`custom field key ${index}`}
+                placeholder="key_name"
+                value={draft.key}
+                onChange={(e) => updateDraft(index, { key: e.target.value })}
+              />
+              <select
+                aria-label={`custom field type ${index}`}
+                value={draft.type}
+                onChange={(e) => updateDraft(index, { type: e.target.value as CustomFieldType })}
+              >
+                {TYPES.map((t) => (
+                  <option key={t} value={t}>
+                    {t}
+                  </option>
+                ))}
+              </select>
+              {draft.type === 'boolean' ? (
+                <select
+                  aria-label={`custom field value ${index}`}
+                  value={draft.value || 'true'}
+                  onChange={(e) => updateDraft(index, { value: e.target.value })}
+                >
+                  <option value="true">true</option>
+                  <option value="false">false</option>
+                </select>
+              ) : (
+                <input
+                  aria-label={`custom field value ${index}`}
+                  type={
+                    draft.type === 'date' ? 'date' : draft.type === 'number' ? 'number' : 'text'
+                  }
+                  value={draft.value}
+                  onChange={(e) => updateDraft(index, { value: e.target.value })}
+                />
+              )}
+              <button
+                type="button"
+                onClick={() => removeDraft(index)}
+                aria-label={`remove field ${index}`}
+              >
+                Remove
+              </button>
+              {fieldErrors[index] && <span className="error">{fieldErrors[index]}</span>}
+            </div>
+          ))}
+          <button type="button" onClick={addDraft} disabled={drafts.length >= MAX_CUSTOM_FIELDS}>
+            Add custom field
+          </button>
+        </fieldset>
+
+        {(syncMetadata.googleResourceName || syncMetadata.googleUpdatedAt) && (
+          <fieldset className="sync-metadata" aria-label="sync metadata">
+            <legend>Sync metadata</legend>
+            <div className="sync-metadata-grid">
+              {syncMetadata.googleResourceName && (
+                <div>
+                  <span className="sync-metadata-label">Google resource</span>
+                  <code className="sync-metadata-value">{syncMetadata.googleResourceName}</code>
+                </div>
+              )}
+              {syncMetadata.googleUpdatedAt && (
+                <div>
+                  <span className="sync-metadata-label">Google updated</span>
+                  <code className="sync-metadata-value">{syncMetadata.googleUpdatedAt}</code>
+                </div>
+              )}
+            </div>
+          </fieldset>
+        )}
+
+        <div className="actions">
+          <button type="submit" disabled={submitting}>
+            {submitting ? 'Saving…' : 'Save'}
+          </button>
+          <button type="button" onClick={onCancel}>
+            Cancel
+          </button>
+        </div>
+      </form>
+
+      {initial && (
+        <RelationshipsEditor personId={initial.id} onNavigateToPerson={onNavigateToPerson} />
+      )}
+    </>
   );
 }

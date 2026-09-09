@@ -26,6 +26,7 @@ type Person struct {
 	Organization *contactsync.Organization  `json:"organization,omitempty"`
 	Notes        *string                    `json:"notes,omitempty"`
 	CustomFields map[string]any             `json:"custom_fields"`
+	IsFavorite   bool                       `json:"is_favorite"`
 	CreatedAt    time.Time                  `json:"created_at"`
 	UpdatedAt    time.Time                  `json:"updated_at"`
 	DeletedAt    *time.Time                 `json:"deleted_at,omitempty"`
@@ -45,6 +46,7 @@ type CreateInput struct {
 	Organization *contactsync.Organization  `json:"organization"`
 	Notes        *string                    `json:"notes"`
 	CustomFields map[string]any             `json:"custom_fields"`
+	IsFavorite   bool                       `json:"is_favorite"`
 }
 
 // UpdateInput is the payload accepted when patching a Person. Pointer fields and
@@ -62,6 +64,7 @@ type UpdateInput struct {
 	Organization *contactsync.Organization
 	Notes        *string
 	CustomFields map[string]any
+	IsFavorite   *bool
 
 	FirstNameSet    bool
 	MiddleNamesSet  bool
@@ -75,6 +78,7 @@ type UpdateInput struct {
 	OrganizationSet bool
 	NotesSet        bool
 	CustomFieldsSet bool
+	IsFavoriteSet   bool
 }
 
 // ListParams controls list filtering, sorting, and pagination.
@@ -85,6 +89,7 @@ type ListParams struct {
 	SortDesc  bool
 	FirstName string
 	LastName  string
+	Favorite  *bool
 }
 
 // DeriveDisplayName builds a display name from the name parts when the caller

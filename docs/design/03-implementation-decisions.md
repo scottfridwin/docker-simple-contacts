@@ -445,3 +445,48 @@ both appear in real contact exports.
 Storage: `emails`, `phone_numbers`, and `addresses` are `JSONB NOT NULL
 DEFAULT '[]'`; `organization` is nullable `JSONB`; `notes` is nullable `TEXT`.
 
+## Post-implementation decision log (2026-09-09, later)
+
+### H) Relationships, favorites, and default sort
+
+Relationships: implemented Person-to-Person relationships with a fixed type
+enum (`parent`, `child`, `spouse`, `sibling`, `partner`) - **no custom
+relationship types in v1**; the original GitHub issue proposed allowing
+custom types, but that was explicitly descoped by the user ("no custom
+relationships need to be supported, we can add more as the app evolves").
+
+- Storage: one row per relationship (`person_relationships` table,
+  `person_id` -> `related_person_id`/`related_person_name`, `type`), from the
+  creating person's perspective. The reverse side (e.g. Child, for a Parent
+  relationship) is computed at read time by inverting the type - Parent/Child
+  are a directional pair, Spouse/Sibling/Partner are self-inverse. This
+  avoids ever storing two rows that could drift out of sync.
+- `related_person_id` is nullable to support a relationship that's just a
+  free-text name (no link), needed both for manual entry (someone not in your
+  contacts) and for Google sync, since Google's `relations` field only stores
+  a name string with no link to an actual record.
+- **No update/PATCH endpoint for a relationship** - only create and delete.
+  To change a relationship's type, delete and recreate. This was a scope cut
+  to avoid the complexity of "editing from the computed-reverse side needs a
+  second type inversion before writing back to the canonical row"; not
+  explicitly requested by the user but a reasonable simplification given nothing
+  in the original request calls for in-place editing.
+- Google sync: importing a Google relation resolves its free-text name to a
+  local contact only on an **exact, unambiguous display-name match** (link if
+  exactly one match, otherwise keep it name-only) - per explicit user
+  decision, to avoid fuzzy-matching false positives. Google relation types we
+  don't support (friend, relative, manager, assistant, referredBy, colleague,
+  etc.) are silently skipped on import, consistent with no custom-type
+  support.
+
+Favorites: added `Person.is_favorite` (boolean). Per explicit user decision,
+favorited contacts are shown in a **separate, persistent Favorites section**
+in the UI (always visible regardless of the main list's current page, sort,
+or search) rather than being pinned to the top of the main list via sort
+order.
+
+Default sort: changed from `display_name desc` to `last_name, first_name asc`
+(a compound sort - ties on last name break by first name) per explicit user
+request that the previous default was wrong for a contacts list.
+
+

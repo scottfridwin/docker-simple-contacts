@@ -275,6 +275,21 @@ func (s *stubPersonService) List(context.Context, person.ListParams) ([]person.P
 	return nil, 0, nil
 }
 
+func (s *stubPersonService) ListRelationships(context.Context, uuid.UUID) ([]person.RelationshipView, error) {
+	s.t.Fatal("unexpected ListRelationships call")
+	return nil, nil
+}
+
+func (s *stubPersonService) ReplaceRelationships(context.Context, uuid.UUID, []person.RelationshipInput) error {
+	s.t.Fatal("unexpected ReplaceRelationships call")
+	return nil
+}
+
+func (s *stubPersonService) FindByDisplayName(context.Context, string) ([]person.Person, error) {
+	s.t.Fatal("unexpected FindByDisplayName call")
+	return nil, nil
+}
+
 // TestMergeRemoteRecordSkipsUnknownTombstone guards a real production
 // incident: a Google contact deleted before we ever linked it arrives as a
 // tombstone (Metadata.Deleted=true) with no local_id field, so remoteToLocal
@@ -339,5 +354,143 @@ func TestMarkAccountFailedOnlyReconnectsOnAuthFailures(t *testing.T) {
 				t.Errorf("LastError = %v, want %q", account.LastError, tc.err.Error())
 			}
 		})
+	}
+}
+
+func TestMapGoogleRelationType(t *testing.T) {
+	cases := map[string]person.RelationType{
+		"parent": person.RelationParent, "Mother": person.RelationParent, "FATHER": person.RelationParent,
+		"child": person.RelationChild, "son": person.RelationChild, "daughter": person.RelationChild,
+		"spouse":  person.RelationSpouse,
+		"sibling": person.RelationSibling, "brother": person.RelationSibling, "sister": person.RelationSibling,
+		"partner": person.RelationPartner, "domesticPartner": person.RelationPartner,
+	}
+	for input, want := range cases {
+		got, ok := mapGoogleRelationType(input)
+		if !ok || got != want {
+			t.Errorf("mapGoogleRelationType(%q) = (%q, %v), want (%q, true)", input, got, ok, want)
+		}
+	}
+	for _, unsupported := range []string{"friend", "relative", "manager", "assistant", "referredBy", "colleague", ""} {
+		if _, ok := mapGoogleRelationType(unsupported); ok {
+			t.Errorf("mapGoogleRelationType(%q) unexpectedly matched", unsupported)
+		}
+	}
+}
+
+// TestToProviderRecordMapsRelations guards the import mapping: supported
+// Google relation types are carried through as our fixed enum, and
+// unsupported types (no custom-type support) are silently skipped.
+func TestToProviderRecordMapsRelations(t *testing.T) {
+	in := googlePerson{
+		ResourceName: "people/c1",
+		Names:        []googleName{{GivenName: "Scott", FamilyName: "Fridlund"}},
+		Relations: []googleRelation{
+			{Person: "Jane Doe", Type: "spouse"},
+			{Person: "Some Friend", Type: "friend"},
+			{Person: "", Type: "sibling"},
+		},
+	}
+	fields := toProviderRecord(in).Record.Fields
+	got := fieldLabeledValues(fields, "relations")
+	if len(got) != 1 || got[0].Label != string(person.RelationSpouse) || got[0].Value != "Jane Doe" {
+		t.Fatalf("relations = %+v, want just the spouse relation", got)
+	}
+}
+
+// TestToGooglePersonMapsRelations guards the export mapping: our stored
+// (type, resolved name) pairs become Google's {person, type} relation shape.
+func TestToGooglePersonMapsRelations(t *testing.T) {
+	record := contactsync.Record{
+		Fields: map[string]contactsync.FieldState{
+			"first_name": {IsSet: true, Value: "Scott"},
+			"last_name":  {IsSet: true, Value: "Fridlund"},
+			"relations": {IsSet: true, Value: []contactsync.LabeledValue{
+				{Label: string(person.RelationSpouse), Value: "Jane Doe"},
+			}},
+		},
+	}
+	out := toGooglePerson(record, "etag")
+	if len(out.Relations) != 1 || out.Relations[0].Person != "Jane Doe" || out.Relations[0].Type != "spouse" {
+		t.Fatalf("Relations = %+v", out.Relations)
+	}
+}
+
+// relPersonService is a minimal personService fake for testing
+// reconcileRelationships/attachRelationsForExport in isolation.
+type relPersonService struct {
+	stubPersonService
+	byName           map[string][]person.Person
+	relationships    []person.RelationshipView
+	replacedPersonID uuid.UUID
+	replacedInputs   []person.RelationshipInput
+}
+
+func (s *relPersonService) FindByDisplayName(_ context.Context, name string) ([]person.Person, error) {
+	return s.byName[name], nil
+}
+
+func (s *relPersonService) ReplaceRelationships(_ context.Context, personID uuid.UUID, desired []person.RelationshipInput) error {
+	s.replacedPersonID = personID
+	s.replacedInputs = desired
+	return nil
+}
+
+func (s *relPersonService) ListRelationships(context.Context, uuid.UUID) ([]person.RelationshipView, error) {
+	return s.relationships, nil
+}
+
+// TestReconcileRelationshipsLinksUniqueNameMatch guards the agreed matching
+// policy: link to an existing contact only when its display name matches
+// exactly and unambiguously; otherwise keep the relationship name-only so
+// the information from Google isn't lost.
+func TestReconcileRelationshipsLinksUniqueNameMatch(t *testing.T) {
+	janeID := uuid.New()
+	personID := uuid.New()
+	svc := &relPersonService{stubPersonService: stubPersonService{t: t}, byName: map[string][]person.Person{
+		"Jane Doe":    {{ID: janeID, DisplayName: "Jane Doe"}},
+		"Common Name": {{ID: uuid.New()}, {ID: uuid.New()}}, // ambiguous
+	}}
+	adapter := &Adapter{people: svc, logger: slog.Default()}
+
+	fields := map[string]contactsync.FieldState{
+		"relations": {IsSet: true, Value: []contactsync.LabeledValue{
+			{Label: string(person.RelationSpouse), Value: "Jane Doe"},
+			{Label: string(person.RelationSibling), Value: "Common Name"},
+			{Label: string(person.RelationPartner), Value: "Nobody Matches"},
+		}},
+	}
+	adapter.reconcileRelationships(context.Background(), personID, fields)
+
+	if svc.replacedPersonID != personID {
+		t.Fatalf("ReplaceRelationships called for %v, want %v", svc.replacedPersonID, personID)
+	}
+	if len(svc.replacedInputs) != 3 {
+		t.Fatalf("replacedInputs = %+v, want 3 entries", svc.replacedInputs)
+	}
+	if svc.replacedInputs[0].RelatedPersonID == nil || *svc.replacedInputs[0].RelatedPersonID != janeID {
+		t.Errorf("expected unique match to be linked, got %+v", svc.replacedInputs[0])
+	}
+	if svc.replacedInputs[1].RelatedPersonID != nil {
+		t.Errorf("expected ambiguous match to stay unlinked, got %+v", svc.replacedInputs[1])
+	}
+	if svc.replacedInputs[2].RelatedPersonID != nil || svc.replacedInputs[2].RelatedPersonName == nil {
+		t.Errorf("expected no-match relation to stay unlinked with a name, got %+v", svc.replacedInputs[2])
+	}
+}
+
+func TestAttachRelationsForExport(t *testing.T) {
+	relatedID := uuid.New()
+	svc := &relPersonService{stubPersonService: stubPersonService{t: t}, relationships: []person.RelationshipView{
+		{Type: person.RelationChild, RelatedPersonID: &relatedID, RelatedPersonName: "Kid Name"},
+	}}
+	adapter := &Adapter{people: svc, logger: slog.Default()}
+
+	record := contactsync.Record{Fields: map[string]contactsync.FieldState{}}
+	record = adapter.attachRelationsForExport(context.Background(), uuid.New(), time.Now(), record)
+
+	got := fieldLabeledValues(record.Fields, "relations")
+	if len(got) != 1 || got[0].Label != string(person.RelationChild) || got[0].Value != "Kid Name" {
+		t.Fatalf("relations = %+v", got)
 	}
 }

@@ -235,7 +235,8 @@ describe('App sync integration', () => {
     render(<App />);
 
     await waitFor(() => {
-      expect(mocks.listPersons).toHaveBeenCalledTimes(1);
+      // Initial mount fetches both the main list and the favorites section.
+      expect(mocks.listPersons).toHaveBeenCalledTimes(2);
     });
 
     act(() => {
@@ -248,7 +249,7 @@ describe('App sync integration', () => {
     });
 
     await waitFor(() => {
-      expect(mocks.listPersons).toHaveBeenCalledTimes(2);
+      expect(mocks.listPersons).toHaveBeenCalledTimes(3);
     });
   });
 
