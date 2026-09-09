@@ -24,6 +24,19 @@ func TestValidateCreateValid(t *testing.T) {
 	}
 }
 
+// TestValidateUpdateNilNameTreatedAsEmpty guards derefString's nil branch:
+// setting FirstNameSet/LastNameSet without an actual value must be treated
+// as clearing the name to empty, which is invalid for a required field.
+func TestValidateUpdateNilNameTreatedAsEmpty(t *testing.T) {
+	errs := ValidateUpdate(UpdateInput{FirstNameSet: true, LastNameSet: true})
+	if !errs.HasErrors() {
+		t.Fatal("expected errors when first_name/last_name are set to nil")
+	}
+	if !strings.Contains(errs.Error(), "first_name") || !strings.Contains(errs.Error(), "last_name") {
+		t.Errorf("expected first_name and last_name errors, got: %s", errs.Error())
+	}
+}
+
 func TestCustomFieldKeyFormat(t *testing.T) {
 	cases := map[string]bool{
 		"blood_type": true,
@@ -96,6 +109,11 @@ func TestValidateNewFields(t *testing.T) {
 	good := "1990-01-15"
 	if errs := ValidateCreate(CreateInput{FirstName: "A", LastName: "B", Birthdate: &good}); errs.HasErrors() {
 		t.Errorf("expected no errors for valid birthdate, got: %s", errs.Error())
+	}
+
+	shortNotes := "Met at a conference."
+	if errs := ValidateCreate(CreateInput{FirstName: "A", LastName: "B", Notes: &shortNotes}); errs.HasErrors() {
+		t.Errorf("expected no errors for in-bounds notes, got: %s", errs.Error())
 	}
 }
 

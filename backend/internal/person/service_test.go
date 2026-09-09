@@ -183,6 +183,22 @@ func (m *memStore) ListRelationships(_ context.Context, personID uuid.UUID) ([]R
 	return views, nil
 }
 
+func (m *memStore) ListIncomingRelationships(_ context.Context, personID uuid.UUID) ([]RelationshipView, error) {
+	var views []RelationshipView
+	for _, rel := range m.relationships {
+		if rel.relatedPersonID == nil || *rel.relatedPersonID != personID {
+			continue
+		}
+		name := ""
+		if p, ok := m.items[rel.personID]; ok {
+			name = p.DisplayName
+		}
+		id := rel.personID
+		views = append(views, RelationshipView{ID: rel.id, Type: rel.relType.Inverse(), RelatedPersonID: &id, RelatedPersonName: name})
+	}
+	return views, nil
+}
+
 func (m *memStore) DeleteRelationship(_ context.Context, personID, relationshipID uuid.UUID) error {
 	for i, rel := range m.relationships {
 		if rel.id != relationshipID {
@@ -363,6 +379,30 @@ func TestServiceUpdateNewOptionalFields(t *testing.T) {
 	}
 }
 
+// TestServiceUpdateOrganizationAndNotes covers applyUpdate's
+// OrganizationSet/NotesSet branches, which TestServiceUpdateNewOptionalFields
+// doesn't otherwise exercise.
+func TestServiceUpdateOrganizationAndNotes(t *testing.T) {
+	svc := NewService(newMemStore())
+	created, _, _ := svc.Create(context.Background(), CreateInput{FirstName: "A", LastName: "B"})
+
+	org := contactsync.Organization{Name: "Acme", Title: "Engineer"}
+	notes := "Met at a conference."
+	updated, _, err := svc.Update(context.Background(), created.ID, UpdateInput{
+		Organization: &org, OrganizationSet: true,
+		Notes: &notes, NotesSet: true,
+	})
+	if err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	if updated.Organization == nil || updated.Organization.Name != "Acme" {
+		t.Errorf("Organization = %v", updated.Organization)
+	}
+	if updated.Notes == nil || *updated.Notes != notes {
+		t.Errorf("Notes = %v", updated.Notes)
+	}
+}
+
 func TestServiceUpdateDisplayNameRederived(t *testing.T) {
 	svc := NewService(newMemStore())
 	created, _, _ := svc.Create(context.Background(), CreateInput{
@@ -404,6 +444,59 @@ func TestServiceUpdateMiddleNamesAndCustomFields(t *testing.T) {
 	}
 	if _, ok := updated.CustomFields["k_two"]; !ok {
 		t.Errorf("CustomFields = %v, want k_two", updated.CustomFields)
+	}
+}
+
+// TestServiceUpdateClearsSetFieldsWithNilValue guards applyUpdate's
+// "Set=true but pointer/slice is nil" branches, which clear a field to its
+// zero value (used by callers that want to remove a field entirely, e.g.
+// {"middle_names_set": true} with no middle_names key at all).
+func TestServiceUpdateClearsSetFieldsWithNilValue(t *testing.T) {
+	svc := NewService(newMemStore())
+	middles := []string{"M"}
+	created, _, _ := svc.Create(context.Background(), CreateInput{
+		FirstName: "A", LastName: "B", MiddleNames: middles,
+		CustomFields: map[string]any{"k": "v"},
+	})
+
+	updated, _, err := svc.Update(context.Background(), created.ID, UpdateInput{
+		MiddleNamesSet:  true,
+		PhoneNumbersSet: true,
+		EmailsSet:       true,
+		AddressesSet:    true,
+		CustomFieldsSet: true,
+		IsFavoriteSet:   true,
+	})
+	if err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	if len(updated.MiddleNames) != 0 {
+		t.Errorf("MiddleNames = %v, want empty", updated.MiddleNames)
+	}
+	if len(updated.PhoneNumbers) != 0 {
+		t.Errorf("PhoneNumbers = %v, want empty", updated.PhoneNumbers)
+	}
+	if len(updated.Emails) != 0 {
+		t.Errorf("Emails = %v, want empty", updated.Emails)
+	}
+	if len(updated.Addresses) != 0 {
+		t.Errorf("Addresses = %v, want empty", updated.Addresses)
+	}
+	if len(updated.CustomFields) != 0 {
+		t.Errorf("CustomFields = %v, want empty", updated.CustomFields)
+	}
+	if updated.IsFavorite {
+		t.Errorf("IsFavoriteSet with nil IsFavorite should be a no-op, got true")
+	}
+}
+
+// TestServiceListRelationshipsNotFound guards the early-return branch: a
+// nonexistent personID should surface the lookup error without ever
+// reaching the relationships query.
+func TestServiceListRelationshipsNotFound(t *testing.T) {
+	svc := NewService(newMemStore())
+	if _, err := svc.ListRelationships(context.Background(), uuid.New()); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("ListRelationships for unknown person = %v, want ErrNotFound", err)
 	}
 }
 
@@ -607,6 +700,25 @@ func TestServiceCreateRelationshipMapsDuplicateError(t *testing.T) {
 	_, verrs, err := svc.CreateRelationship(ctx, a.ID, RelationshipInput{Type: RelationSpouse, RelatedPersonID: &b.ID})
 	if err != nil || !verrs.HasErrors() {
 		t.Fatalf("expected a validation error for the duplicate relationship, got verrs=%v err=%v", verrs, err)
+	}
+}
+
+func TestServiceListIncomingRelationships(t *testing.T) {
+	svc := NewService(newMemStore())
+	ctx := context.Background()
+	a, _, _ := svc.Create(ctx, CreateInput{FirstName: "A", LastName: "One"})
+	b, _, _ := svc.Create(ctx, CreateInput{FirstName: "B", LastName: "Two"})
+	if _, verrs, err := svc.CreateRelationship(ctx, a.ID, RelationshipInput{Type: RelationParent, RelatedPersonID: &b.ID}); err != nil || verrs.HasErrors() {
+		t.Fatalf("CreateRelationship: verrs=%v err=%v", verrs, err)
+	}
+
+	incoming, err := svc.ListIncomingRelationships(ctx, b.ID)
+	if err != nil || len(incoming) != 1 || incoming[0].Type != RelationChild || incoming[0].RelatedPersonID == nil || *incoming[0].RelatedPersonID != a.ID {
+		t.Fatalf("ListIncomingRelationships(b) = %+v, err=%v", incoming, err)
+	}
+
+	if none, err := svc.ListIncomingRelationships(ctx, a.ID); err != nil || len(none) != 0 {
+		t.Fatalf("ListIncomingRelationships(a) = %+v, err=%v, want none (a owns the row, doesn't receive it)", none, err)
 	}
 }
 

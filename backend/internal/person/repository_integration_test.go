@@ -216,6 +216,24 @@ func TestRepositoryRelationships(t *testing.T) {
 		t.Fatalf("B's relationships = %+v", bViews)
 	}
 
+	// ListIncomingRelationships(B) returns the same computed-inverse row (used
+	// by the Google sync adapter to dedupe symmetric relationships), but A's
+	// own copy is empty since A owns the row rather than receiving it.
+	bIncoming, err := repo.ListIncomingRelationships(ownerCtx, b.ID)
+	if err != nil {
+		t.Fatalf("ListIncomingRelationships(B): %v", err)
+	}
+	if len(bIncoming) != 1 || bIncoming[0].Type != RelationChild || bIncoming[0].RelatedPersonID == nil || *bIncoming[0].RelatedPersonID != a.ID {
+		t.Fatalf("B's incoming relationships = %+v", bIncoming)
+	}
+	aIncoming, err := repo.ListIncomingRelationships(ownerCtx, a.ID)
+	if err != nil {
+		t.Fatalf("ListIncomingRelationships(A): %v", err)
+	}
+	if len(aIncoming) != 0 {
+		t.Fatalf("expected no incoming relationships for A (it owns the row), got %+v", aIncoming)
+	}
+
 	// A different owner must not see this relationship at all.
 	otherViews, err := repo.ListRelationships(otherCtx, a.ID)
 	if err != nil {

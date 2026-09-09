@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { createRelationship, deleteRelationship, listPersons, listRelationships } from '../api';
 import { RELATION_TYPES, type Person, type RelationType, type Relationship } from '../types';
 
@@ -15,27 +15,145 @@ const RELATION_LABELS: Record<RelationType, string> = {
   partner: 'Partner',
 };
 
+const SEARCH_DEBOUNCE_MS = 250;
+const MAX_SUGGESTIONS = 8;
+
+/** Looks up contacts matching query by first OR last name, merging and capping results client-side. */
+async function searchContacts(query: string, excludePersonId: string): Promise<Person[]> {
+  const trimmed = query.trim();
+  if (!trimmed) return [];
+  const [byFirst, byLast] = await Promise.all([
+    listPersons({ firstName: trimmed, pageSize: MAX_SUGGESTIONS, sort: 'last_name', order: 'asc' }),
+    listPersons({ lastName: trimmed, pageSize: MAX_SUGGESTIONS, sort: 'last_name', order: 'asc' }),
+  ]);
+  const merged = new Map<string, Person>();
+  for (const p of [...byFirst.data, ...byLast.data]) {
+    if (p.id !== excludePersonId) merged.set(p.id, p);
+  }
+  return Array.from(merged.values()).slice(0, MAX_SUGGESTIONS);
+}
+
+/** A text input that suggests matching contacts (by first or last name) as the user types. */
+function ContactCombobox({
+  personId,
+  query,
+  selected,
+  onQueryChange,
+  onSelect,
+}: {
+  personId: string;
+  query: string;
+  selected: Person | null;
+  onQueryChange: (value: string) => void;
+  onSelect: (person: Person) => void;
+}) {
+  const [suggestions, setSuggestions] = useState<Person[]>([]);
+  const [open, setOpen] = useState(false);
+  const [highlighted, setHighlighted] = useState(0);
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (debounceRef.current) clearTimeout(debounceRef.current);
+    };
+  }, []);
+
+  const runSearch = (value: string) => {
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    if (!value.trim()) {
+      setSuggestions([]);
+      setOpen(false);
+      return;
+    }
+    debounceRef.current = setTimeout(() => {
+      void searchContacts(value, personId).then((results) => {
+        setSuggestions(results);
+        setOpen(results.length > 0);
+        setHighlighted(0);
+      });
+    }, SEARCH_DEBOUNCE_MS);
+  };
+
+  const handleChange = (value: string) => {
+    onQueryChange(value);
+    runSearch(value);
+  };
+
+  const handleSelect = (person: Person) => {
+    onSelect(person);
+    setOpen(false);
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (!open || suggestions.length === 0) return;
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      setHighlighted((i) => (i + 1) % suggestions.length);
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      setHighlighted((i) => (i - 1 + suggestions.length) % suggestions.length);
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      handleSelect(suggestions[highlighted]);
+    } else if (e.key === 'Escape') {
+      setOpen(false);
+    }
+  };
+
+  return (
+    <div className="contact-combobox">
+      <input
+        aria-label="related contact"
+        role="combobox"
+        aria-expanded={open}
+        aria-autocomplete="list"
+        placeholder="Type a name…"
+        value={query}
+        onChange={(e) => handleChange(e.target.value)}
+        onFocus={() => setOpen(suggestions.length > 0)}
+        onBlur={() => setTimeout(() => setOpen(false), 150)}
+        onKeyDown={handleKeyDown}
+      />
+      {selected && (
+        <span className="combobox-linked-hint" aria-hidden="true">
+          ✓ linked
+        </span>
+      )}
+      {open && (
+        <ul className="combobox-suggestions" role="listbox">
+          {suggestions.map((p, i) => (
+            <li key={p.id} role="option" aria-selected={i === highlighted}>
+              <button
+                type="button"
+                className={i === highlighted ? 'is-highlighted' : ''}
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={() => handleSelect(p)}
+              >
+                {p.display_name}
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
 export function RelationshipsEditor({ personId, onNavigateToPerson }: RelationshipsEditorProps) {
   const [relationships, setRelationships] = useState<Relationship[]>([]);
-  const [candidates, setCandidates] = useState<Person[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [type, setType] = useState<RelationType>('parent');
-  const [mode, setMode] = useState<'link' | 'name'>('link');
-  const [relatedPersonId, setRelatedPersonId] = useState('');
-  const [relatedName, setRelatedName] = useState('');
+  const [query, setQuery] = useState('');
+  const [selected, setSelected] = useState<Person | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
   const refresh = async () => {
     setLoading(true);
     setError(null);
     try {
-      const [relRes, personsRes] = await Promise.all([
-        listRelationships(personId),
-        listPersons({ pageSize: 100, sort: 'last_name', order: 'asc' }),
-      ]);
+      const relRes = await listRelationships(personId);
       setRelationships(relRes.data);
-      setCandidates(personsRes.data.filter((p) => p.id !== personId));
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load relationships');
     } finally {
@@ -50,26 +168,37 @@ export function RelationshipsEditor({ personId, onNavigateToPerson }: Relationsh
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [personId]);
 
-  const handleAdd = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setError(null);
-    if (mode === 'link' && !relatedPersonId) {
-      setError('Choose a contact to link, or switch to entering a name.');
-      return;
+  const handleQueryChange = (value: string) => {
+    setQuery(value);
+    if (selected && value !== selected.display_name) {
+      setSelected(null);
     }
-    if (mode === 'name' && !relatedName.trim()) {
-      setError('Enter a name.');
+  };
+
+  const handleSelectContact = (person: Person) => {
+    setSelected(person);
+    setQuery(person.display_name);
+  };
+
+  const handleAdd = async () => {
+    setError(null);
+    const name = query.trim();
+    if (!name) {
+      setError('Enter a name or choose a contact.');
       return;
     }
     setSubmitting(true);
     try {
+      // Link to the selected contact only if the text still matches it
+      // exactly; otherwise store whatever was typed as a name-only entry.
+      const isLinked = selected !== null && selected.display_name === name;
       await createRelationship(personId, {
         type,
-        related_person_id: mode === 'link' ? relatedPersonId : undefined,
-        related_person_name: mode === 'name' ? relatedName.trim() : undefined,
+        related_person_id: isLinked ? selected!.id : undefined,
+        related_person_name: isLinked ? undefined : name,
       });
-      setRelatedPersonId('');
-      setRelatedName('');
+      setQuery('');
+      setSelected(null);
       await refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to add relationship');
@@ -111,7 +240,10 @@ export function RelationshipsEditor({ personId, onNavigateToPerson }: Relationsh
                   {rel.related_person_deleted ? ' (deleted)' : ''}
                 </button>
               ) : (
-                <span>{rel.related_person_name}</span>
+                <span className="relationship-unlinked">
+                  {rel.related_person_name}
+                  <span className="unlinked-badge">not linked</span>
+                </span>
               )}
               <button
                 type="button"
@@ -126,7 +258,7 @@ export function RelationshipsEditor({ personId, onNavigateToPerson }: Relationsh
         </ul>
       )}
 
-      <form className="relationship-add-form" onSubmit={handleAdd}>
+      <div className="relationship-add-form">
         <select
           aria-label="relationship type"
           value={type}
@@ -138,41 +270,23 @@ export function RelationshipsEditor({ personId, onNavigateToPerson }: Relationsh
             </option>
           ))}
         </select>
-        <div className="relationship-mode-toggle">
-          <label>
-            <input type="radio" checked={mode === 'link'} onChange={() => setMode('link')} />
-            Existing contact
-          </label>
-          <label>
-            <input type="radio" checked={mode === 'name'} onChange={() => setMode('name')} />
-            Just a name
-          </label>
-        </div>
-        {mode === 'link' ? (
-          <select
-            aria-label="related contact"
-            value={relatedPersonId}
-            onChange={(e) => setRelatedPersonId(e.target.value)}
-          >
-            <option value="">Select a contact…</option>
-            {candidates.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.display_name}
-              </option>
-            ))}
-          </select>
-        ) : (
-          <input
-            aria-label="related person name"
-            placeholder="Name"
-            value={relatedName}
-            onChange={(e) => setRelatedName(e.target.value)}
-          />
-        )}
-        <button type="submit" disabled={submitting}>
-          {submitting ? 'Adding…' : 'Add relationship'}
+        <ContactCombobox
+          personId={personId}
+          query={query}
+          selected={selected}
+          onQueryChange={handleQueryChange}
+          onSelect={handleSelectContact}
+        />
+        <button
+          type="button"
+          className="btn-icon btn-add"
+          onClick={() => void handleAdd()}
+          disabled={submitting}
+          aria-label="add relationship"
+        >
+          +
         </button>
-      </form>
+      </div>
     </fieldset>
   );
 }

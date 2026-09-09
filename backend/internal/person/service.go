@@ -25,6 +25,7 @@ type store interface {
 	PurgeExpired(ctx context.Context, olderThan time.Duration) (int64, error)
 	CreateRelationship(ctx context.Context, personID uuid.UUID, in RelationshipInput) (*RelationshipView, error)
 	ListRelationships(ctx context.Context, personID uuid.UUID) ([]RelationshipView, error)
+	ListIncomingRelationships(ctx context.Context, personID uuid.UUID) ([]RelationshipView, error)
 	DeleteRelationship(ctx context.Context, personID, relationshipID uuid.UUID) error
 	ReplaceRelationships(ctx context.Context, personID uuid.UUID, desired []RelationshipInput) error
 	FindByDisplayName(ctx context.Context, name string) ([]Person, error)
@@ -207,6 +208,14 @@ func (s *Service) ListRelationships(ctx context.Context, personID uuid.UUID) ([]
 		return nil, err
 	}
 	return s.repo.ListRelationships(ctx, personID)
+}
+
+// ListIncomingRelationships returns only the relationships someone else
+// created that name personID as the related person. Used by sync adapters
+// to deduplicate relationships reported symmetrically by an external
+// provider.
+func (s *Service) ListIncomingRelationships(ctx context.Context, personID uuid.UUID) ([]RelationshipView, error) {
+	return s.repo.ListIncomingRelationships(ctx, personID)
 }
 
 // DeleteRelationship removes a relationship visible from personID's side.

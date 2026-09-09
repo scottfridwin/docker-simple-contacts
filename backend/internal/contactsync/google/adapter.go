@@ -59,6 +59,7 @@ type personService interface {
 	Delete(context.Context, uuid.UUID) error
 	List(context.Context, person.ListParams) ([]person.Person, int, error)
 	ListRelationships(context.Context, uuid.UUID) ([]person.RelationshipView, error)
+	ListIncomingRelationships(context.Context, uuid.UUID) ([]person.RelationshipView, error)
 	ReplaceRelationships(context.Context, uuid.UUID, []person.RelationshipInput) error
 	FindByDisplayName(context.Context, string) ([]person.Person, error)
 }
@@ -375,6 +376,16 @@ func (a *Adapter) linkRecord(ctx context.Context, accountID, personID uuid.UUID,
 	})
 }
 
+// pendingRelationship defers relationship reconciliation for a person until
+// after every remote record in the current pull has been created/updated
+// locally, so a relationship can resolve to a contact that was itself only
+// just created earlier in the same sync run (e.g. Person A references
+// Person B, but B hadn't been synced yet when A was processed).
+type pendingRelationship struct {
+	PersonID uuid.UUID
+	Fields   map[string]contactsync.FieldState
+}
+
 // attachRelationsForExport loads personID's current relationships (resolving
 // live display names) and attaches them to record's "relations" field, since
 // relationships can't be populated by the plain Person.Snapshot()/
@@ -397,13 +408,45 @@ func (a *Adapter) attachRelationsForExport(ctx context.Context, personID uuid.UU
 	return record
 }
 
+// relationshipAlreadyExists reports whether existing (personID's incoming,
+// other-person-owned relationships) already contains an entry equivalent to
+// the candidate, so it isn't stored a second time. Google can report the
+// same relationship symmetrically on both contacts (A says "child: B" and B
+// says "parent: A"), but that is exactly one relationship in our schema -
+// whichever side is reconciled second must skip re-adding its own copy of
+// what the other side already established.
+func relationshipAlreadyExists(existing []person.RelationshipView, relType person.RelationType, relatedID *uuid.UUID, name string) bool {
+	for _, v := range existing {
+		if v.Type != relType {
+			continue
+		}
+		if relatedID != nil {
+			if v.RelatedPersonID != nil && *v.RelatedPersonID == *relatedID {
+				return true
+			}
+			continue
+		}
+		if v.RelatedPersonID == nil && v.RelatedPersonName == name {
+			return true
+		}
+	}
+	return false
+}
+
 // reconcileRelationships replaces personID's relationships with the ones
 // reported by the remote provider, resolving each provider-supplied name to
 // an existing local contact when there's exactly one exact display-name
 // match, and otherwise keeping it as an unlinked, name-only relationship so
-// the information isn't lost.
+// the information isn't lost. Entries already represented via the other
+// person's side (see relationshipAlreadyExists) are skipped to avoid
+// duplicate rows.
 func (a *Adapter) reconcileRelationships(ctx context.Context, personID uuid.UUID, fields map[string]contactsync.FieldState) {
 	raw := fieldLabeledValues(fields, "relations")
+	incoming, err := a.people.ListIncomingRelationships(ctx, personID)
+	if err != nil {
+		a.logger.Warn("failed to load incoming relationships for dedup", "person_id", personID, "error", err)
+		incoming = nil
+	}
 	inputs := make([]person.RelationshipInput, 0, len(raw))
 	for _, rel := range raw {
 		relType := person.RelationType(rel.Label)
@@ -415,12 +458,17 @@ func (a *Adapter) reconcileRelationships(ctx context.Context, personID uuid.UUID
 			continue
 		}
 		in := person.RelationshipInput{Type: relType}
+		var relatedID *uuid.UUID
 		if matches, err := a.people.FindByDisplayName(ctx, name); err == nil && len(matches) == 1 && matches[0].ID != personID {
-			relatedID := matches[0].ID
-			in.RelatedPersonID = &relatedID
+			id := matches[0].ID
+			relatedID = &id
+			in.RelatedPersonID = &id
 		} else {
 			relatedName := name
 			in.RelatedPersonName = &relatedName
+		}
+		if relationshipAlreadyExists(incoming, relType, relatedID, name) {
+			continue
 		}
 		inputs = append(inputs, in)
 	}
@@ -448,6 +496,7 @@ func (a *Adapter) syncLocalJob(ctx context.Context, accountID uuid.UUID, session
 func (a *Adapter) pullRemote(ctx context.Context, accountID uuid.UUID, session contactsync.AuthSession, cursor string) (string, int, error) {
 	current := cursor
 	seen := 0
+	var pending []pendingRelationship
 	for {
 		page, err := a.ListChanges(ctx, session, current)
 		if err != nil {
@@ -462,7 +511,7 @@ func (a *Adapter) pullRemote(ctx context.Context, accountID uuid.UUID, session c
 		a.logger.Info("google sync fetched remote page", "account_id", accountID, "records", len(page.Records), "has_more", page.HasMore)
 		seen += len(page.Records)
 		for _, remote := range page.Records {
-			if err := a.mergeRemoteRecord(ctx, accountID, session, remote); err != nil {
+			if err := a.mergeRemoteRecord(ctx, accountID, session, remote, &pending); err != nil {
 				return cursor, seen, err
 			}
 		}
@@ -470,6 +519,12 @@ func (a *Adapter) pullRemote(ctx context.Context, accountID uuid.UUID, session c
 		if !page.HasMore {
 			break
 		}
+	}
+	// Second pass: every contact from this pull has now been created or
+	// updated locally, so relationships that referenced a not-yet-synced
+	// contact earlier in this same run can now resolve correctly.
+	for _, p := range pending {
+		a.reconcileRelationships(ctx, p.PersonID, p.Fields)
 	}
 	return current, seen, nil
 }
@@ -501,7 +556,7 @@ func (a *Adapter) exportLocal(ctx context.Context, accountID uuid.UUID, session 
 	return nil
 }
 
-func (a *Adapter) mergeRemoteRecord(ctx context.Context, accountID uuid.UUID, session contactsync.AuthSession, remote contactsync.ProviderRecord) error {
+func (a *Adapter) mergeRemoteRecord(ctx context.Context, accountID uuid.UUID, session contactsync.AuthSession, remote contactsync.ProviderRecord, pending *[]pendingRelationship) error {
 	remoteModel, localID := remoteToLocal(remote)
 	if localID == nil {
 		if remote.Record.Tombstone.Deleted {
@@ -517,7 +572,7 @@ func (a *Adapter) mergeRemoteRecord(ctx context.Context, accountID uuid.UUID, se
 		if err != nil {
 			return fmt.Errorf("creating local person from google record %s: %w", remote.Record.ExternalID, err)
 		}
-		a.reconcileRelationships(ctx, created.ID, remote.Record.Fields)
+		*pending = append(*pending, pendingRelationship{PersonID: created.ID, Fields: remote.Record.Fields})
 		out, upsertErr := a.UpsertRecord(ctx, session, a.attachRelationsForExport(ctx, created.ID, created.UpdatedAt, personToRecord(*created, remote.Record.ExternalID)))
 		if upsertErr != nil {
 			return upsertErr
@@ -540,7 +595,7 @@ func (a *Adapter) mergeRemoteRecord(ctx context.Context, accountID uuid.UUID, se
 		if createErr != nil {
 			return fmt.Errorf("creating local person for missing mapping: %w", createErr)
 		}
-		a.reconcileRelationships(ctx, created.ID, remote.Record.Fields)
+		*pending = append(*pending, pendingRelationship{PersonID: created.ID, Fields: remote.Record.Fields})
 		out, upsertErr := a.UpsertRecord(ctx, session, a.attachRelationsForExport(ctx, created.ID, created.UpdatedAt, personToRecord(*created, remote.Record.ExternalID)))
 		if upsertErr != nil {
 			return upsertErr
@@ -592,7 +647,7 @@ func (a *Adapter) mergeRemoteRecord(ctx context.Context, accountID uuid.UUID, se
 		if _, _, err := a.people.Update(contactsync.WithSyncOrigin(ctx), local.ID, update); err != nil {
 			return fmt.Errorf("updating local person %s: %w", local.ID.String(), err)
 		}
-		a.reconcileRelationships(ctx, local.ID, remote.Record.Fields)
+		*pending = append(*pending, pendingRelationship{PersonID: local.ID, Fields: remote.Record.Fields})
 		return nil
 	}
 

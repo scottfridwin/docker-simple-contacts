@@ -663,16 +663,83 @@ input[type='number'] {
   align-items: center;
 }
 
-.relationship-mode-toggle {
-  display: flex;
-  gap: 0.75rem;
-  font-size: 0.85rem;
+.relationship-unlinked {
+  font-style: italic;
+  color: var(--muted);
 }
 
-.relationship-mode-toggle label {
-  display: flex;
-  align-items: center;
-  gap: 0.25rem;
+.unlinked-badge {
+  font-style: normal;
+  font-size: 0.7rem;
+  color: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0 0.3rem;
+  margin-left: 0.35rem;
+}
+
+.contact-combobox {
+  position: relative;
+  flex: 1 1 12rem;
+  min-width: 10rem;
+}
+
+.contact-combobox input {
+  width: 100%;
+  font: inherit;
+  padding: 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+}
+
+.combobox-linked-hint {
+  position: absolute;
+  right: 0.5rem;
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: 0.75rem;
+  color: #16a34a;
+  pointer-events: none;
+}
+
+.combobox-suggestions {
+  position: absolute;
+  z-index: 10;
+  top: calc(100% + 0.25rem);
+  left: 0;
+  right: 0;
+  margin: 0;
+  padding: 0.25rem;
+  list-style: none;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  max-height: 12rem;
+  overflow-y: auto;
+}
+
+.combobox-suggestions li {
+  margin: 0;
+}
+
+.combobox-suggestions button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  padding: 0.4rem 0.5rem;
+  border-radius: 4px;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.combobox-suggestions button.is-highlighted,
+.combobox-suggestions button:hover {
+  background: var(--border);
 }
 
 .array-field {

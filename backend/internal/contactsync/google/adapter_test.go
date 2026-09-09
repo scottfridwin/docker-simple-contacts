@@ -280,6 +280,11 @@ func (s *stubPersonService) ListRelationships(context.Context, uuid.UUID) ([]per
 	return nil, nil
 }
 
+func (s *stubPersonService) ListIncomingRelationships(context.Context, uuid.UUID) ([]person.RelationshipView, error) {
+	s.t.Fatal("unexpected ListIncomingRelationships call")
+	return nil, nil
+}
+
 func (s *stubPersonService) ReplaceRelationships(context.Context, uuid.UUID, []person.RelationshipInput) error {
 	s.t.Fatal("unexpected ReplaceRelationships call")
 	return nil
@@ -309,8 +314,68 @@ func TestMergeRemoteRecordSkipsUnknownTombstone(t *testing.T) {
 		},
 	}
 
-	if err := adapter.mergeRemoteRecord(context.Background(), uuid.New(), contactsync.AuthSession{}, remote); err != nil {
+	var pending []pendingRelationship
+	if err := adapter.mergeRemoteRecord(context.Background(), uuid.New(), contactsync.AuthSession{}, remote, &pending); err != nil {
 		t.Fatalf("mergeRemoteRecord: %v", err)
+	}
+}
+
+// TestMergeRemoteRecordDefersRelationshipReconciliation guards the two-pass
+// sync fix: relationship reconciliation for an updated contact must not run
+// inline inside mergeRemoteRecord (which processes one remote record at a
+// time and so may not have created a referenced contact yet) - it must be
+// queued in pending and only run after every record in the pull has been
+// created/updated, so relationships can resolve to contacts synced later in
+// the same run.
+// noopLinkStore is a no-op recordLinkStore fake for tests that exercise
+// mergeRemoteRecord's update path, which opportunistically self-heals the
+// remote-record link on every merge.
+type noopLinkStore struct{}
+
+func (noopLinkStore) Get(context.Context, uuid.UUID, uuid.UUID) (*contactsync.RecordLink, error) {
+	return nil, errors.New("not found")
+}
+
+func (noopLinkStore) Upsert(context.Context, *contactsync.RecordLink) error {
+	return nil
+}
+
+func TestMergeRemoteRecordDefersRelationshipReconciliation(t *testing.T) {
+	localID := uuid.New()
+	local := &person.Person{ID: localID, FirstName: "Ada", LastName: "Lovelace", UpdatedAt: time.Now().Add(-time.Hour)}
+	svc := &relPersonService{stubPersonService: stubPersonService{t: t}, getResult: local}
+	adapter := &Adapter{people: svc, links: noopLinkStore{}, logger: slog.Default()}
+
+	remote := contactsync.ProviderRecord{
+		Record: contactsync.Record{
+			ExternalID: "people/c1",
+			Fields: map[string]contactsync.FieldState{
+				"first_name":         {IsSet: true, Value: "Ada", UpdatedAt: time.Now()},
+				"last_name":          {IsSet: true, Value: "Lovelace", UpdatedAt: time.Now()},
+				"local_id":           {IsSet: true, Value: localID.String()},
+				"_google_updated_at": {IsSet: true, Value: time.Now().UTC().Format(time.RFC3339Nano)},
+				"relations": {IsSet: true, Value: []contactsync.LabeledValue{
+					{Label: string(person.RelationSpouse), Value: "Not Yet Synced"},
+				}},
+			},
+		},
+	}
+
+	var pending []pendingRelationship
+	if err := adapter.mergeRemoteRecord(context.Background(), uuid.New(), contactsync.AuthSession{}, remote, &pending); err != nil {
+		t.Fatalf("mergeRemoteRecord: %v", err)
+	}
+
+	if svc.replacedInputs != nil {
+		t.Fatalf("ReplaceRelationships called eagerly during merge, want deferred: %+v", svc.replacedInputs)
+	}
+	if len(pending) != 1 || pending[0].PersonID != localID {
+		t.Fatalf("pending = %+v, want one entry for %v", pending, localID)
+	}
+
+	adapter.reconcileRelationships(context.Background(), pending[0].PersonID, pending[0].Fields)
+	if svc.replacedPersonID != localID || len(svc.replacedInputs) != 1 {
+		t.Fatalf("expected reconciliation to run once triggered, got personID=%v inputs=%+v", svc.replacedPersonID, svc.replacedInputs)
 	}
 }
 
@@ -422,8 +487,23 @@ type relPersonService struct {
 	stubPersonService
 	byName           map[string][]person.Person
 	relationships    []person.RelationshipView
+	incoming         []person.RelationshipView
+	getResult        *person.Person
 	replacedPersonID uuid.UUID
 	replacedInputs   []person.RelationshipInput
+}
+
+func (s *relPersonService) Get(_ context.Context, id uuid.UUID) (*person.Person, error) {
+	if s.getResult != nil && s.getResult.ID == id {
+		return s.getResult, nil
+	}
+	return nil, person.ErrNotFound
+}
+
+func (s *relPersonService) Update(_ context.Context, id uuid.UUID, _ person.UpdateInput) (*person.Person, person.ValidationErrors, error) {
+	updated := *s.getResult
+	updated.UpdatedAt = time.Now()
+	return &updated, nil, nil
 }
 
 func (s *relPersonService) FindByDisplayName(_ context.Context, name string) ([]person.Person, error) {
@@ -438,6 +518,10 @@ func (s *relPersonService) ReplaceRelationships(_ context.Context, personID uuid
 
 func (s *relPersonService) ListRelationships(context.Context, uuid.UUID) ([]person.RelationshipView, error) {
 	return s.relationships, nil
+}
+
+func (s *relPersonService) ListIncomingRelationships(context.Context, uuid.UUID) ([]person.RelationshipView, error) {
+	return s.incoming, nil
 }
 
 // TestReconcileRelationshipsLinksUniqueNameMatch guards the agreed matching
@@ -492,5 +576,35 @@ func TestAttachRelationsForExport(t *testing.T) {
 	got := fieldLabeledValues(record.Fields, "relations")
 	if len(got) != 1 || got[0].Label != string(person.RelationChild) || got[0].Value != "Kid Name" {
 		t.Fatalf("relations = %+v", got)
+	}
+}
+
+// TestReconcileRelationshipsDedupesSymmetricGoogleRelations guards the
+// dedup fix: Google can report the same relationship on both contacts (A
+// says "child: B", B says "parent: A"), but that must collapse to exactly
+// one row in our schema. Whichever side is reconciled second sees the first
+// side's row as an incoming (other-owned) relationship and must skip
+// re-adding its own copy.
+func TestReconcileRelationshipsDedupesSymmetricGoogleRelations(t *testing.T) {
+	personID := uuid.New()
+	bID := uuid.New()
+	svc := &relPersonService{
+		stubPersonService: stubPersonService{t: t},
+		byName:            map[string][]person.Person{"Person B": {{ID: bID, DisplayName: "Person B"}}},
+		incoming: []person.RelationshipView{
+			{Type: person.RelationChild, RelatedPersonID: &bID, RelatedPersonName: "Person B"},
+		},
+	}
+	adapter := &Adapter{people: svc, logger: slog.Default()}
+
+	fields := map[string]contactsync.FieldState{
+		"relations": {IsSet: true, Value: []contactsync.LabeledValue{
+			{Label: string(person.RelationChild), Value: "Person B"},
+		}},
+	}
+	adapter.reconcileRelationships(context.Background(), personID, fields)
+
+	if len(svc.replacedInputs) != 0 {
+		t.Fatalf("replacedInputs = %+v, want none (already represented from the other side)", svc.replacedInputs)
 	}
 }

@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { RelationshipsEditor } from '../src/components/RelationshipsEditor';
@@ -37,10 +37,14 @@ function makePerson(overrides: Partial<Person> = {}): Person {
 }
 
 function makePersonsResponse(data: Person[]): PersonListResponse {
-  return { data, page: 1, page_size: 100, total: data.length, total_pages: 1 };
+  return { data, page: 1, page_size: 8, total: data.length, total_pages: 1 };
 }
 
 describe('RelationshipsEditor', () => {
+  beforeEach(() => {
+    mocks.listPersons.mockReset().mockResolvedValue(makePersonsResponse([]));
+  });
+
   it('lists existing relationships and links to a related contact', async () => {
     const relationships: Relationship[] = [
       {
@@ -52,7 +56,6 @@ describe('RelationshipsEditor', () => {
       },
     ];
     mocks.listRelationships.mockResolvedValue({ data: relationships });
-    mocks.listPersons.mockResolvedValue(makePersonsResponse([makePerson()]));
     const onNavigate = vi.fn();
 
     render(<RelationshipsEditor personId="me" onNavigateToPerson={onNavigate} />);
@@ -65,12 +68,29 @@ describe('RelationshipsEditor', () => {
     expect(onNavigate).toHaveBeenCalledWith('other-1');
   });
 
-  it('adds an unlinked relationship by name', async () => {
+  it('marks a name-only relationship as not linked', async () => {
+    const relationships: Relationship[] = [
+      {
+        id: 'rel-0',
+        type: 'sibling',
+        related_person_id: null,
+        related_person_name: 'Unlinked Sibling',
+        related_person_deleted: false,
+      },
+    ];
+    mocks.listRelationships.mockResolvedValue({ data: relationships });
+
+    render(<RelationshipsEditor personId="me" />);
+
+    await waitFor(() => expect(screen.getByText('Unlinked Sibling')).toBeInTheDocument());
+    expect(screen.getByText('not linked')).toBeInTheDocument();
+  });
+
+  it('adds an unlinked relationship when the typed name has no match', async () => {
     mocks.listRelationships.mockResolvedValue({ data: [] });
-    mocks.listPersons.mockResolvedValue(makePersonsResponse([]));
     mocks.createRelationship.mockResolvedValue({
       id: 'rel-2',
-      type: 'sibling',
+      type: 'parent',
       related_person_name: 'Unlinked Sibling',
       related_person_deleted: false,
     });
@@ -78,8 +98,7 @@ describe('RelationshipsEditor', () => {
     render(<RelationshipsEditor personId="me" />);
     await waitFor(() => expect(screen.getByText(/no relationships yet/i)).toBeInTheDocument());
 
-    await userEvent.click(screen.getByRole('radio', { name: /just a name/i }));
-    await userEvent.type(screen.getByLabelText('related person name'), 'Unlinked Sibling');
+    await userEvent.type(screen.getByLabelText('related contact'), 'Unlinked Sibling');
     await userEvent.click(screen.getByRole('button', { name: /add relationship/i }));
 
     await waitFor(() => {
@@ -87,6 +106,34 @@ describe('RelationshipsEditor', () => {
         type: 'parent',
         related_person_id: undefined,
         related_person_name: 'Unlinked Sibling',
+      });
+    });
+  });
+
+  it('links to a contact selected from the search suggestions', async () => {
+    mocks.listRelationships.mockResolvedValue({ data: [] });
+    mocks.listPersons.mockResolvedValue(makePersonsResponse([makePerson()]));
+    mocks.createRelationship.mockResolvedValue({
+      id: 'rel-3',
+      type: 'parent',
+      related_person_id: 'other-1',
+      related_person_name: 'Jane Doe',
+      related_person_deleted: false,
+    });
+
+    render(<RelationshipsEditor personId="me" />);
+    await waitFor(() => expect(screen.getByText(/no relationships yet/i)).toBeInTheDocument());
+
+    await userEvent.type(screen.getByLabelText('related contact'), 'Jane');
+    const suggestion = await screen.findByRole('button', { name: 'Jane Doe' }, { timeout: 1000 });
+    await userEvent.click(suggestion);
+    await userEvent.click(screen.getByRole('button', { name: /add relationship/i }));
+
+    await waitFor(() => {
+      expect(mocks.createRelationship).toHaveBeenCalledWith('me', {
+        type: 'parent',
+        related_person_id: 'other-1',
+        related_person_name: undefined,
       });
     });
   });
@@ -102,7 +149,6 @@ describe('RelationshipsEditor', () => {
       },
     ];
     mocks.listRelationships.mockResolvedValue({ data: relationships });
-    mocks.listPersons.mockResolvedValue(makePersonsResponse([]));
     mocks.deleteRelationship.mockResolvedValue(undefined);
 
     render(<RelationshipsEditor personId="me" />);

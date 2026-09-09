@@ -209,6 +209,22 @@ func (f *fakeStore) ListRelationships(_ context.Context, personID uuid.UUID) ([]
 	return views, nil
 }
 
+func (f *fakeStore) ListIncomingRelationships(_ context.Context, personID uuid.UUID) ([]person.RelationshipView, error) {
+	var views []person.RelationshipView
+	for _, rel := range f.relationships {
+		if rel.relatedPersonID == nil || *rel.relatedPersonID != personID {
+			continue
+		}
+		name := ""
+		if p, ok := f.items[rel.personID]; ok {
+			name = p.DisplayName
+		}
+		id := rel.personID
+		views = append(views, person.RelationshipView{ID: rel.id, Type: rel.relType.Inverse(), RelatedPersonID: &id, RelatedPersonName: name})
+	}
+	return views, nil
+}
+
 func (f *fakeStore) DeleteRelationship(_ context.Context, personID, relationshipID uuid.UUID) error {
 	for i, rel := range f.relationships {
 		if rel.id != relationshipID {

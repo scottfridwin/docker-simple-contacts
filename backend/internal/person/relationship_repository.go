@@ -146,6 +146,59 @@ func (r *Repository) ListRelationships(ctx context.Context, personID uuid.UUID) 
 	return views, nil
 }
 
+// ListIncomingRelationships returns only the relationships someone else
+// created that name personID as the related person (the computed reverse
+// view), i.e. rows personID does not own. Sync adapters use this to detect
+// when a relationship is already represented from the other person's side
+// before adding a redundant duplicate of their own.
+func (r *Repository) ListIncomingRelationships(ctx context.Context, personID uuid.UUID) ([]RelationshipView, error) {
+	ownerID, owned := authn.UserID(ctx)
+	var ownerArg any
+	if owned {
+		ownerArg = ownerID
+	}
+
+	const q = `
+		SELECT r.id, r.type, r.person_id, p.display_name, (p.deleted_at IS NOT NULL), r.created_at
+		FROM person_relationships r
+		JOIN persons p ON p.id = r.person_id
+		WHERE r.related_person_id = $1 AND ($2::uuid IS NULL OR r.owner_id = $2)
+		ORDER BY r.created_at ASC`
+
+	rows, err := r.pool.Query(ctx, q, personID, ownerArg)
+	if err != nil {
+		return nil, fmt.Errorf("listing incoming relationships: %w", err)
+	}
+	defer rows.Close()
+
+	views := make([]RelationshipView, 0)
+	for rows.Next() {
+		var (
+			id          uuid.UUID
+			relType     string
+			ownerPerson uuid.UUID
+			displayName string
+			deleted     bool
+			createdAt   time.Time
+		)
+		if err := rows.Scan(&id, &relType, &ownerPerson, &displayName, &deleted, &createdAt); err != nil {
+			return nil, fmt.Errorf("scanning incoming relationship: %w", err)
+		}
+		views = append(views, RelationshipView{
+			ID:                   id,
+			Type:                 RelationType(relType).Inverse(),
+			RelatedPersonID:      &ownerPerson,
+			RelatedPersonName:    displayName,
+			RelatedPersonDeleted: deleted,
+			CreatedAt:            createdAt,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterating incoming relationships: %w", err)
+	}
+	return views, nil
+}
+
 // DeleteRelationship removes a relationship by id, scoped to the current
 // owner. personID must be either the row's person_id or related_person_id,
 // so a relationship can be deleted from either side's page.
