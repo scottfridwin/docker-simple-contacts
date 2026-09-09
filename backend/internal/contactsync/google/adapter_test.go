@@ -2,6 +2,8 @@ package google
 
 import (
 	"context"
+	"errors"
+	"log/slog"
 	"testing"
 	"time"
 
@@ -256,5 +258,48 @@ func TestMergeRemoteRecordSkipsUnknownTombstone(t *testing.T) {
 
 	if err := adapter.mergeRemoteRecord(context.Background(), uuid.New(), contactsync.AuthSession{}, remote); err != nil {
 		t.Fatalf("mergeRemoteRecord: %v", err)
+	}
+}
+
+type fakeAccountStore struct{}
+
+func (f *fakeAccountStore) Update(_ context.Context, a *contactsync.Account) (*contactsync.Account, error) {
+	return a, nil
+}
+
+// TestMarkAccountFailedOnlyReconnectsOnAuthFailures guards against forcing
+// users to re-authenticate for transient or record-specific sync failures
+// (rate limits, a single bad record, Google 5xx, network blips): only
+// genuinely missing/invalid/revoked OAuth credentials should ever set
+// status=reconnect_required.
+func TestMarkAccountFailedOnlyReconnectsOnAuthFailures(t *testing.T) {
+	cases := []struct {
+		name       string
+		err        error
+		wantStatus string
+	}{
+		{"generic error", errors.New("boom"), "error"},
+		{"not found", &apiError{Status: 404, Body: "not found"}, "error"},
+		{"server error", &apiError{Status: 500, Body: "oops"}, "error"},
+		{"unauthorized", &apiError{Status: 401, Body: "invalid credentials"}, "reconnect_required"},
+		{"missing token", &reauthRequiredError{errors.New("sync account is missing google access token")}, "reconnect_required"},
+		{"refresh failed", &reauthRequiredError{errors.New("google oauth refresh failed: invalid_grant")}, "reconnect_required"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			adapter := &Adapter{accounts: &fakeAccountStore{}, logger: slog.Default()}
+			account := &contactsync.Account{ID: uuid.New()}
+
+			if err := adapter.markAccountFailed(context.Background(), account, tc.err); !errors.Is(err, tc.err) {
+				t.Fatalf("markAccountFailed returned %v, want %v", err, tc.err)
+			}
+			if account.Status != tc.wantStatus {
+				t.Errorf("status = %q, want %q", account.Status, tc.wantStatus)
+			}
+			if account.LastError == nil || *account.LastError != tc.err.Error() {
+				t.Errorf("LastError = %v, want %q", account.LastError, tc.err.Error())
+			}
+		})
 	}
 }

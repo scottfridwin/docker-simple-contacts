@@ -312,11 +312,11 @@ func (a *Adapter) Sync(ctx context.Context, account contactsync.Account, job con
 
 	session, err := sessionFromAccount(account)
 	if err != nil {
-		return a.markAccountFailed(ctx, &account, err)
+		return a.markAccountFailed(ctx, &account, &reauthRequiredError{err})
 	}
 	session, err = a.ensureSession(ctx, &account, session)
 	if err != nil {
-		return a.markAccountFailed(ctx, &account, err)
+		return a.markAccountFailed(ctx, &account, &reauthRequiredError{err})
 	}
 
 	if job.PersonID != uuid.Nil {
@@ -569,15 +569,33 @@ func (a *Adapter) ensureSession(ctx context.Context, account *contactsync.Accoun
 func (a *Adapter) markAccountFailed(ctx context.Context, account *contactsync.Account, syncErr error) error {
 	message := syncErr.Error()
 	account.LastError = &message
-	account.Status = "reconnect_required"
+	// Default to a generic failure. Only escalate to reconnect_required when
+	// the error is genuinely about missing/invalid/revoked OAuth credentials -
+	// transient or unrelated failures (a single bad record, rate limits,
+	// Google 5xx, network blips, etc.) must not force the user to re-auth.
+	account.Status = "error"
+	var reauthErr *reauthRequiredError
 	var apiErr *apiError
-	if errors.As(syncErr, &apiErr) && apiErr.Status >= 500 {
-		account.Status = "error"
+	switch {
+	case errors.As(syncErr, &reauthErr):
+		account.Status = "reconnect_required"
+	case errors.As(syncErr, &apiErr) && apiErr.Status == http.StatusUnauthorized:
+		account.Status = "reconnect_required"
 	}
 	a.logger.Error("google sync failed", "account_id", account.ID, "provider_account_id", account.ProviderAccountID, "status", account.Status, "error", syncErr)
 	_, _ = a.accounts.Update(ctx, account)
 	return syncErr
 }
+
+// reauthRequiredError marks a sync failure that can only be resolved by the
+// user reconnecting the account (missing, invalid, or revoked OAuth
+// credentials), as opposed to a transient or record-specific failure.
+type reauthRequiredError struct {
+	err error
+}
+
+func (e *reauthRequiredError) Error() string { return e.err.Error() }
+func (e *reauthRequiredError) Unwrap() error { return e.err }
 
 func sessionFromAccount(account contactsync.Account) (contactsync.AuthSession, error) {
 	if account.AccessToken == nil || strings.TrimSpace(*account.AccessToken) == "" {
