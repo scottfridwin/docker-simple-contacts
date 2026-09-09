@@ -87,15 +87,22 @@ describe('App sync integration', () => {
 
   it('shows public app purpose content when authentication is required', async () => {
     const { ApiRequestError } = await import('../src/api');
-    mocks.listPersons.mockRejectedValueOnce(new ApiRequestError(401, 'unauthorized', 'Unauthorized'));
+    mocks.listPersons.mockRejectedValueOnce(
+      new ApiRequestError(401, 'unauthorized', 'Unauthorized'),
+    );
 
     render(<App />);
 
     expect(
-      await screen.findByRole('heading', { name: /family contact manager with optional google sync/i }),
+      await screen.findByRole('heading', {
+        name: /family contact manager with optional google sync/i,
+      }),
     ).toBeInTheDocument();
     expect(screen.getByText(/review this page without signing in/i)).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: /privacy policy/i })).toHaveAttribute('href', '/privacy');
+    expect(screen.getByRole('link', { name: /privacy policy/i })).toHaveAttribute(
+      'href',
+      '/privacy',
+    );
   });
 
   it('renders sync panel and configured accounts', async () => {

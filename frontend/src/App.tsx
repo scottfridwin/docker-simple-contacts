@@ -263,7 +263,8 @@ export default function App() {
     const draft = syncDrafts[account.id];
     const frequency = Number(draft?.sync_frequency_minutes ?? account.sync_frequency_minutes);
     const status = draft?.status ?? account.status;
-    const validFrequency = Number.isFinite(frequency) && Number.isInteger(frequency) && frequency >= 5;
+    const validFrequency =
+      Number.isFinite(frequency) && Number.isInteger(frequency) && frequency >= 5;
     const changed = frequency !== account.sync_frequency_minutes || status !== account.status;
     return { draft, frequency, status, validFrequency, changed };
   };
@@ -416,76 +417,84 @@ export default function App() {
           <ul className="sync-account-list">
             {syncAccounts.map((account) => {
               const state = getSyncDraftState(account);
-              const disabled = syncSavingId === account.id || !state.changed || !state.validFrequency;
+              const disabled =
+                syncSavingId === account.id || !state.changed || !state.validFrequency;
               return (
                 <li key={account.id} className="sync-account-card">
-                <div className="sync-account-head">
-                  <strong>{account.provider}</strong>
-                  <span className={`sync-status sync-status-${account.status}`}>
-                    {account.status}
-                  </span>
-                </div>
-                <dl className="sync-account-details">
-                  <div>
-                    <dt>Account</dt>
-                    <dd>{account.provider_account_id}</dd>
+                  <div className="sync-account-head">
+                    <strong>{account.provider}</strong>
+                    <span className={`sync-status sync-status-${account.status}`}>
+                      {account.status}
+                    </span>
                   </div>
-                  <div>
-                    <dt>Last sync</dt>
-                    <dd>
-                      {account.last_synced_at
-                        ? new Date(account.last_synced_at).toLocaleString()
-                        : 'Never'}
-                    </dd>
+                  <dl className="sync-account-details">
+                    <div>
+                      <dt>Account</dt>
+                      <dd>{account.provider_account_id}</dd>
+                    </div>
+                    <div>
+                      <dt>Last sync</dt>
+                      <dd>
+                        {account.last_synced_at
+                          ? new Date(account.last_synced_at).toLocaleString()
+                          : 'Never'}
+                      </dd>
+                    </div>
+                    <div>
+                      <dt>Frequency</dt>
+                      <dd>
+                        <label className="sync-inline-field">
+                          <span className="sr-only">Sync frequency minutes</span>
+                          <input
+                            type="number"
+                            min={5}
+                            step={1}
+                            value={
+                              syncDrafts[account.id]?.sync_frequency_minutes ??
+                              account.sync_frequency_minutes
+                            }
+                            onChange={(e) =>
+                              updateSyncDraft(account.id, {
+                                sync_frequency_minutes: e.target.value,
+                              })
+                            }
+                          />
+                        </label>
+                      </dd>
+                    </div>
+                    <div>
+                      <dt>Cursor</dt>
+                      <dd>{account.sync_cursor || '—'}</dd>
+                    </div>
+                    <div>
+                      <dt>Status</dt>
+                      <dd>
+                        <label className="sync-inline-field">
+                          <span className="sr-only">Sync status</span>
+                          <select
+                            value={syncDrafts[account.id]?.status ?? account.status}
+                            onChange={(e) =>
+                              updateSyncDraft(account.id, { status: e.target.value })
+                            }
+                          >
+                            <option value="connected">connected</option>
+                            <option value="reconnect_required">reconnect_required</option>
+                            <option value="error">error</option>
+                          </select>
+                        </label>
+                      </dd>
+                    </div>
+                  </dl>
+                  <div className="sync-account-actions">
+                    <button
+                      type="button"
+                      onClick={() => void saveSyncAccount(account)}
+                      disabled={disabled}
+                    >
+                      {syncSavingId === account.id ? 'Saving…' : 'Save changes'}
+                    </button>
                   </div>
-                  <div>
-                    <dt>Frequency</dt>
-                    <dd>
-                      <label className="sync-inline-field">
-                        <span className="sr-only">Sync frequency minutes</span>
-                        <input
-                          type="number"
-                          min={5}
-                          step={1}
-                          value={syncDrafts[account.id]?.sync_frequency_minutes ?? account.sync_frequency_minutes}
-                          onChange={(e) =>
-                            updateSyncDraft(account.id, { sync_frequency_minutes: e.target.value })
-                          }
-                        />
-                      </label>
-                    </dd>
-                  </div>
-                  <div>
-                    <dt>Cursor</dt>
-                    <dd>{account.sync_cursor || '—'}</dd>
-                  </div>
-                  <div>
-                    <dt>Status</dt>
-                    <dd>
-                      <label className="sync-inline-field">
-                        <span className="sr-only">Sync status</span>
-                        <select
-                          value={syncDrafts[account.id]?.status ?? account.status}
-                          onChange={(e) => updateSyncDraft(account.id, { status: e.target.value })}
-                        >
-                          <option value="connected">connected</option>
-                          <option value="reconnect_required">reconnect_required</option>
-                          <option value="error">error</option>
-                        </select>
-                      </label>
-                    </dd>
-                  </div>
-                </dl>
-                <div className="sync-account-actions">
-                  <button
-                    type="button"
-                    onClick={() => void saveSyncAccount(account)}
-                    disabled={disabled}
-                  >
-                    {syncSavingId === account.id ? 'Saving…' : 'Save changes'}
-                  </button>
-                </div>
-                {account.last_error && <p className="sync-account-error">{account.last_error}</p>}
+                  {account.last_error && <p className="sync-account-error">{account.last_error}</p>}
                 </li>
               );
             })}

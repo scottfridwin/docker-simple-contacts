@@ -27,7 +27,11 @@ interface PersonFormProps {
   onCancel: () => void;
 }
 
-const RESERVED_SYNC_FIELDS = new Set(['google_resource_name', '_google_updated_at', 'contacts_local_id']);
+const RESERVED_SYNC_FIELDS = new Set([
+  'google_resource_name',
+  '_google_updated_at',
+  'contacts_local_id',
+]);
 
 function draftsFromPerson(person?: Person): DraftCustomField[] {
   if (!person) return [];
@@ -159,8 +163,12 @@ export function PersonForm({
       phone_numbers: phoneNumbers.map((s) => s.trim()).filter(Boolean),
       custom_fields: {
         ...fields,
-        ...(syncMetadata.googleResourceName ? { google_resource_name: syncMetadata.googleResourceName } : {}),
-        ...(syncMetadata.googleUpdatedAt ? { _google_updated_at: syncMetadata.googleUpdatedAt } : {}),
+        ...(syncMetadata.googleResourceName
+          ? { google_resource_name: syncMetadata.googleResourceName }
+          : {}),
+        ...(syncMetadata.googleUpdatedAt
+          ? { _google_updated_at: syncMetadata.googleUpdatedAt }
+          : {}),
       },
       sync_metadata: syncMetadata,
     });
