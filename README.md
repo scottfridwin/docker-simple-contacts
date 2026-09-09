@@ -210,6 +210,30 @@ Google callback behavior:
   close flow.
 - API clients requesting JSON receive JSON account data.
 
+### Diagnosing Google sync issues
+
+The backend logs sync activity as structured JSON to stdout
+(`docker logs <backend-container>` / `docker compose logs app`). Look for:
+
+- `"msg":"google sync starting"` / `"msg":"google sync finished"` — one pair
+  per sync attempt, with `account_id` and (on finish) `remote_records_seen`.
+  If `remote_records_seen` is `0`, the Google account genuinely has nothing
+  new under "My Contacts" to import (a different Google account/browser tab
+  is often the cause — Google's People API only reads "My Contacts", not
+  "Other contacts").
+- `"msg":"google sync fetched remote page"` — logged per page fetched from
+  Google, with the `records` count returned by that page.
+- `"msg":"google sync exported local contacts"` — logged once, only during
+  the very first sync for an account, with the number of local contacts
+  pushed up to Google.
+- `"msg":"google sync failed"` (error level) — includes the underlying error;
+  the same message is also shown as "Last error" under the account in the
+  sync drawer.
+- `"msg":"reconciling due sync account"` — logged each time the periodic
+  reconciliation loop decides an account's configured frequency has elapsed
+  and triggers another sync; if you never see this after the initial connect,
+  periodic sync isn't running.
+
 ## Development commands
 
 Run `make help` for the full list.

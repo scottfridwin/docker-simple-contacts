@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/google/uuid"
@@ -33,11 +34,15 @@ type Runner struct {
 	jobs      jobQueue
 	processor Processor
 	batchSize int
+	logger    *slog.Logger
 }
 
-// NewRunner constructs a Runner.
-func NewRunner(accounts accountStore, jobs jobQueue, processor Processor) *Runner {
-	return &Runner{accounts: accounts, jobs: jobs, processor: processor, batchSize: 50}
+// NewRunner constructs a Runner. A nil logger falls back to slog.Default().
+func NewRunner(accounts accountStore, jobs jobQueue, processor Processor, logger *slog.Logger) *Runner {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	return &Runner{accounts: accounts, jobs: jobs, processor: processor, batchSize: 50, logger: logger}
 }
 
 // RunOnce processes one batch of pending jobs.
@@ -59,7 +64,10 @@ func (r *Runner) RunOnce(ctx context.Context) (int, error) {
 	return processed, nil
 }
 
-// RunLoop keeps executing sync jobs until the context is canceled.
+// RunLoop keeps executing sync jobs until the context is canceled. A job or
+// account failure is logged but never stops the loop - previously any single
+// processing error caused RunLoop to return, which permanently killed all
+// background sync (both job-triggered and periodic) until the app restarted.
 func (r *Runner) RunLoop(ctx context.Context, interval time.Duration) error {
 	if interval <= 0 {
 		interval = 30 * time.Second
@@ -69,11 +77,8 @@ func (r *Runner) RunLoop(ctx context.Context, interval time.Duration) error {
 
 	for {
 		if _, err := r.RunOnce(ctx); err != nil && !errors.Is(err, context.Canceled) {
-			return err
+			r.logger.Error("sync job processing failed", "error", err)
 		}
-		// A single account failing to reconcile (e.g. an expired token) must not
-		// stop periodic sync for every other connected account, so errors here
-		// are absorbed per-account rather than propagated.
 		r.runDueAccounts(ctx)
 		select {
 		case <-ctx.Done():
@@ -94,6 +99,7 @@ func (r *Runner) runDueAccounts(ctx context.Context) {
 	now := time.Now()
 	accounts, err := r.accounts.ListDue(ctx, now)
 	if err != nil {
+		r.logger.Error("listing due sync accounts failed", "error", err)
 		return
 	}
 	for _, account := range accounts {
@@ -108,7 +114,10 @@ func (r *Runner) runDueAccounts(ctx context.Context) {
 		if account.OwnerID != nil && *account.OwnerID != uuid.Nil {
 			accountCtx = authn.WithUserID(ctx, *account.OwnerID)
 		}
-		_ = r.processor.Process(accountCtx, account, Job{})
+		r.logger.Info("reconciling due sync account", "account_id", account.ID, "provider", account.Provider)
+		if err := r.processor.Process(accountCtx, account, Job{}); err != nil {
+			r.logger.Error("periodic sync failed", "account_id", account.ID, "provider", account.Provider, "error", err)
+		}
 	}
 }
 

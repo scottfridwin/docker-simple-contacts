@@ -213,3 +213,20 @@ which checks each connected account's own `sync_frequency_minutes` against its
 local mutation to push) when due. One account's failure does not stop
 reconciliation of the others.
 
+## Background loop resilience + logging fix (2026-09-09)
+
+`Runner.RunLoop` previously returned as soon as any single job failed to
+process (`RunOnce` propagated the error), and `runSyncLoop` in `main.go` only
+logged that failure once and let the goroutine exit — permanently stopping
+*all* background sync (both job-triggered and the periodic reconciliation
+above) until the process restarted, with only one easy-to-miss log line as a
+clue. `RunLoop` now logs job/account failures via a `*slog.Logger` (threaded
+through `NewRunner`) and keeps ticking regardless.
+
+The Google adapter also gained a logger (threaded through `NewAdapter`) and
+now logs sync start/finish, per-page remote record counts, export counts, and
+failures — previously only the OAuth-callback-triggered sync logged anything;
+job- and periodic-triggered syncs (the common case after the first connect)
+were completely silent even on failure. See the README "Diagnosing Google
+sync issues" section for the exact log lines to look for.
+

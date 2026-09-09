@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"slices"
@@ -67,11 +68,13 @@ type Adapter struct {
 	people   personService
 	links    recordLinkStore
 	verifier *oidc.IDTokenVerifier
+	logger   *slog.Logger
 }
 
 // NewAdapter constructs a Google adapter. It performs OIDC discovery against
 // Google's issuer so ID tokens can be verified during CompleteAuthorization.
-func NewAdapter(ctx context.Context, cfg Config, accounts accountStateStore, people personService, links recordLinkStore, client *http.Client) (*Adapter, error) {
+// A nil logger falls back to slog.Default().
+func NewAdapter(ctx context.Context, cfg Config, accounts accountStateStore, people personService, links recordLinkStore, client *http.Client, logger *slog.Logger) (*Adapter, error) {
 	if cfg.AuthURL == "" {
 		cfg.AuthURL = "https://accounts.google.com/o/oauth2/v2/auth"
 	}
@@ -87,6 +90,9 @@ func NewAdapter(ctx context.Context, cfg Config, accounts accountStateStore, peo
 	if client == nil {
 		client = &http.Client{Timeout: 20 * time.Second}
 	}
+	if logger == nil {
+		logger = slog.Default()
+	}
 	provider, err := oidc.NewProvider(ctx, googleIssuer)
 	if err != nil {
 		return nil, fmt.Errorf("discovering google oidc provider: %w", err)
@@ -97,6 +103,7 @@ func NewAdapter(ctx context.Context, cfg Config, accounts accountStateStore, peo
 		people:   people,
 		links:    links,
 		http:     client,
+		logger:   logger,
 		verifier: provider.Verifier(&oidc.Config{ClientID: cfg.ClientID}),
 	}, nil
 }
@@ -302,6 +309,7 @@ func (a *Adapter) Sync(ctx context.Context, account contactsync.Account, job con
 	if a.accounts == nil || a.people == nil || a.links == nil {
 		return errors.New("google sync adapter dependencies are not configured")
 	}
+	a.logger.Info("google sync starting", "account_id", account.ID, "provider_account_id", account.ProviderAccountID, "has_job", job.PersonID != uuid.Nil)
 
 	session, err := sessionFromAccount(account)
 	if err != nil {
@@ -319,7 +327,7 @@ func (a *Adapter) Sync(ctx context.Context, account contactsync.Account, job con
 	}
 
 	initialSync := strings.TrimSpace(account.SyncCursor) == ""
-	nextCursor, err := a.pullRemote(ctx, account.ID, session, account.SyncCursor)
+	nextCursor, pulled, err := a.pullRemote(ctx, account.ID, session, account.SyncCursor)
 	if err != nil {
 		return a.markAccountFailed(ctx, &account, err)
 	}
@@ -338,6 +346,7 @@ func (a *Adapter) Sync(ctx context.Context, account contactsync.Account, job con
 	if _, err := a.accounts.Update(ctx, &account); err != nil {
 		return fmt.Errorf("updating sync account state: %w", err)
 	}
+	a.logger.Info("google sync finished", "account_id", account.ID, "remote_records_seen", pulled, "initial_sync", initialSync)
 	return nil
 }
 
@@ -379,21 +388,25 @@ func (a *Adapter) syncLocalJob(ctx context.Context, accountID uuid.UUID, session
 	return nil
 }
 
-func (a *Adapter) pullRemote(ctx context.Context, accountID uuid.UUID, session contactsync.AuthSession, cursor string) (string, error) {
+func (a *Adapter) pullRemote(ctx context.Context, accountID uuid.UUID, session contactsync.AuthSession, cursor string) (string, int, error) {
 	current := cursor
+	seen := 0
 	for {
 		page, err := a.ListChanges(ctx, session, current)
 		if err != nil {
 			var apiErr *apiError
 			if errors.As(err, &apiErr) && apiErr.Status == http.StatusGone && current != "" {
+				a.logger.Info("google sync token expired, restarting full pull", "account_id", accountID)
 				current = ""
 				continue
 			}
-			return cursor, err
+			return cursor, seen, fmt.Errorf("listing google contact changes: %w", err)
 		}
+		a.logger.Info("google sync fetched remote page", "account_id", accountID, "records", len(page.Records), "has_more", page.HasMore)
+		seen += len(page.Records)
 		for _, remote := range page.Records {
 			if err := a.mergeRemoteRecord(ctx, accountID, session, remote); err != nil {
-				return cursor, err
+				return cursor, seen, err
 			}
 		}
 		current = page.NextCursor
@@ -401,11 +414,12 @@ func (a *Adapter) pullRemote(ctx context.Context, accountID uuid.UUID, session c
 			break
 		}
 	}
-	return current, nil
+	return current, seen, nil
 }
 
 func (a *Adapter) exportLocal(ctx context.Context, accountID uuid.UUID, session contactsync.AuthSession) error {
 	page := 1
+	exported := 0
 	for {
 		rows, total, err := a.people.List(ctx, person.ListParams{Page: page, PageSize: 100, SortField: "updated_at", SortDesc: false})
 		if err != nil {
@@ -419,12 +433,14 @@ func (a *Adapter) exportLocal(ctx context.Context, accountID uuid.UUID, session 
 				return upsertErr
 			}
 			a.linkRecord(ctx, accountID, rows[i].ID, providerRecord.Record.ExternalID)
+			exported++
 		}
 		if page*100 >= total || len(rows) == 0 {
 			break
 		}
 		page++
 	}
+	a.logger.Info("google sync exported local contacts", "account_id", accountID, "count", exported)
 	return nil
 }
 
@@ -537,6 +553,7 @@ func (a *Adapter) markAccountFailed(ctx context.Context, account *contactsync.Ac
 	if errors.As(syncErr, &apiErr) && apiErr.Status >= 500 {
 		account.Status = "error"
 	}
+	a.logger.Error("google sync failed", "account_id", account.ID, "provider_account_id", account.ProviderAccountID, "status", account.Status, "error", syncErr)
 	_, _ = a.accounts.Update(ctx, account)
 	return syncErr
 }

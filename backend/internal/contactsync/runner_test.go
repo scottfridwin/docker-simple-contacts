@@ -3,6 +3,8 @@ package contactsync
 import (
 	"context"
 	"errors"
+	"io"
+	"log/slog"
 	"testing"
 	"time"
 
@@ -68,10 +70,12 @@ func (f *fakeQueue) MarkFailed(_ context.Context, id uuid.UUID, reason string) e
 
 type fakeProcessor struct {
 	processed []string
+	calls     int
 	err       error
 }
 
 func (f *fakeProcessor) Process(_ context.Context, account Account, job Job) error {
+	f.calls++
 	if f.err != nil {
 		return f.err
 	}
@@ -86,6 +90,7 @@ func TestRunnerRunOnceProcessesJobsForAccounts(t *testing.T) {
 		&fakeAccountStore{accounts: []Account{{Provider: "google"}, {Provider: "apple"}}},
 		&fakeQueue{jobs: []Job{job}},
 		&fakeProcessor{},
+		nil,
 	)
 	count, err := runner.RunOnce(context.Background())
 	if err != nil {
@@ -107,6 +112,7 @@ func TestRunnerRunOnceMarksFailures(t *testing.T) {
 		&fakeAccountStore{accounts: []Account{{Provider: "google"}}},
 		&fakeQueue{jobs: []Job{job}},
 		proc,
+		nil,
 	)
 	if _, err := runner.RunOnce(context.Background()); err == nil {
 		t.Fatal("expected error")
@@ -132,6 +138,7 @@ func TestRunnerRunDueAccountsReconcilesOnSchedule(t *testing.T) {
 		&fakeAccountStore{due: []Account{neverSynced, staleSynced, recentlySynced}},
 		&fakeQueue{},
 		proc,
+		nil,
 	)
 	runner.runDueAccounts(context.Background())
 
@@ -141,3 +148,28 @@ func TestRunnerRunDueAccountsReconcilesOnSchedule(t *testing.T) {
 }
 
 func timePtr(t time.Time) *time.Time { return &t }
+
+// TestRunLoopSurvivesPersistentFailures guards a critical resilience bug:
+// RunLoop used to return (and its caller's goroutine would exit) the moment
+// any single job failed to process, permanently stopping ALL future
+// background sync - including the periodic due-account reconciliation -
+// until the process was restarted. It must now log and keep ticking instead.
+func TestRunLoopSurvivesPersistentFailures(t *testing.T) {
+	job := Job{ID: uuid.New(), Status: JobStatusPending}
+	proc := &fakeProcessor{err: errors.New("boom")}
+	runner := NewRunner(
+		&fakeAccountStore{accounts: []Account{{Provider: "google"}}},
+		&fakeQueue{jobs: []Job{job}},
+		proc,
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+	)
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Millisecond)
+	defer cancel()
+
+	if err := runner.RunLoop(ctx, 20*time.Millisecond); err != nil {
+		t.Fatalf("RunLoop returned error, want nil (loop must survive failures): %v", err)
+	}
+	if proc.calls < 2 {
+		t.Fatalf("expected the loop to keep retrying after failures, got %d attempts", proc.calls)
+	}
+}

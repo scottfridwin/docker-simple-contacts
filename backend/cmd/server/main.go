@@ -103,7 +103,7 @@ func run() error {
 			ClientID:     cfg.GoogleClientID,
 			ClientSecret: cfg.GoogleClientSecret,
 			RedirectURL:  cfg.GoogleRedirectURL,
-		}, syncAccountRepo, svc, syncLinkRepo, nil)
+		}, syncAccountRepo, svc, syncLinkRepo, nil, logger)
 		if err != nil {
 			return fmt.Errorf("configuring google sync adapter: %w", err)
 		}
@@ -113,7 +113,7 @@ func run() error {
 		googleAdapter = adapter
 		logger.Info("google sync adapter configured")
 	}
-	runner := contactsync.NewRunner(syncAccountRepo, syncJobRepo, processor)
+	runner := contactsync.NewRunner(syncAccountRepo, syncJobRepo, processor, logger)
 
 	purgeWindow := time.Duration(cfg.PurgeAfterDays) * 24 * time.Hour
 	go runPurgeLoop(ctx, logger, svc, purgeWindow)
