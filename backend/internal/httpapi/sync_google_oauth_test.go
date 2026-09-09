@@ -22,6 +22,7 @@ type fakeGoogleAdapter struct {
 	completeErr error
 	syncErr     error
 	syncCalls   int
+	syncDone    chan struct{}
 }
 
 func (f *fakeGoogleAdapter) ProviderName() string { return "google" }
@@ -66,7 +67,21 @@ func (f *fakeGoogleAdapter) DeleteRecord(context.Context, contactsync.AuthSessio
 
 func (f *fakeGoogleAdapter) Sync(context.Context, contactsync.Account, contactsync.Job) error {
 	f.syncCalls++
+	if f.syncDone != nil {
+		defer func() { f.syncDone <- struct{}{} }()
+	}
 	return f.syncErr
+}
+
+// awaitSync waits for the background sync goroutine triggered by the callback
+// handler to finish, since the callback now responds before sync completes.
+func awaitSync(t *testing.T, done chan struct{}) {
+	t.Helper()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for background sync to complete")
+	}
 }
 
 func testSyncGoogleRouter(adapter contactsync.Adapter) http.Handler {
@@ -118,6 +133,7 @@ func TestGoogleOAuthCallbackUpsertAndSync(t *testing.T) {
 			ExpiresAt:         time.Now().Add(time.Hour).UTC(),
 			Scope:             "https://www.googleapis.com/auth/contacts",
 		},
+		syncDone: make(chan struct{}, 1),
 	}
 	h := testSyncGoogleRouter(adapter)
 
@@ -149,6 +165,7 @@ func TestGoogleOAuthCallbackUpsertAndSync(t *testing.T) {
 	if body := cbRec.Body.String(); !strings.Contains(body, "Authorization complete") {
 		t.Fatalf("callback body missing completion message: %s", body)
 	}
+	awaitSync(t, adapter.syncDone)
 	if adapter.syncCalls != 1 {
 		t.Fatalf("sync calls = %d, want 1", adapter.syncCalls)
 	}
@@ -202,6 +219,7 @@ func TestGoogleOAuthCallbackSyncFailure(t *testing.T) {
 		authRequest: contactsync.AuthRequest{AuthorizationURL: "https://accounts.google.com/o/oauth2/v2/auth?state=abc", State: "abc"},
 		authSession: contactsync.AuthSession{ProviderAccountID: "people/123", AccessToken: "access-token"},
 		syncErr:     context.DeadlineExceeded,
+		syncDone:    make(chan struct{}, 1),
 	}
 	h := testSyncGoogleRouter(adapter)
 
@@ -213,7 +231,11 @@ func TestGoogleOAuthCallbackSyncFailure(t *testing.T) {
 	cbReq.AddCookie(cookies[0])
 	cbRec := httptest.NewRecorder()
 	h.ServeHTTP(cbRec, cbReq)
-	if cbRec.Code != http.StatusBadGateway {
+	// The callback responds immediately once the account is connected; the
+	// sync itself runs in the background so a downstream sync failure must
+	// not fail the OAuth handshake response.
+	if cbRec.Code != http.StatusOK {
 		t.Fatalf("callback status = %d body=%s", cbRec.Code, cbRec.Body.String())
 	}
+	awaitSync(t, adapter.syncDone)
 }

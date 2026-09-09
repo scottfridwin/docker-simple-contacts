@@ -257,6 +257,26 @@ button:disabled {
   cursor: not-allowed;
 }
 
+input,
+select {
+  font: inherit;
+  padding: 0.5rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+}
+
+input:focus,
+select:focus {
+  outline: 2px solid #2563eb;
+  outline-offset: 1px;
+}
+
+input[type='number'] {
+  width: 100%;
+}
+
 .banner.error {
   background: var(--error-bg);
   color: var(--danger);
@@ -307,6 +327,18 @@ button:disabled {
   margin: 0;
   display: grid;
   gap: 0.75rem;
+}
+
+.list-controls {
+  display: flex;
+  gap: 0.5rem;
+  margin: 1rem 0;
+  flex-wrap: wrap;
+}
+
+.list-controls input {
+  flex: 1;
+  min-width: 8rem;
 }
 
 .sync-account-card {
@@ -363,6 +395,18 @@ button:disabled {
 .sync-account-details dd {
   margin: 0;
   overflow-wrap: anywhere;
+}
+
+.sync-account-details dd select {
+  width: 100%;
+}
+
+.sync-account-actions {
+  margin-top: 0.9rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--border);
+  display: flex;
+  justify-content: flex-end;
 }
 
 .sync-account-error {

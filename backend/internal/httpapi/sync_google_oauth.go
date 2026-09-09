@@ -1,11 +1,13 @@
 package httpapi
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -15,9 +17,14 @@ import (
 
 const googleStateCookie = "contacts_google_sync_state"
 
+// backgroundSyncTimeout bounds the async post-OAuth contact sync so a stuck
+// provider call can't run forever.
+const backgroundSyncTimeout = 10 * time.Minute
+
 type googleOAuthHandler struct {
 	repo    syncAccountStore
 	adapter contactsync.Adapter
+	logger  *slog.Logger
 }
 
 type googleBeginResponse struct {
@@ -74,20 +81,28 @@ func (h *googleOAuthHandler) callback(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal_error", "failed to store google sync account", nil)
 		return
 	}
-	if err := h.adapter.Sync(r.Context(), *account, contactsync.Job{}); err != nil {
-		writeError(w, http.StatusBadGateway, "sync_failed", err.Error(), nil)
-		return
-	}
-	refreshed, err := h.repo.GetByID(r.Context(), account.ID)
-	if err != nil {
-		writeJSON(w, http.StatusOK, account)
-		return
-	}
+
+	// The initial contact sync can take much longer than a browser/proxy is
+	// willing to wait on this request (observed as a Cloudflare 502), so run it
+	// in the background and respond as soon as the account is connected. The
+	// frontend polls/refreshes sync accounts to pick up the eventual result.
+	h.runBackgroundSync(*account)
+
 	if wantsHTML(r) {
-		writeGoogleCallbackHTML(w, refreshed)
+		writeGoogleCallbackHTML(w, account)
 		return
 	}
-	writeJSON(w, http.StatusOK, refreshed)
+	writeJSON(w, http.StatusOK, account)
+}
+
+func (h *googleOAuthHandler) runBackgroundSync(account contactsync.Account) {
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), backgroundSyncTimeout)
+		defer cancel()
+		if err := h.adapter.Sync(ctx, account, contactsync.Job{}); err != nil && h.logger != nil {
+			h.logger.Error("background google sync failed", "account_id", account.ID, "error", err)
+		}
+	}()
 }
 
 func (h *googleOAuthHandler) upsertGoogleAccount(r *http.Request, session contactsync.AuthSession) (*contactsync.Account, error) {
@@ -209,8 +224,9 @@ func writeGoogleCallbackHTML(w http.ResponseWriter, account *contactsync.Account
 <body>
 	<main>
 		<h1>Authorization complete</h1>
-		<p>You can close this window and return to the app.</p>
-		<p class="muted">If the app does not refresh automatically, click the button below.</p>
+		<p>Your Google account is connected. Contacts are syncing in the background and will
+		appear shortly.</p>
+		<p class="muted">You can close this window and return to the app.</p>
 		<button type="button" onclick="window.opener && window.opener.postMessage({type: 'google-sync-complete', account: %s}, window.location.origin); window.close();">Close window</button>
 	</main>
 	<script>

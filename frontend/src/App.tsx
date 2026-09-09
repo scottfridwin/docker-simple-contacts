@@ -441,25 +441,23 @@ export default function App() {
                       </dd>
                     </div>
                     <div>
-                      <dt>Frequency</dt>
+                      <dt>Frequency (min)</dt>
                       <dd>
-                        <label className="sync-inline-field">
-                          <span className="sr-only">Sync frequency minutes</span>
-                          <input
-                            type="number"
-                            min={5}
-                            step={1}
-                            value={
-                              syncDrafts[account.id]?.sync_frequency_minutes ??
-                              account.sync_frequency_minutes
-                            }
-                            onChange={(e) =>
-                              updateSyncDraft(account.id, {
-                                sync_frequency_minutes: e.target.value,
-                              })
-                            }
-                          />
-                        </label>
+                        <input
+                          aria-label="Sync frequency minutes"
+                          type="number"
+                          min={5}
+                          step={1}
+                          value={
+                            syncDrafts[account.id]?.sync_frequency_minutes ??
+                            account.sync_frequency_minutes
+                          }
+                          onChange={(e) =>
+                            updateSyncDraft(account.id, {
+                              sync_frequency_minutes: e.target.value,
+                            })
+                          }
+                        />
                       </dd>
                     </div>
                     <div>
@@ -469,19 +467,15 @@ export default function App() {
                     <div>
                       <dt>Status</dt>
                       <dd>
-                        <label className="sync-inline-field">
-                          <span className="sr-only">Sync status</span>
-                          <select
-                            value={syncDrafts[account.id]?.status ?? account.status}
-                            onChange={(e) =>
-                              updateSyncDraft(account.id, { status: e.target.value })
-                            }
-                          >
-                            <option value="connected">connected</option>
-                            <option value="reconnect_required">reconnect_required</option>
-                            <option value="error">error</option>
-                          </select>
-                        </label>
+                        <select
+                          aria-label="Sync status"
+                          value={syncDrafts[account.id]?.status ?? account.status}
+                          onChange={(e) => updateSyncDraft(account.id, { status: e.target.value })}
+                        >
+                          <option value="connected">connected</option>
+                          <option value="reconnect_required">reconnect_required</option>
+                          <option value="error">error</option>
+                        </select>
                       </dd>
                     </div>
                   </dl>

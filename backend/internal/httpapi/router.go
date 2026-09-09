@@ -47,7 +47,7 @@ func NewRouter(logger *slog.Logger, svc *person.Service, ready pinger, syncRepo 
 
 	h := &personHandler{svc: svc}
 	syncHandler := &syncAccountHandler{repo: syncRepo}
-	googleAuth := &googleOAuthHandler{repo: syncRepo, adapter: googleAdapter}
+	googleAuth := &googleOAuthHandler{repo: syncRepo, adapter: googleAdapter, logger: logger}
 	r.Route("/api/v1", func(api chi.Router) {
 		api.Route("/persons", func(p chi.Router) {
 			p.Post("/", h.create)
