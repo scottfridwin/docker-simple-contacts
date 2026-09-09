@@ -59,3 +59,47 @@ func TestRemoteToLocalDoesNotWriteCustomFields(t *testing.T) {
 		t.Fatalf("expected no custom fields written, got %+v", create.CustomFields)
 	}
 }
+
+// TestFieldStringsNeverReturnsNilForEmptyValue guards a real bug: a Google
+// contact with no middle name/phone numbers has an IsSet=true but empty
+// []string field. append([]string(nil), values...) stays nil for an empty
+// slice, and that nil later flows into person.UpdateInput.MiddleNames /
+// PhoneNumbers, which hit a NOT NULL Postgres column and fail the update
+// ("null value in column \"middle_names\" ... violates not-null constraint").
+func TestFieldStringsNeverReturnsNilForEmptyValue(t *testing.T) {
+	fields := map[string]contactsync.FieldState{
+		"middle_names": {IsSet: true, Value: []string{}},
+	}
+	got := fieldStrings(fields, "middle_names")
+	if got == nil {
+		t.Fatal("fieldStrings returned nil for an empty-but-set field, want non-nil []string{}")
+	}
+	if len(got) != 0 {
+		t.Fatalf("expected empty slice, got %+v", got)
+	}
+}
+
+// TestRemoteToLocalProducesUpdatableMiddleNames exercises the same bug at the
+// remoteToLocal boundary used directly by mergeRemoteRecord's local update.
+func TestRemoteToLocalProducesUpdatableMiddleNames(t *testing.T) {
+	record := contactsync.ProviderRecord{
+		Record: contactsync.Record{
+			ExternalID: "people/abc123",
+			Fields: map[string]contactsync.FieldState{
+				"first_name":    {IsSet: true, Value: "Grace"},
+				"last_name":     {IsSet: true, Value: "Hopper"},
+				"middle_names":  {IsSet: true, Value: []string{}},
+				"phone_numbers": {IsSet: true, Value: []string{}},
+			},
+		},
+	}
+
+	create, _ := remoteToLocal(record)
+
+	if create.MiddleNames == nil {
+		t.Fatal("MiddleNames is nil, would violate the persons.middle_names NOT NULL constraint")
+	}
+	if create.PhoneNumbers == nil {
+		t.Fatal("PhoneNumbers is nil, would violate the persons.phone_numbers NOT NULL constraint")
+	}
+}

@@ -691,7 +691,12 @@ func fieldStrings(fields map[string]contactsync.FieldState, key string) []string
 	}
 	switch values := field.Value.(type) {
 	case []string:
-		return append([]string(nil), values...)
+		// append([]string(nil), values...) would stay nil when values is
+		// empty, and that nil later flows into a NOT NULL DB column via
+		// person.UpdateInput - always return a non-nil slice instead.
+		out := make([]string, len(values))
+		copy(out, values)
+		return out
 	case []any:
 		out := make([]string, 0, len(values))
 		for _, value := range values {
