@@ -11,8 +11,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/scottfridlund/contacts/backend/internal/authn"
 	"github.com/scottfridlund/contacts/backend/internal/contactsync"
 	"github.com/scottfridlund/contacts/backend/internal/person"
 )
@@ -25,6 +27,7 @@ type fakeGoogleAdapter struct {
 	syncErr     error
 	syncCalls   int
 	syncDone    chan struct{}
+	syncCtx     context.Context
 }
 
 func (f *fakeGoogleAdapter) ProviderName() string { return "google" }
@@ -67,8 +70,9 @@ func (f *fakeGoogleAdapter) DeleteRecord(context.Context, contactsync.AuthSessio
 	return nil
 }
 
-func (f *fakeGoogleAdapter) Sync(context.Context, contactsync.Account, contactsync.Job) error {
+func (f *fakeGoogleAdapter) Sync(ctx context.Context, _ contactsync.Account, _ contactsync.Job) error {
 	f.syncCalls++
+	f.syncCtx = ctx
 	if f.syncDone != nil {
 		defer func() { f.syncDone <- struct{}{} }()
 	}
@@ -91,6 +95,44 @@ func testSyncGoogleRouter(adapter contactsync.Adapter) http.Handler {
 	personSvc := person.NewService(personStore)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	return NewRouter(logger, personSvc, personStore, newFakeSyncAccountStore(), adapter, []string{"http://localhost:5173"})
+}
+
+// TestGoogleOAuthCallbackPropagatesOwnerToBackgroundSync guards a real bug
+// where the very first sync after connecting (always run via
+// runBackgroundSync) used a bare context.Background(), so any contacts
+// imported on first connect were created with no owner_id at all - invisible
+// to the connecting user's account-scoped contact list forever after.
+func TestGoogleOAuthCallbackPropagatesOwnerToBackgroundSync(t *testing.T) {
+	adapter := &fakeGoogleAdapter{
+		authRequest: contactsync.AuthRequest{AuthorizationURL: "https://accounts.google.com/o/oauth2/v2/auth?state=abc", State: "abc"},
+		authSession: contactsync.AuthSession{ProviderAccountID: "sub-1", AccessToken: "access-token"},
+		syncDone:    make(chan struct{}, 1),
+	}
+	h := testSyncGoogleRouter(adapter)
+	ownerID := uuid.New()
+
+	beginReq := httptest.NewRequest(http.MethodGet, "/api/v1/sync/google/begin", nil)
+	beginReq = beginReq.WithContext(authn.WithUserID(beginReq.Context(), ownerID))
+	beginRec := httptest.NewRecorder()
+	h.ServeHTTP(beginRec, beginReq)
+	var beginPayload googleBeginResponse
+	_ = json.Unmarshal(beginRec.Body.Bytes(), &beginPayload)
+	cookies := beginRec.Result().Cookies()
+
+	cbReq := httptest.NewRequest(http.MethodGet, "/api/v1/sync/google/callback?state="+beginPayload.State+"&code=valid", nil)
+	cbReq = cbReq.WithContext(authn.WithUserID(cbReq.Context(), ownerID))
+	cbReq.AddCookie(cookies[0])
+	cbRec := httptest.NewRecorder()
+	h.ServeHTTP(cbRec, cbReq)
+	if cbRec.Code != http.StatusOK {
+		t.Fatalf("callback status = %d, body=%s", cbRec.Code, cbRec.Body.String())
+	}
+	awaitSync(t, adapter.syncDone)
+
+	got, ok := authn.UserID(adapter.syncCtx)
+	if !ok || got != ownerID {
+		t.Fatalf("background sync context owner = %v (ok=%v), want %s", got, ok, ownerID)
+	}
 }
 
 // TestGoogleOAuthCallbackStaleSessionReturns401 guards a real production bug:

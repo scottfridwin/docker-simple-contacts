@@ -14,6 +14,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/scottfridlund/contacts/backend/internal/authn"
 	"github.com/scottfridlund/contacts/backend/internal/contactsync"
 )
 
@@ -113,6 +114,13 @@ func (h *googleOAuthHandler) runBackgroundSync(account contactsync.Account) {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), backgroundSyncTimeout)
 		defer cancel()
+		// Without this, contacts imported during the very first sync (the
+		// common case, since this always runs right after connecting) are
+		// created with no owner_id at all, making them invisible to the
+		// connecting user's account-scoped contact list.
+		if account.OwnerID != nil {
+			ctx = authn.WithUserID(ctx, *account.OwnerID)
+		}
 		if err := h.adapter.Sync(ctx, account, contactsync.Job{}); err != nil && h.logger != nil {
 			h.logger.Error("background google sync failed", "account_id", account.ID, "error", err)
 		}

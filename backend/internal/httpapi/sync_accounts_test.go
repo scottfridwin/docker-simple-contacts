@@ -13,6 +13,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/scottfridlund/contacts/backend/internal/authn"
 	"github.com/scottfridlund/contacts/backend/internal/contactsync"
 	"github.com/scottfridlund/contacts/backend/internal/person"
 )
@@ -34,7 +35,7 @@ func (f *fakeSyncAccountStore) List(_ context.Context, _ int) ([]contactsync.Acc
 	return out, nil
 }
 
-func (f *fakeSyncAccountStore) Create(_ context.Context, account *contactsync.Account) (*contactsync.Account, error) {
+func (f *fakeSyncAccountStore) Create(ctx context.Context, account *contactsync.Account) (*contactsync.Account, error) {
 	if f.createErr != nil {
 		return nil, f.createErr
 	}
@@ -42,6 +43,11 @@ func (f *fakeSyncAccountStore) Create(_ context.Context, account *contactsync.Ac
 	cp.ID = uuid.New()
 	cp.CreatedAt = time.Now()
 	cp.UpdatedAt = cp.CreatedAt
+	// Mirror the real repository: owner_id comes from the request context,
+	// not the caller-supplied struct.
+	if ownerID, ok := authn.UserID(ctx); ok {
+		cp.OwnerID = &ownerID
+	}
 	if cp.Status == "" {
 		cp.Status = "connected"
 	}
