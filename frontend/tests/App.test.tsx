@@ -252,6 +252,10 @@ describe('App sync integration', () => {
     });
 
     render(<App />);
+    expect(
+      await screen.findByRole('button', { name: /open sync settings \(syncing\)/i }),
+    ).toBeInTheDocument();
+
     await userEvent.click(screen.getByRole('button', { name: /open sync settings/i }));
 
     expect(await screen.findByText(/syncing/i)).toBeInTheDocument();

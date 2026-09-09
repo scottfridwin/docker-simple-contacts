@@ -243,6 +243,7 @@ body {
 }
 
 .icon-button {
+  position: relative;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -251,6 +252,29 @@ body {
   padding: 0;
   background: var(--surface);
   color: var(--text);
+}
+
+.sync-indicator-dot {
+  position: absolute;
+  top: -2px;
+  right: -2px;
+  width: 0.6rem;
+  height: 0.6rem;
+  border-radius: 999px;
+  border: 2px solid var(--card);
+}
+
+.sync-indicator-connected {
+  background: #16a34a;
+}
+
+.sync-indicator-error {
+  background: var(--danger);
+}
+
+.sync-indicator-syncing {
+  background: #2563eb;
+  animation: sync-live-pulse 1.2s ease-in-out infinite;
 }
 
 .btn-with-icon {

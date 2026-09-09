@@ -101,6 +101,43 @@ func TestCreateSyncAccount(t *testing.T) {
 	}
 }
 
+// TestSyncAccountJSONWireFormat guards against a regression where Account had
+// no json tags: Go-to-Go round-trip tests can't catch that, since encoding and
+// decoding into the same untagged struct is symmetric either way. Frontend
+// clients need exact snake_case keys, and OAuth tokens must never leak to the
+// browser.
+func TestSyncAccountJSONWireFormat(t *testing.T) {
+	h := testSyncRouter()
+	rec := doJSON(t, h, http.MethodPost, "/api/v1/sync-accounts", map[string]any{
+		"provider":               "google",
+		"provider_account_id":    "abc123",
+		"access_token":           "secret-access-token",
+		"refresh_token":          "secret-refresh-token",
+		"sync_frequency_minutes": 30,
+	})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(rec.Body.Bytes(), &raw); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"id", "provider", "provider_account_id", "sync_frequency_minutes", "status", "sync_cursor", "created_at", "updated_at"} {
+		if _, ok := raw[key]; !ok {
+			t.Fatalf("response missing expected snake_case key %q: %s", key, rec.Body.String())
+		}
+	}
+	for _, key := range []string{"ID", "ProviderAccountID", "SyncFrequencyMinutes", "access_token", "refresh_token", "AccessToken", "RefreshToken"} {
+		if _, ok := raw[key]; ok {
+			t.Fatalf("response leaked unexpected key %q: %s", key, rec.Body.String())
+		}
+	}
+	if body := rec.Body.String(); bytes.Contains([]byte(body), []byte("secret-access-token")) ||
+		bytes.Contains([]byte(body), []byte("secret-refresh-token")) {
+		t.Fatalf("response leaked oauth token material: %s", body)
+	}
+}
+
 func TestCreateSyncAccountValidationError(t *testing.T) {
 	h := testSyncRouter()
 	rec := doJSON(t, h, http.MethodPost, "/api/v1/sync-accounts", map[string]any{

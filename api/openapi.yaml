@@ -389,8 +389,6 @@ components:
         owner_id: { type: string, format: uuid, nullable: true }
         provider: { type: string }
         provider_account_id: { type: string }
-        access_token: { type: string, nullable: true }
-        refresh_token: { type: string, nullable: true }
         expires_at: { type: string, format: date-time, nullable: true }
         scope: { type: string }
         sync_cursor: { type: string }

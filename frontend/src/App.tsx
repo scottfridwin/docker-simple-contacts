@@ -401,6 +401,20 @@ export default function App() {
   const hasReconnectIssue = syncAccounts.some(
     (account) => account.status === 'error' || account.status === 'reconnect_required',
   );
+  const overallSyncState: 'none' | 'syncing' | 'error' | 'connected' =
+    syncAccounts.length === 0
+      ? 'none'
+      : hasReconnectIssue
+        ? 'error'
+        : syncAccounts.some((account) => !account.last_synced_at)
+          ? 'syncing'
+          : 'connected';
+  const syncIndicatorLabel: Record<typeof overallSyncState, string> = {
+    none: 'not connected',
+    syncing: 'syncing',
+    error: 'needs attention',
+    connected: 'connected',
+  };
 
   return (
     <main className="app">
@@ -410,9 +424,15 @@ export default function App() {
             type="button"
             className="icon-button"
             onClick={() => setSyncDrawerOpen(true)}
-            aria-label="Open sync settings"
+            aria-label={`Open sync settings (${syncIndicatorLabel[overallSyncState]})`}
           >
             <SyncIcon />
+            {overallSyncState !== 'none' && (
+              <span
+                className={`sync-indicator-dot sync-indicator-${overallSyncState}`}
+                aria-hidden="true"
+              />
+            )}
           </button>
           <h1>Contacts</h1>
         </div>
