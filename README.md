@@ -188,11 +188,18 @@ by a background job.
 - Google sync OAuth: `GET /sync/google/begin`, `GET /sync/google/callback`
 - Frontend sync panel: connect Google and review sync status from the main app UI
 - Public privacy policy: `GET /privacy`
+- Public homepage purpose page: `GET /` remains readable without authentication and
+  explains what the app does (required for Google OAuth verification)
 - List defaults: page size 25 (max 100), default sort `display_name desc`,
   filters `first_name` and `last_name`.
 - The recycle bin lists soft-deleted contacts and supports restoring or permanently
   deleting them before the retention purge.
 - OpenAPI specification: [api/openapi.yaml](api/openapi.yaml) (validated in CI).
+
+Google callback behavior:
+- Browser callback requests receive a human-friendly completion page and popup
+  close flow.
+- API clients requesting JSON receive JSON account data.
 
 ## Development commands
 

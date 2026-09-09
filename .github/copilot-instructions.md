@@ -6,14 +6,18 @@ reverse-proxies `/api` to the backend). Delivered as Docker images.
 
 **Read [AGENTS.md](../AGENTS.md) first** — it is the source of truth for
 architecture, conventions, commands, and binding decisions. The authoritative
-design docs are in [docs/design/](../docs/design); the implementation-decisions
-file overrides the development guide on any conflict.
+design docs are in [docs/design/](../docs/design), including
+[04-sync-framework.md](../docs/design/04-sync-framework.md) for sync behavior;
+the implementation-decisions file overrides the development guide on any
+conflict.
 
 ## Golden rules
 
-- Stay within **v2 scope**. Authentication is Authentik OIDC only; do not add
-  passwords, local accounts, alternate SSO providers, sync integrations,
-  background queues, file attachments, or offline PWA support.
+- Stay within current scope. Authentication is Authentik OIDC only. Google
+  Contacts sync is supported through the existing sync framework and adapter;
+  do not add passwords, local accounts, alternate SSO providers, new sync
+  providers without design approval, background queues, file attachments, or
+  offline PWA support.
 - Keep dependencies **minimal** (Renovate-friendly).
 - Whenever API behavior changes, update `api/openapi.yaml`, the tests, and the
   README together.
@@ -44,6 +48,11 @@ file overrides the development guide on any conflict.
 - Auth config uses `AUTHENTIK_*` and `SESSION_SECRET(_FILE)`; file secrets take
   precedence over inline values. Authenticated Person queries must be account
   scoped.
+- Google sync metadata keys (`google_resource_name`, `_google_updated_at`,
+  `contacts_local_id`) are reserved system fields and should not be exposed as
+  normal editable custom fields.
+- Keep public verification pages available without login: home page with app
+  purpose and privacy policy at `/privacy`.
 
 ## Validate before finishing
 
@@ -54,5 +63,5 @@ make frontend-test     # Vitest
 make frontend-lint     # ESLint
 ```
 
-If no local toolchain, run these inside `golang:1.23-bookworm` /
-`node:20-bookworm-slim` containers (see AGENTS.md).
+If no local toolchain, run these inside `golang:1.26-bookworm` /
+`node:22-bookworm-slim` containers (see AGENTS.md).

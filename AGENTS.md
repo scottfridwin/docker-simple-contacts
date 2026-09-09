@@ -30,6 +30,7 @@ the implementation-decisions file wins.
 1. [docs/design/01-design-spec.md](docs/design/01-design-spec.md) — product intent.
 2. [docs/design/02-development-guide.md](docs/design/02-development-guide.md) — engineering contract.
 3. [docs/design/03-implementation-decisions.md](docs/design/03-implementation-decisions.md) — final decisions (**overrides** the guide on conflict).
+4. [docs/design/04-sync-framework.md](docs/design/04-sync-framework.md) — sync architecture and Google baseline behavior.
 
 ## Repository layout
 
@@ -82,10 +83,17 @@ docs/design/            authoritative design documents
   promotes (re-tags) the current `main` image to `vX.Y.Z`/`X.Y.Z`/`latest` — no
   rebuild. See the README release section.
 - **Coverage**: CI enforces ≥ 70% on `config`, `httpapi`, `person`.
-- **Scope**: v2 authentication is limited to Authentik OIDC SSO and
-  account-owned Person records. Do NOT add passwords, local accounts, SSO
-  providers other than Authentik, sync integrations, background queues, file
-  attachments, or offline PWA support.
+- **Scope**: authentication is limited to Authentik OIDC SSO and account-owned
+  Person records. Google Contacts sync is supported through the existing sync
+  framework and Google adapter only. Do NOT add passwords, local accounts, SSO
+  providers other than Authentik, new sync providers without a design decision,
+  background queues, file attachments, or offline PWA support.
+- **Sync UX rules**: keep sync metadata keys (`google_resource_name`,
+  `_google_updated_at`, `contacts_local_id`) reserved for system use; do not
+  expose them as generic editable custom fields in list/detail UI.
+- **OAuth verification pages**: unauthenticated users must be able to view a
+  public home page describing app purpose, and a public privacy policy page at
+  `/privacy`.
 
 ## Conventions
 
@@ -131,8 +139,8 @@ No Go/Node toolchain locally? Every command above can be run inside the official
 Docker images, e.g.:
 
 ```bash
-docker run --rm -v "$PWD/backend":/src -w /src golang:1.23-bookworm go test ./...
-docker run --rm -v "$PWD/frontend":/app -w /app node:20-bookworm-slim sh -c "npm ci && npm test"
+docker run --rm -v "$PWD/backend":/src -w /src golang:1.26-bookworm go test ./...
+docker run --rm -v "$PWD/frontend":/app -w /app node:22-bookworm-slim sh -c "npm ci && npm test"
 ```
 
 ## Definition of done for a change

@@ -118,3 +118,30 @@ The sync core should also define a normalized record model with:
 - A person update can trigger a record-scoped sync request.
 - Sync state can track provider cursors and reconnect status.
 - The merge logic can preserve non-overlapping local and remote edits.
+
+## Implemented baseline (2026-09-08)
+
+- First production adapter: Google Contacts.
+- OAuth endpoints: `GET /api/v1/sync/google/begin` and
+   `GET /api/v1/sync/google/callback`.
+- New sync account default interval: 5 minutes.
+- UI minimum sync interval: 5 minutes.
+
+### Callback response behavior
+
+- Browser callback requests return an HTML completion page and try to notify the
+   opener window (`postMessage`) before auto-closing.
+- Programmatic/API callback clients requesting JSON continue to receive JSON.
+
+### Reserved sync metadata keys
+
+The sync layer may populate reserved metadata in `Person.custom_fields` for
+provider bookkeeping:
+
+- `google_resource_name`
+- `_google_updated_at`
+- `contacts_local_id`
+
+UI guidance:
+- Do not expose these keys as generic editable custom fields.
+- If shown, render them in a read-only sync metadata section.

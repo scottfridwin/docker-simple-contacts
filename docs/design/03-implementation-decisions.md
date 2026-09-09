@@ -338,3 +338,41 @@ Implement strictly according to:
 - contacts-implementation-decisions.md
 
 If conflicts exist, values in this decisions file override recommendation defaults in the guide.
+
+## Post-implementation decision log (2026-09-08)
+
+These items capture decisions made during Google sync rollout so future changes
+preserve expected behavior.
+
+### A) Google sync provider scope
+- Google Contacts is the first supported sync provider.
+- Provider onboarding and callback endpoints are `GET /api/v1/sync/google/begin`
+	and `GET /api/v1/sync/google/callback`.
+- Additional providers require a design decision update before implementation.
+
+### B) Sync account defaults
+- Default `sync_frequency_minutes` for newly created sync accounts is **5**.
+- UI and API should treat 5 minutes as the minimum valid periodic sync value.
+
+### C) OAuth callback UX contract
+- Browser-initiated callback requests should render a completion HTML page with
+	clear user copy: authorization complete and safe to close.
+- The callback page should post a completion message to the opener window and
+	attempt auto-close for popup flows.
+- API-oriented callers that request JSON must still receive JSON account data.
+
+### D) Reserved sync metadata behavior
+- The following `custom_fields` keys are reserved for sync internals:
+	- `google_resource_name`
+	- `_google_updated_at`
+	- `contacts_local_id`
+- Reserved keys must not appear as normal editable custom fields in generic
+	list/form UI.
+- Reserved keys may be shown in a separate read-only metadata area on edit
+	screens, and must be preserved across updates.
+
+### E) Public OAuth verification pages
+- The root unauthenticated homepage must remain publicly accessible and explain
+	the purpose of the application without requiring login.
+- Privacy policy remains publicly accessible at `/privacy`.
+- Rationale: required for Google OAuth app verification review.
