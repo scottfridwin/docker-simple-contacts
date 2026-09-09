@@ -38,7 +38,9 @@ export function PersonList({
           <div className="person-summary">
             <span className="person-name">{person.display_name}</span>
             {(person.phone_numbers ?? []).length > 0 && (
-              <span className="person-meta">{person.phone_numbers.join(' · ')}</span>
+              <span className="person-meta">
+                {person.phone_numbers.map((p) => p.value).join(' · ')}
+              </span>
             )}
             {Object.entries(person.custom_fields ?? {}).some(
               ([key]) => !RESERVED_SYNC_FIELDS.has(key),

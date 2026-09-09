@@ -206,6 +206,44 @@ func TestToProviderRecordMapsNewContactFields(t *testing.T) {
 	}
 }
 
+// TestToProviderRecordDedupesExactDuplicates guards a real production
+// finding: a Google contact can carry genuine duplicate entries within a
+// single source (observed live: the same mobile number, home email, and home
+// address each listed twice on one contact). Google is the source of truth
+// for that duplication, but we don't want to keep re-importing exact
+// duplicates verbatim on every sync.
+func TestToProviderRecordDedupesExactDuplicates(t *testing.T) {
+	in := googlePerson{
+		ResourceName: "people/c1",
+		Names:        []googleName{{GivenName: "Scott", FamilyName: "Fridlund"}},
+		EmailAddresses: []googleEmailAddress{
+			{Value: "scott@example.com", Type: "home"},
+			{Value: "work@example.com", Type: "work"},
+			{Value: "scott@example.com", Type: "home"},
+		},
+		PhoneNumbers: []googlePhoneNumber{
+			{Value: "+1-555-0100", Type: "mobile"},
+			{Value: "+1-555-0100", Type: "mobile"},
+		},
+		Addresses: []googleAddress{
+			{StreetAddress: "1 Main St", City: "Springfield", Type: "home"},
+			{StreetAddress: "1 Main St", City: "Springfield", Type: "home"},
+		},
+	}
+
+	fields := toProviderRecord(in).Record.Fields
+
+	if v := fieldLabeledValues(fields, "emails"); len(v) != 2 {
+		t.Fatalf("emails = %+v, want 2 (1 deduped home + 1 work)", v)
+	}
+	if v := fieldLabeledValues(fields, "phone_numbers"); len(v) != 1 {
+		t.Fatalf("phone_numbers = %+v, want 1 deduped entry", v)
+	}
+	if v := fieldAddresses(fields, "addresses"); len(v) != 1 {
+		t.Fatalf("addresses = %+v, want 1 deduped entry", v)
+	}
+}
+
 // stubPersonService fails the test if any mutating method is called, so it
 // can assert a code path is a pure no-op.
 type stubPersonService struct {

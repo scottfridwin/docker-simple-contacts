@@ -938,6 +938,37 @@ type googleUserDefined struct {
 	Value string `json:"value"`
 }
 
+// dedupeLabeledValues drops exact (label, value) duplicates while preserving
+// order. Google contacts can carry genuine duplicate entries within a single
+// source (observed live: a contact with the same mobile number listed
+// twice), which we don't want to keep re-importing verbatim.
+func dedupeLabeledValues(values []contactsync.LabeledValue) []contactsync.LabeledValue {
+	seen := make(map[contactsync.LabeledValue]struct{}, len(values))
+	out := make([]contactsync.LabeledValue, 0, len(values))
+	for _, v := range values {
+		if _, ok := seen[v]; ok {
+			continue
+		}
+		seen[v] = struct{}{}
+		out = append(out, v)
+	}
+	return out
+}
+
+// dedupeAddresses drops exact duplicate addresses while preserving order.
+func dedupeAddresses(values []contactsync.Address) []contactsync.Address {
+	seen := make(map[contactsync.Address]struct{}, len(values))
+	out := make([]contactsync.Address, 0, len(values))
+	for _, v := range values {
+		if _, ok := seen[v]; ok {
+			continue
+		}
+		seen[v] = struct{}{}
+		out = append(out, v)
+	}
+	return out
+}
+
 func toProviderRecord(in googlePerson) contactsync.ProviderRecord {
 	fields := map[string]contactsync.FieldState{}
 	updatedAt := parseRemoteUpdatedAt(in.Metadata)
@@ -955,14 +986,14 @@ func toProviderRecord(in googlePerson) contactsync.ProviderRecord {
 			phones = append(phones, contactsync.LabeledValue{Label: number.Type, Value: number.Value})
 		}
 	}
-	fields["phone_numbers"] = contactsync.FieldState{IsSet: true, Value: normalizeLabeledValues(phones, 10, 50), UpdatedAt: updatedAt}
+	fields["phone_numbers"] = contactsync.FieldState{IsSet: true, Value: dedupeLabeledValues(normalizeLabeledValues(phones, 10, 50)), UpdatedAt: updatedAt}
 	emails := make([]contactsync.LabeledValue, 0, len(in.EmailAddresses))
 	for _, email := range in.EmailAddresses {
 		if strings.TrimSpace(email.Value) != "" {
 			emails = append(emails, contactsync.LabeledValue{Label: email.Type, Value: email.Value})
 		}
 	}
-	fields["emails"] = contactsync.FieldState{IsSet: true, Value: normalizeLabeledValues(emails, 10, 254), UpdatedAt: updatedAt}
+	fields["emails"] = contactsync.FieldState{IsSet: true, Value: dedupeLabeledValues(normalizeLabeledValues(emails, 10, 254)), UpdatedAt: updatedAt}
 	addresses := make([]contactsync.Address, 0, len(in.Addresses))
 	for _, addr := range in.Addresses {
 		if strings.TrimSpace(addr.StreetAddress) == "" && strings.TrimSpace(addr.City) == "" &&
@@ -978,7 +1009,7 @@ func toProviderRecord(in googlePerson) contactsync.ProviderRecord {
 			Country:    addr.Country,
 		})
 	}
-	fields["addresses"] = contactsync.FieldState{IsSet: true, Value: addresses, UpdatedAt: updatedAt}
+	fields["addresses"] = contactsync.FieldState{IsSet: true, Value: dedupeAddresses(addresses), UpdatedAt: updatedAt}
 	if len(in.Organizations) > 0 {
 		org := in.Organizations[0]
 		fields["organization"] = contactsync.FieldState{IsSet: true, Value: &contactsync.Organization{
