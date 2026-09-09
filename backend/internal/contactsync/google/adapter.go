@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/coreos/go-oidc/v3/oidc"
 	"github.com/google/uuid"
 	"golang.org/x/oauth2"
 
@@ -23,8 +24,8 @@ import (
 
 const (
 	localIDUserDefinedKey = "contacts_local_id"
-	remoteNameCustomKey   = "google_resource_name"
 	remoteUpdatedFieldKey = "_google_updated_at"
+	googleIssuer          = "https://accounts.google.com"
 )
 
 // Config controls OAuth and API endpoints for Google sync.
@@ -42,6 +43,14 @@ type accountStateStore interface {
 	Update(context.Context, *contactsync.Account) (*contactsync.Account, error)
 }
 
+// recordLinkStore maps a local Person to its remote record on one specific
+// sync account, so the same Person can be linked to several accounts (even
+// several accounts of the same provider) without colliding on a shared field.
+type recordLinkStore interface {
+	Get(ctx context.Context, syncAccountID, personID uuid.UUID) (*contactsync.RecordLink, error)
+	Upsert(ctx context.Context, link *contactsync.RecordLink) error
+}
+
 type personService interface {
 	Get(context.Context, uuid.UUID) (*person.Person, error)
 	Create(context.Context, person.CreateInput) (*person.Person, person.ValidationErrors, error)
@@ -56,10 +65,13 @@ type Adapter struct {
 	http     *http.Client
 	accounts accountStateStore
 	people   personService
+	links    recordLinkStore
+	verifier *oidc.IDTokenVerifier
 }
 
-// NewAdapter constructs a Google adapter.
-func NewAdapter(cfg Config, accounts accountStateStore, people personService, client *http.Client) *Adapter {
+// NewAdapter constructs a Google adapter. It performs OIDC discovery against
+// Google's issuer so ID tokens can be verified during CompleteAuthorization.
+func NewAdapter(ctx context.Context, cfg Config, accounts accountStateStore, people personService, links recordLinkStore, client *http.Client) (*Adapter, error) {
 	if cfg.AuthURL == "" {
 		cfg.AuthURL = "https://accounts.google.com/o/oauth2/v2/auth"
 	}
@@ -70,12 +82,23 @@ func NewAdapter(cfg Config, accounts accountStateStore, people personService, cl
 		cfg.PeopleBaseURL = "https://people.googleapis.com/v1"
 	}
 	if len(cfg.Scopes) == 0 {
-		cfg.Scopes = []string{"https://www.googleapis.com/auth/contacts"}
+		cfg.Scopes = []string{"https://www.googleapis.com/auth/contacts", oidc.ScopeOpenID, "email"}
 	}
 	if client == nil {
 		client = &http.Client{Timeout: 20 * time.Second}
 	}
-	return &Adapter{cfg: cfg, accounts: accounts, people: people, http: client}
+	provider, err := oidc.NewProvider(ctx, googleIssuer)
+	if err != nil {
+		return nil, fmt.Errorf("discovering google oidc provider: %w", err)
+	}
+	return &Adapter{
+		cfg:      cfg,
+		accounts: accounts,
+		people:   people,
+		links:    links,
+		http:     client,
+		verifier: provider.Verifier(&oidc.Config{ClientID: cfg.ClientID}),
+	}, nil
 }
 
 // ProviderName returns the provider key used by the sync registry.
@@ -118,7 +141,7 @@ func (a *Adapter) BeginAuthorization(_ context.Context, redirectURI string, stat
 	url := a.oauthConfig(redirectURI).AuthCodeURL(
 		state,
 		oauth2.AccessTypeOffline,
-		oauth2.SetAuthURLParam("prompt", "consent"),
+		oauth2.SetAuthURLParam("prompt", "consent select_account"),
 		oauth2.SetAuthURLParam("include_granted_scopes", "true"),
 	)
 	return contactsync.AuthRequest{AuthorizationURL: url, State: state}, nil
@@ -133,20 +156,44 @@ func (a *Adapter) CompleteAuthorization(ctx context.Context, code string) (conta
 	if err != nil {
 		return contactsync.AuthSession{}, fmt.Errorf("google oauth exchange failed: %w", err)
 	}
-	// Keep the OAuth flow contacts-scope only. Looking up people/me can require
-	// additional profile scopes depending on Google API behavior.
-	providerAccountID := "people/me"
+	providerAccountID, displayName, err := a.resolveIdentity(ctx, tok)
+	if err != nil {
+		return contactsync.AuthSession{}, err
+	}
 	scope, _ := tok.Extra("scope").(string)
 	if strings.TrimSpace(scope) == "" {
 		scope = strings.Join(a.cfg.Scopes, " ")
 	}
 	return contactsync.AuthSession{
 		ProviderAccountID: providerAccountID,
+		DisplayName:       displayName,
 		AccessToken:       tok.AccessToken,
 		RefreshToken:      tok.RefreshToken,
 		ExpiresAt:         tok.Expiry.UTC(),
 		Scope:             scope,
 	}, nil
+}
+
+// resolveIdentity verifies the Google-issued ID token and returns a stable,
+// per-account identifier (the token subject) plus the account's email for
+// display, so multiple Google accounts can be told apart in the UI.
+func (a *Adapter) resolveIdentity(ctx context.Context, tok *oauth2.Token) (string, string, error) {
+	rawIDToken, _ := tok.Extra("id_token").(string)
+	if rawIDToken == "" || a.verifier == nil {
+		return "", "", errors.New("google did not return an id token; ensure the openid/email scopes are granted")
+	}
+	idToken, err := a.verifier.Verify(ctx, rawIDToken)
+	if err != nil {
+		return "", "", fmt.Errorf("verifying google id token: %w", err)
+	}
+	var claims struct {
+		Email string `json:"email"`
+	}
+	_ = idToken.Claims(&claims)
+	if strings.TrimSpace(idToken.Subject) == "" {
+		return "", "", errors.New("google id token is missing a subject")
+	}
+	return idToken.Subject, strings.TrimSpace(claims.Email), nil
 }
 
 // RefreshAuthorization refreshes a Google OAuth token using the refresh token.
@@ -252,7 +299,7 @@ func (a *Adapter) Sync(ctx context.Context, account contactsync.Account, job con
 	if a == nil {
 		return nil
 	}
-	if a.accounts == nil || a.people == nil {
+	if a.accounts == nil || a.people == nil || a.links == nil {
 		return errors.New("google sync adapter dependencies are not configured")
 	}
 
@@ -266,20 +313,20 @@ func (a *Adapter) Sync(ctx context.Context, account contactsync.Account, job con
 	}
 
 	if job.PersonID != uuid.Nil {
-		if err := a.syncLocalJob(ctx, session, job); err != nil {
+		if err := a.syncLocalJob(ctx, account.ID, session, job); err != nil {
 			return a.markAccountFailed(ctx, &account, err)
 		}
 	}
 
 	initialSync := strings.TrimSpace(account.SyncCursor) == ""
-	nextCursor, err := a.pullRemote(ctx, session, account.SyncCursor)
+	nextCursor, err := a.pullRemote(ctx, account.ID, session, account.SyncCursor)
 	if err != nil {
 		return a.markAccountFailed(ctx, &account, err)
 	}
 	account.SyncCursor = nextCursor
 
 	if initialSync {
-		if err := a.exportLocal(ctx, session); err != nil {
+		if err := a.exportLocal(ctx, account.ID, session); err != nil {
 			return a.markAccountFailed(ctx, &account, err)
 		}
 	}
@@ -294,8 +341,31 @@ func (a *Adapter) Sync(ctx context.Context, account contactsync.Account, job con
 	return nil
 }
 
-func (a *Adapter) syncLocalJob(ctx context.Context, session contactsync.AuthSession, job contactsync.Job) error {
-	remoteID := extractRemoteID(job.Snapshot.CustomFields)
+// remoteIDFor returns the remote resource name already linked to a person on
+// this specific sync account, or "" if none is known yet.
+func (a *Adapter) remoteIDFor(ctx context.Context, accountID, personID uuid.UUID) string {
+	link, err := a.links.Get(ctx, accountID, personID)
+	if err != nil {
+		return ""
+	}
+	return link.RemoteID
+}
+
+// linkRecord records (or updates) which remote resource a person maps to on
+// this specific sync account.
+func (a *Adapter) linkRecord(ctx context.Context, accountID, personID uuid.UUID, remoteID string) {
+	if personID == uuid.Nil || strings.TrimSpace(remoteID) == "" {
+		return
+	}
+	_ = a.links.Upsert(ctx, &contactsync.RecordLink{
+		SyncAccountID: accountID,
+		PersonID:      personID,
+		RemoteID:      remoteID,
+	})
+}
+
+func (a *Adapter) syncLocalJob(ctx context.Context, accountID uuid.UUID, session contactsync.AuthSession, job contactsync.Job) error {
+	remoteID := a.remoteIDFor(ctx, accountID, job.PersonID)
 	if job.Kind == contactsync.ChangeKindDeleted || job.Kind == contactsync.ChangeKindHardDeleted {
 		return a.DeleteRecord(ctx, session, remoteID)
 	}
@@ -305,13 +375,11 @@ func (a *Adapter) syncLocalJob(ctx context.Context, session contactsync.AuthSess
 	if err != nil {
 		return err
 	}
-	if providerRecord.Record.ExternalID != "" {
-		_ = a.attachRemoteID(ctx, job.Snapshot.ID, providerRecord.Record.ExternalID)
-	}
+	a.linkRecord(ctx, accountID, job.PersonID, providerRecord.Record.ExternalID)
 	return nil
 }
 
-func (a *Adapter) pullRemote(ctx context.Context, session contactsync.AuthSession, cursor string) (string, error) {
+func (a *Adapter) pullRemote(ctx context.Context, accountID uuid.UUID, session contactsync.AuthSession, cursor string) (string, error) {
 	current := cursor
 	for {
 		page, err := a.ListChanges(ctx, session, current)
@@ -324,7 +392,7 @@ func (a *Adapter) pullRemote(ctx context.Context, session contactsync.AuthSessio
 			return cursor, err
 		}
 		for _, remote := range page.Records {
-			if err := a.mergeRemoteRecord(ctx, session, remote); err != nil {
+			if err := a.mergeRemoteRecord(ctx, accountID, session, remote); err != nil {
 				return cursor, err
 			}
 		}
@@ -336,7 +404,7 @@ func (a *Adapter) pullRemote(ctx context.Context, session contactsync.AuthSessio
 	return current, nil
 }
 
-func (a *Adapter) exportLocal(ctx context.Context, session contactsync.AuthSession) error {
+func (a *Adapter) exportLocal(ctx context.Context, accountID uuid.UUID, session contactsync.AuthSession) error {
 	page := 1
 	for {
 		rows, total, err := a.people.List(ctx, person.ListParams{Page: page, PageSize: 100, SortField: "updated_at", SortDesc: false})
@@ -344,14 +412,13 @@ func (a *Adapter) exportLocal(ctx context.Context, session contactsync.AuthSessi
 			return fmt.Errorf("listing local persons for export: %w", err)
 		}
 		for i := range rows {
-			record := personToRecord(rows[i])
+			remoteID := a.remoteIDFor(ctx, accountID, rows[i].ID)
+			record := personToRecord(rows[i], remoteID)
 			providerRecord, upsertErr := a.UpsertRecord(ctx, session, record)
 			if upsertErr != nil {
 				return upsertErr
 			}
-			if providerRecord.Record.ExternalID != "" {
-				_ = a.attachRemoteID(ctx, rows[i].ID, providerRecord.Record.ExternalID)
-			}
+			a.linkRecord(ctx, accountID, rows[i].ID, providerRecord.Record.ExternalID)
 		}
 		if page*100 >= total || len(rows) == 0 {
 			break
@@ -361,20 +428,18 @@ func (a *Adapter) exportLocal(ctx context.Context, session contactsync.AuthSessi
 	return nil
 }
 
-func (a *Adapter) mergeRemoteRecord(ctx context.Context, session contactsync.AuthSession, remote contactsync.ProviderRecord) error {
+func (a *Adapter) mergeRemoteRecord(ctx context.Context, accountID uuid.UUID, session contactsync.AuthSession, remote contactsync.ProviderRecord) error {
 	remoteModel, localID := remoteToLocal(remote)
 	if localID == nil {
 		created, _, err := a.people.Create(contactsync.WithSyncOrigin(ctx), remoteModel)
 		if err != nil {
 			return fmt.Errorf("creating local person from google record %s: %w", remote.Record.ExternalID, err)
 		}
-		out, upsertErr := a.UpsertRecord(ctx, session, personToRecord(*created))
+		out, upsertErr := a.UpsertRecord(ctx, session, personToRecord(*created, remote.Record.ExternalID))
 		if upsertErr != nil {
 			return upsertErr
 		}
-		if out.Record.ExternalID != "" {
-			_ = a.attachRemoteID(ctx, created.ID, out.Record.ExternalID)
-		}
+		a.linkRecord(ctx, accountID, created.ID, out.Record.ExternalID)
 		return nil
 	}
 
@@ -387,15 +452,19 @@ func (a *Adapter) mergeRemoteRecord(ctx context.Context, session contactsync.Aut
 		if createErr != nil {
 			return fmt.Errorf("creating local person for missing mapping: %w", createErr)
 		}
-		out, upsertErr := a.UpsertRecord(ctx, session, personToRecord(*created))
+		out, upsertErr := a.UpsertRecord(ctx, session, personToRecord(*created, remote.Record.ExternalID))
 		if upsertErr != nil {
 			return upsertErr
 		}
-		if out.Record.ExternalID != "" {
-			_ = a.attachRemoteID(ctx, created.ID, out.Record.ExternalID)
-		}
+		a.linkRecord(ctx, accountID, created.ID, out.Record.ExternalID)
 		return nil
 	}
+
+	// The remote record's own resource name is now confirmed for this
+	// (account, person) pair regardless of which branch below runs, so record
+	// it opportunistically. This also self-heals the link table for contacts
+	// that were synced before per-account link tracking existed.
+	a.linkRecord(ctx, accountID, local.ID, remote.Record.ExternalID)
 
 	remoteUpdatedAt := extractUpdatedAt(remote)
 	if remote.Record.Tombstone.Deleted {
@@ -404,7 +473,7 @@ func (a *Adapter) mergeRemoteRecord(ctx context.Context, session contactsync.Aut
 				return fmt.Errorf("deleting local person %s: %w", local.ID.String(), err)
 			}
 		} else {
-			_, upsertErr := a.UpsertRecord(ctx, session, personToRecord(*local))
+			_, upsertErr := a.UpsertRecord(ctx, session, personToRecord(*local, remote.Record.ExternalID))
 			if upsertErr != nil {
 				return upsertErr
 			}
@@ -422,8 +491,6 @@ func (a *Adapter) mergeRemoteRecord(ctx context.Context, session contactsync.Aut
 			LastNameSet:     true,
 			PhoneNumbers:    &remoteModel.PhoneNumbers,
 			PhoneNumbersSet: true,
-			CustomFields:    withRemoteName(local.CustomFields, remote.Record.ExternalID),
-			CustomFieldsSet: true,
 		}
 		if _, _, err := a.people.Update(contactsync.WithSyncOrigin(ctx), local.ID, update); err != nil {
 			return fmt.Errorf("updating local person %s: %w", local.ID.String(), err)
@@ -432,27 +499,10 @@ func (a *Adapter) mergeRemoteRecord(ctx context.Context, session contactsync.Aut
 	}
 
 	if local.UpdatedAt.After(remoteUpdatedAt) {
-		_, err := a.UpsertRecord(ctx, session, personToRecord(*local))
+		_, err := a.UpsertRecord(ctx, session, personToRecord(*local, remote.Record.ExternalID))
 		return err
 	}
 	return nil
-}
-
-func (a *Adapter) attachRemoteID(ctx context.Context, personID uuid.UUID, resourceName string) error {
-	if personID == uuid.Nil || strings.TrimSpace(resourceName) == "" {
-		return nil
-	}
-	local, err := a.people.Get(ctx, personID)
-	if err != nil {
-		return err
-	}
-	if existing := extractRemoteID(local.CustomFields); existing == resourceName {
-		return nil
-	}
-	custom := withRemoteName(local.CustomFields, resourceName)
-	update := person.UpdateInput{CustomFields: custom, CustomFieldsSet: true}
-	_, _, err = a.people.Update(contactsync.WithSyncOrigin(ctx), personID, update)
-	return err
 }
 
 func (a *Adapter) ensureSession(ctx context.Context, account *contactsync.Account, session contactsync.AuthSession) (contactsync.AuthSession, error) {
@@ -524,9 +574,9 @@ func snapshotToRecord(snapshot contactsync.PersonSnapshot) contactsync.Record {
 	return record
 }
 
-func personToRecord(p person.Person) contactsync.Record {
+func personToRecord(p person.Person, externalID string) contactsync.Record {
 	record := contactsync.Record{
-		ExternalID: extractRemoteID(p.CustomFields),
+		ExternalID: externalID,
 		Tombstone: contactsync.Tombstone{
 			Deleted:   p.DeletedAt != nil,
 			UpdatedAt: p.UpdatedAt,
@@ -553,16 +603,11 @@ func remoteToLocal(record contactsync.ProviderRecord) (person.CreateInput, *uuid
 	if lastName == "" {
 		lastName = "Unknown"
 	}
-	custom := map[string]any{}
-	if record.Record.ExternalID != "" {
-		custom[remoteNameCustomKey] = record.Record.ExternalID
-	}
 	create := person.CreateInput{
 		FirstName:    firstName,
 		MiddleNames:  middleNames,
 		LastName:     lastName,
 		PhoneNumbers: normalizePhones(phoneNumbers),
-		CustomFields: custom,
 	}
 	localIDRaw := fieldString(record.Record.Fields, "local_id")
 	if localIDRaw == "" {
@@ -585,23 +630,6 @@ func extractUpdatedAt(record contactsync.ProviderRecord) time.Time {
 		return time.Time{}
 	}
 	return t.UTC()
-}
-
-func extractRemoteID(custom map[string]any) string {
-	if custom == nil {
-		return ""
-	}
-	v, _ := custom[remoteNameCustomKey].(string)
-	return strings.TrimSpace(v)
-}
-
-func withRemoteName(custom map[string]any, resourceName string) map[string]any {
-	cloned := map[string]any{}
-	for k, v := range custom {
-		cloned[k] = v
-	}
-	cloned[remoteNameCustomKey] = resourceName
-	return cloned
 }
 
 func stringPtr(v string) *string {

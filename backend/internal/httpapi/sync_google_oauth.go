@@ -109,13 +109,26 @@ func (h *googleOAuthHandler) upsertGoogleAccount(r *http.Request, session contac
 	if strings.TrimSpace(session.AccessToken) == "" {
 		return nil, errors.New("google access token is missing")
 	}
+	if strings.TrimSpace(session.ProviderAccountID) == "" {
+		return nil, errors.New("google account identifier is missing")
+	}
 	accounts, err := h.repo.List(r.Context(), 100)
 	if err != nil {
 		return nil, err
 	}
+	var displayName *string
+	if session.DisplayName != "" {
+		displayName = stringPtr(session.DisplayName)
+	}
+	// Match on the specific Google account (provider + subject), not just the
+	// provider, so connecting a different Google account adds a new row
+	// instead of overwriting whichever account happened to be connected.
 	for i := range accounts {
-		if strings.EqualFold(accounts[i].Provider, "google") {
-			accounts[i].ProviderAccountID = session.ProviderAccountID
+		if strings.EqualFold(accounts[i].Provider, "google") &&
+			accounts[i].ProviderAccountID == session.ProviderAccountID {
+			if displayName != nil {
+				accounts[i].DisplayName = displayName
+			}
 			accounts[i].AccessToken = stringPtr(session.AccessToken)
 			accounts[i].RefreshToken = stringPtr(session.RefreshToken)
 			if !session.ExpiresAt.IsZero() {
@@ -131,6 +144,7 @@ func (h *googleOAuthHandler) upsertGoogleAccount(r *http.Request, session contac
 	account := &contactsync.Account{
 		Provider:          "google",
 		ProviderAccountID: session.ProviderAccountID,
+		DisplayName:       displayName,
 		AccessToken:       stringPtr(session.AccessToken),
 		RefreshToken:      stringPtr(session.RefreshToken),
 		Scope:             session.Scope,

@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"flag"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -90,6 +91,7 @@ func run() error {
 	repo := person.NewRepository(pool)
 	syncAccountRepo := contactsync.NewRepository(pool)
 	syncJobRepo := contactsync.NewJobRepository(pool)
+	syncLinkRepo := contactsync.NewRecordLinkRepository(pool)
 	syncSvc := contactsync.NewService(syncJobRepo)
 	svc := person.NewService(repo, syncSvc)
 	accountRepo := user.NewRepository(pool)
@@ -97,11 +99,14 @@ func run() error {
 	processor := contactsync.Processor(contactsync.NoopProcessor{})
 	var googleAdapter contactsync.Adapter
 	if cfg.GoogleClientID != "" && cfg.GoogleClientSecret != "" && cfg.GoogleRedirectURL != "" {
-		adapter := googlesync.NewAdapter(googlesync.Config{
+		adapter, err := googlesync.NewAdapter(ctx, googlesync.Config{
 			ClientID:     cfg.GoogleClientID,
 			ClientSecret: cfg.GoogleClientSecret,
 			RedirectURL:  cfg.GoogleRedirectURL,
-		}, syncAccountRepo, svc, nil)
+		}, syncAccountRepo, svc, syncLinkRepo, nil)
+		if err != nil {
+			return fmt.Errorf("configuring google sync adapter: %w", err)
+		}
 		registry := contactsync.AdapterRegistry{}
 		registry.Register(adapter)
 		processor = contactsync.NewDispatchProcessor(registry)

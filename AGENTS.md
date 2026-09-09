@@ -85,12 +85,21 @@ docs/design/            authoritative design documents
 - **Coverage**: CI enforces ≥ 70% on `config`, `httpapi`, `person`.
 - **Scope**: authentication is limited to Authentik OIDC SSO and account-owned
   Person records. Google Contacts sync is supported through the existing sync
-  framework and Google adapter only. Do NOT add passwords, local accounts, SSO
-  providers other than Authentik, new sync providers without a design decision,
+  framework and Google adapter only, including **multiple Google accounts**
+  connected at once (each mirrors the full contact list both ways; no
+  per-contact routing). Do NOT add passwords, local accounts, SSO providers
+  other than Authentik, new sync *providers* without a design decision,
   background queues, file attachments, or offline PWA support.
-- **Sync UX rules**: keep sync metadata keys (`google_resource_name`,
-  `_google_updated_at`, `contacts_local_id`) reserved for system use; do not
-  expose them as generic editable custom fields in list/detail UI.
+- **Multi-account identity**: Google sync accounts are identified by the
+  verified OAuth ID token subject (`sync_accounts.provider_account_id`), not
+  by provider alone — never match/overwrite an existing account by provider
+  name only. `sync_accounts.display_name` (the connected email) is for UI
+  labeling only, never for identity matching.
+- **Sync UX rules**: keep sync metadata keys (`google_resource_name`
+  (legacy), `_google_updated_at`, `contacts_local_id`) reserved for system
+  use; do not expose them as generic editable custom fields in list/detail
+  UI. New Google syncs track remote record ids per account via the
+  `sync_record_links` table, not `Person.custom_fields`.
 - **OAuth verification pages**: unauthenticated users must be able to view a
   public home page describing app purpose, and a public privacy policy page at
   `/privacy`.

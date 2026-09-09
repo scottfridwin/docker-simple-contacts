@@ -137,6 +137,11 @@ The backend is configured entirely through environment variables.
 | `FRONTEND_MEM_LIMIT`   | `128m`      | Memory limit for the frontend nginx container.          |
 | `FRONTEND_PIDS_LIMIT`  | `64`        | PID limit for the frontend nginx container.             |
 
+Google OAuth requests the `contacts`, `openid`, and `email` scopes. The
+`openid`/`email` scopes are used only to identify which Google account is
+connected (so more than one can be distinguished in the UI); they are not
+used to read any other profile data.
+
 Frontend build-time variable:
 
 | Variable            | Default | Description                              |
@@ -186,6 +191,10 @@ by a background job.
   `POST /persons/{id}/restore`, and `DELETE /persons/{id}/permanent`
 - Sync account management: `GET/POST /sync-accounts`, `GET/PATCH/DELETE /sync-accounts/{id}`
 - Google sync OAuth: `GET /sync/google/begin`, `GET /sync/google/callback`
+- Multiple Google accounts can be connected at once (via the sync drawer's
+  "Add Google account" action); each connected account mirrors the full
+  contact list both ways. Accounts are identified by the Google account's
+  stable subject id and labeled in the UI with the connected email.
 - Frontend sync panel: connect Google and review sync status from the main app UI
 - Public privacy policy: `GET /privacy`
 - Public homepage purpose page: `GET /` remains readable without authentication and

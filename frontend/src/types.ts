@@ -36,6 +36,7 @@ export interface SyncAccount {
   owner_id?: string | null;
   provider: string;
   provider_account_id: string;
+  display_name?: string | null;
   expires_at?: string | null;
   scope: string;
   sync_cursor: string;

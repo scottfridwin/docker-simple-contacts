@@ -183,6 +183,65 @@ func TestGoogleOAuthCallbackUpsertAndSync(t *testing.T) {
 	}
 }
 
+// TestUpsertGoogleAccountDistinguishesAccounts guards the multi-account bug
+// where connecting a second Google account overwrote the first one because
+// matching was done by provider alone instead of provider + account subject.
+func TestUpsertGoogleAccountDistinguishesAccounts(t *testing.T) {
+	store := newFakeSyncAccountStore()
+	h := &googleOAuthHandler{repo: store, adapter: &fakeGoogleAdapter{}}
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+
+	first, err := h.upsertGoogleAccount(req, contactsync.AuthSession{
+		ProviderAccountID: "sub-alice",
+		DisplayName:       "alice@example.com",
+		AccessToken:       "token-a",
+	})
+	if err != nil {
+		t.Fatalf("first upsert: %v", err)
+	}
+
+	second, err := h.upsertGoogleAccount(req, contactsync.AuthSession{
+		ProviderAccountID: "sub-bob",
+		DisplayName:       "bob@example.com",
+		AccessToken:       "token-b",
+	})
+	if err != nil {
+		t.Fatalf("second upsert: %v", err)
+	}
+
+	if first.ID == second.ID {
+		t.Fatalf("expected two distinct accounts, got the same id for both: %s", first.ID)
+	}
+	accounts, err := store.List(req.Context(), 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(accounts) != 2 {
+		t.Fatalf("expected 2 stored accounts, got %d: %+v", len(accounts), accounts)
+	}
+
+	// Reconnecting the same Google account (same subject) must update the
+	// existing row rather than creating a third one.
+	reconnected, err := h.upsertGoogleAccount(req, contactsync.AuthSession{
+		ProviderAccountID: "sub-alice",
+		DisplayName:       "alice@example.com",
+		AccessToken:       "token-a-refreshed",
+	})
+	if err != nil {
+		t.Fatalf("reconnect upsert: %v", err)
+	}
+	if reconnected.ID != first.ID {
+		t.Fatalf("expected reconnect to reuse account %s, got %s", first.ID, reconnected.ID)
+	}
+	accounts, err = store.List(req.Context(), 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(accounts) != 2 {
+		t.Fatalf("expected still 2 stored accounts after reconnect, got %d", len(accounts))
+	}
+}
+
 func TestGoogleOAuthCallbackReturnsJSONForApiClients(t *testing.T) {
 	adapter := &fakeGoogleAdapter{
 		authRequest: contactsync.AuthRequest{AuthorizationURL: "https://accounts.google.com/o/oauth2/v2/auth?state=abc", State: "abc"},

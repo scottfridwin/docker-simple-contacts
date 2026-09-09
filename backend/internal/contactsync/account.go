@@ -12,6 +12,7 @@ type Account struct {
 	OwnerID              *uuid.UUID `json:"owner_id,omitempty"`
 	Provider             string     `json:"provider"`
 	ProviderAccountID    string     `json:"provider_account_id"`
+	DisplayName          *string    `json:"display_name,omitempty"`
 	AccessToken          *string    `json:"-"`
 	RefreshToken         *string    `json:"-"`
 	ExpiresAt            *time.Time `json:"expires_at,omitempty"`

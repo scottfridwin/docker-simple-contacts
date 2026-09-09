@@ -132,6 +132,10 @@ export function updateSyncAccount(id: string, input: Partial<SyncAccount>): Prom
   });
 }
 
+export function deleteSyncAccount(id: string): Promise<void> {
+  return request<void>(`/sync-accounts/${id}`, { method: 'DELETE' });
+}
+
 export function beginGoogleSync(redirectUri?: string): Promise<GoogleOAuthBeginResponse> {
   const query = new URLSearchParams();
   if (redirectUri) {

@@ -376,3 +376,34 @@ preserve expected behavior.
 	the purpose of the application without requiring login.
 - Privacy policy remains publicly accessible at `/privacy`.
 - Rationale: required for Google OAuth app verification review.
+
+## Post-implementation decision log (2026-09-09)
+
+### F) Multi-account Google sync
+- Multiple Google accounts can be connected simultaneously. Routing model is
+  mirror-all: every connected account syncs the full contact list both ways;
+  there is no per-contact assignment to a specific account.
+- Google accounts are identified by the verified OAuth ID token subject
+  (`sub`), not a fixed placeholder. This requires the `openid` and `email`
+  scopes in addition to `contacts`.
+- The verified email is stored as `sync_accounts.display_name` for UI labeling
+  only; it is never used for identity matching.
+- `GET /api/v1/sync/google/begin` requests `prompt=consent select_account` so
+  the user can pick a different Google account without signing out of Google
+  first.
+- Connecting an account matches existing rows by `(provider,
+  provider_account_id)`, not by provider alone, so a second Google account
+  creates a new row instead of overwriting the first.
+- Per-account remote-record mapping moved from the single-valued
+  `Person.custom_fields.google_resource_name` to a dedicated
+  `sync_record_links` table (`sync_account_id`, `person_id`, `remote_id`),
+  since one Person can now be linked to a different remote contact on each
+  connected account. See
+  [04-sync-framework.md](04-sync-framework.md#multi-account-support-2026-09-09)
+  for the full rationale.
+- Fixed alongside this: `contactsync.Account` previously had no `json` tags,
+  so the API emitted PascalCase field names instead of the snake_case the
+  frontend expects (broke Save, the status badge, and the syncing indicator).
+  `AccessToken`/`RefreshToken` are now `json:"-"` so OAuth tokens are never
+  sent to the browser.
+

@@ -14,10 +14,11 @@ conflict.
 ## Golden rules
 
 - Stay within current scope. Authentication is Authentik OIDC only. Google
-  Contacts sync is supported through the existing sync framework and adapter;
-  do not add passwords, local accounts, alternate SSO providers, new sync
-  providers without design approval, background queues, file attachments, or
-  offline PWA support.
+  Contacts sync is supported through the existing sync framework and adapter,
+  including multiple connected Google accounts (each mirrors the full contact
+  list both ways; no per-contact routing); do not add passwords, local
+  accounts, alternate SSO providers, new sync providers without design
+  approval, background queues, file attachments, or offline PWA support.
 - Keep dependencies **minimal** (Renovate-friendly).
 - Whenever API behavior changes, update `api/openapi.yaml`, the tests, and the
   README together.
@@ -48,9 +49,13 @@ conflict.
 - Auth config uses `AUTHENTIK_*` and `SESSION_SECRET(_FILE)`; file secrets take
   precedence over inline values. Authenticated Person queries must be account
   scoped.
-- Google sync metadata keys (`google_resource_name`, `_google_updated_at`,
+- Google sync accounts are identified by the verified OAuth ID token subject
+  (`provider_account_id`), never by provider name alone; `display_name` (the
+  connected email) is for UI labeling only, not identity matching.
+- Google sync metadata keys (`google_resource_name` (legacy), `_google_updated_at`,
   `contacts_local_id`) are reserved system fields and should not be exposed as
-  normal editable custom fields.
+  normal editable custom fields. Per-account remote record ids live in the
+  `sync_record_links` table, not `Person.custom_fields`.
 - Keep public verification pages available without login: home page with app
   purpose and privacy policy at `/privacy`.
 

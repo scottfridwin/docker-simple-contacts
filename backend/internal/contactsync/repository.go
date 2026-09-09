@@ -37,18 +37,18 @@ func (r *Repository) Create(ctx context.Context, account *Account) (*Account, er
 	}
 	ownerID, owned := authn.UserID(ctx)
 	const qOwned = `
-		INSERT INTO sync_accounts (owner_id, provider, provider_account_id, access_token, refresh_token, expires_at, scope, sync_cursor, sync_frequency_minutes, status, last_synced_at, last_error)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-		RETURNING id, owner_id, provider, provider_account_id, access_token, refresh_token, expires_at, scope, sync_cursor, sync_frequency_minutes, status, last_synced_at, last_error, created_at, updated_at`
+		INSERT INTO sync_accounts (owner_id, provider, provider_account_id, display_name, access_token, refresh_token, expires_at, scope, sync_cursor, sync_frequency_minutes, status, last_synced_at, last_error)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+		RETURNING id, owner_id, provider, provider_account_id, display_name, access_token, refresh_token, expires_at, scope, sync_cursor, sync_frequency_minutes, status, last_synced_at, last_error, created_at, updated_at`
 	const qLegacy = `
-		INSERT INTO sync_accounts (provider, provider_account_id, access_token, refresh_token, expires_at, scope, sync_cursor, sync_frequency_minutes, status, last_synced_at, last_error)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-		RETURNING id, owner_id, provider, provider_account_id, access_token, refresh_token, expires_at, scope, sync_cursor, sync_frequency_minutes, status, last_synced_at, last_error, created_at, updated_at`
+		INSERT INTO sync_accounts (provider, provider_account_id, display_name, access_token, refresh_token, expires_at, scope, sync_cursor, sync_frequency_minutes, status, last_synced_at, last_error)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+		RETURNING id, owner_id, provider, provider_account_id, display_name, access_token, refresh_token, expires_at, scope, sync_cursor, sync_frequency_minutes, status, last_synced_at, last_error, created_at, updated_at`
 	var row pgx.Row
 	if owned {
-		row = r.pool.QueryRow(ctx, qOwned, ownerID, account.Provider, account.ProviderAccountID, account.AccessToken, account.RefreshToken, account.ExpiresAt, account.Scope, account.SyncCursor, account.SyncFrequencyMinutes, account.Status, account.LastSyncedAt, account.LastError)
+		row = r.pool.QueryRow(ctx, qOwned, ownerID, account.Provider, account.ProviderAccountID, account.DisplayName, account.AccessToken, account.RefreshToken, account.ExpiresAt, account.Scope, account.SyncCursor, account.SyncFrequencyMinutes, account.Status, account.LastSyncedAt, account.LastError)
 	} else {
-		row = r.pool.QueryRow(ctx, qLegacy, account.Provider, account.ProviderAccountID, account.AccessToken, account.RefreshToken, account.ExpiresAt, account.Scope, account.SyncCursor, account.SyncFrequencyMinutes, account.Status, account.LastSyncedAt, account.LastError)
+		row = r.pool.QueryRow(ctx, qLegacy, account.Provider, account.ProviderAccountID, account.DisplayName, account.AccessToken, account.RefreshToken, account.ExpiresAt, account.Scope, account.SyncCursor, account.SyncFrequencyMinutes, account.Status, account.LastSyncedAt, account.LastError)
 	}
 	return scanAccount(row)
 }
@@ -56,7 +56,7 @@ func (r *Repository) Create(ctx context.Context, account *Account) (*Account, er
 // GetByID fetches a sync account by ID.
 func (r *Repository) GetByID(ctx context.Context, id uuid.UUID) (*Account, error) {
 	q := `
-		SELECT id, owner_id, provider, provider_account_id, access_token, refresh_token, expires_at, scope, sync_cursor, sync_frequency_minutes, status, last_synced_at, last_error, created_at, updated_at
+		SELECT id, owner_id, provider, provider_account_id, display_name, access_token, refresh_token, expires_at, scope, sync_cursor, sync_frequency_minutes, status, last_synced_at, last_error, created_at, updated_at
 		FROM sync_accounts
 		WHERE id = $1`
 	args := []any{id}
@@ -75,20 +75,20 @@ func (r *Repository) GetByID(ctx context.Context, id uuid.UUID) (*Account, error
 func (r *Repository) Update(ctx context.Context, account *Account) (*Account, error) {
 	q := `
 		UPDATE sync_accounts
-		SET provider = $2, provider_account_id = $3, access_token = $4, refresh_token = $5, expires_at = $6,
-		    scope = $7, sync_cursor = $8, sync_frequency_minutes = $9, status = $10, last_synced_at = $11, last_error = $12,
+		SET provider = $2, provider_account_id = $3, display_name = $4, access_token = $5, refresh_token = $6, expires_at = $7,
+		    scope = $8, sync_cursor = $9, sync_frequency_minutes = $10, status = $11, last_synced_at = $12, last_error = $13,
 		    updated_at = now()
 		WHERE id = $1`
 	args := []any{
-		account.ID, account.Provider, account.ProviderAccountID, account.AccessToken, account.RefreshToken, account.ExpiresAt,
+		account.ID, account.Provider, account.ProviderAccountID, account.DisplayName, account.AccessToken, account.RefreshToken, account.ExpiresAt,
 		account.Scope, account.SyncCursor, account.SyncFrequencyMinutes, account.Status, account.LastSyncedAt, account.LastError,
 	}
 	if ownerID, ok := authn.UserID(ctx); ok {
-		q += ` AND owner_id = $13`
+		q += ` AND owner_id = $14`
 		args = append(args, ownerID)
 	}
 	q += `
-		RETURNING id, owner_id, provider, provider_account_id, access_token, refresh_token, expires_at, scope, sync_cursor, sync_frequency_minutes, status, last_synced_at, last_error, created_at, updated_at`
+		RETURNING id, owner_id, provider, provider_account_id, display_name, access_token, refresh_token, expires_at, scope, sync_cursor, sync_frequency_minutes, status, last_synced_at, last_error, created_at, updated_at`
 	return scanAccount(r.pool.QueryRow(ctx, q, args...))
 }
 
@@ -98,7 +98,7 @@ func (r *Repository) List(ctx context.Context, limit int) ([]Account, error) {
 		limit = 50
 	}
 	q := `
-		SELECT id, owner_id, provider, provider_account_id, access_token, refresh_token, expires_at, scope, sync_cursor, sync_frequency_minutes, status, last_synced_at, last_error, created_at, updated_at
+		SELECT id, owner_id, provider, provider_account_id, display_name, access_token, refresh_token, expires_at, scope, sync_cursor, sync_frequency_minutes, status, last_synced_at, last_error, created_at, updated_at
 		FROM sync_accounts`
 	args := []any{}
 	if ownerID, ok := authn.UserID(ctx); ok {
@@ -147,7 +147,7 @@ func (r *Repository) Delete(ctx context.Context, id uuid.UUID) error {
 // ListDue returns sync accounts that are ready for periodic reconciliation.
 func (r *Repository) ListDue(ctx context.Context, before time.Time) ([]Account, error) {
 	const q = `
-		SELECT id, owner_id, provider, provider_account_id, access_token, refresh_token, expires_at, scope, sync_cursor, sync_frequency_minutes, status, last_synced_at, last_error, created_at, updated_at
+		SELECT id, owner_id, provider, provider_account_id, display_name, access_token, refresh_token, expires_at, scope, sync_cursor, sync_frequency_minutes, status, last_synced_at, last_error, created_at, updated_at
 		FROM sync_accounts
 		WHERE status = 'connected' AND (last_synced_at IS NULL OR last_synced_at < $1)
 		ORDER BY last_synced_at NULLS FIRST, id ASC`
@@ -178,7 +178,7 @@ type accountScanner interface {
 func scanAccount(s accountScanner) (*Account, error) {
 	var account Account
 	if err := s.Scan(
-		&account.ID, &account.OwnerID, &account.Provider, &account.ProviderAccountID, &account.AccessToken,
+		&account.ID, &account.OwnerID, &account.Provider, &account.ProviderAccountID, &account.DisplayName, &account.AccessToken,
 		&account.RefreshToken, &account.ExpiresAt, &account.Scope, &account.SyncCursor, &account.SyncFrequencyMinutes,
 		&account.Status, &account.LastSyncedAt, &account.LastError, &account.CreatedAt, &account.UpdatedAt,
 	); err != nil {

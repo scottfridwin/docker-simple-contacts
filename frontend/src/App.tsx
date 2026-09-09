@@ -4,6 +4,7 @@ import {
   beginGoogleSync,
   createPerson,
   deletePerson,
+  deleteSyncAccount,
   listDeletedPersons,
   listSyncAccounts,
   listPersons,
@@ -322,6 +323,23 @@ export default function App() {
     }
   };
 
+  const handleDisconnectAccount = async (account: SyncAccount) => {
+    const label = account.display_name || account.provider_account_id || account.provider;
+    if (!window.confirm(`Disconnect ${label}? This stops syncing this account.`)) {
+      return;
+    }
+    setSyncError(null);
+    setSyncSavingId(account.id);
+    try {
+      await deleteSyncAccount(account.id);
+      await refreshSyncAccounts();
+    } catch (err) {
+      setSyncError(err instanceof Error ? err.message : 'Failed to disconnect sync account');
+    } finally {
+      setSyncSavingId((prev) => (prev === account.id ? null : prev));
+    }
+  };
+
   if (authenticationRequired) {
     return <HomeInfoPage />;
   }
@@ -503,7 +521,8 @@ export default function App() {
           </button>
         </div>
         <p className="sync-panel-description">
-          Connect Google to sync your contacts. The authorization flow opens in a popup so your
+          Connect Google to sync your contacts. You can connect more than one Google account — each
+          one mirrors your full contact list. The authorization flow opens in a popup so your
           current app stays open.
         </p>
         {syncError && (
@@ -515,9 +534,9 @@ export default function App() {
           <button type="button" onClick={handleConnectGoogle} disabled={syncConnecting}>
             {syncConnecting
               ? 'Starting Google…'
-              : hasReconnectIssue
-                ? 'Reconnect Google'
-                : 'Connect Google'}
+              : syncAccounts.length === 0
+                ? 'Connect Google'
+                : 'Add Google account'}
           </button>
           <button
             type="button"
@@ -545,7 +564,7 @@ export default function App() {
               return (
                 <li key={account.id} className="sync-account-card">
                   <div className="sync-account-head">
-                    <strong>{account.provider}</strong>
+                    <strong>{account.display_name || account.provider}</strong>
                     <span className={`sync-status sync-status-${account.status}`}>
                       {account.status}
                     </span>
@@ -588,6 +607,24 @@ export default function App() {
                     </div>
                   </dl>
                   <div className="sync-account-actions">
+                    {(account.status === 'error' || account.status === 'reconnect_required') && (
+                      <button
+                        type="button"
+                        className="ghost"
+                        onClick={handleConnectGoogle}
+                        disabled={syncConnecting}
+                      >
+                        Reconnect
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      className="ghost danger"
+                      onClick={() => void handleDisconnectAccount(account)}
+                      disabled={syncSavingId === account.id}
+                    >
+                      Disconnect
+                    </button>
                     <button
                       type="button"
                       onClick={() => void saveSyncAccount(account)}

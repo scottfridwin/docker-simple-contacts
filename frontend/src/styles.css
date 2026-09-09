@@ -242,6 +242,10 @@ body {
   color: var(--text);
 }
 
+.ghost.danger {
+  color: var(--danger);
+}
+
 .icon-button {
   position: relative;
   display: inline-flex;
@@ -479,6 +483,8 @@ input[type='number'] {
   padding-top: 0.75rem;
   border-top: 1px solid var(--border);
   display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
   justify-content: flex-end;
 }
 

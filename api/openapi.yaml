@@ -389,6 +389,7 @@ components:
         owner_id: { type: string, format: uuid, nullable: true }
         provider: { type: string }
         provider_account_id: { type: string }
+        display_name: { type: string, nullable: true, description: 'Human-readable label (e.g. the connected email) used to tell multiple accounts of the same provider apart.' }
         expires_at: { type: string, format: date-time, nullable: true }
         scope: { type: string }
         sync_cursor: { type: string }

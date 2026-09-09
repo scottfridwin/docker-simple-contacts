@@ -15,6 +15,7 @@ const mocks = vi.hoisted(() => ({
   restorePerson: vi.fn(),
   updatePerson: vi.fn(),
   updateSyncAccount: vi.fn(),
+  deleteSyncAccount: vi.fn(),
 }));
 
 vi.mock('../src/api', () => ({
@@ -40,6 +41,7 @@ vi.mock('../src/api', () => ({
   restorePerson: mocks.restorePerson,
   updatePerson: mocks.updatePerson,
   updateSyncAccount: mocks.updateSyncAccount,
+  deleteSyncAccount: mocks.deleteSyncAccount,
 }));
 
 describe('App sync integration', () => {
@@ -61,6 +63,7 @@ describe('App sync integration', () => {
       state: 'abc',
     });
     mocks.updateSyncAccount.mockResolvedValue({});
+    mocks.deleteSyncAccount.mockResolvedValue(undefined);
     Object.defineProperty(window, 'open', {
       value: vi.fn().mockReturnValue({ close: vi.fn() }),
       writable: true,
@@ -134,7 +137,7 @@ describe('App sync integration', () => {
     expect(await screen.findByRole('heading', { name: /connected accounts/i })).toBeInTheDocument();
     expect(screen.getByText('google')).toBeInTheDocument();
     expect(screen.getByRole('spinbutton', { name: /sync frequency minutes/i })).toHaveValue(30);
-    expect(screen.getByRole('button', { name: /connect google/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /add google account/i })).toBeInTheDocument();
   });
 
   it('starts the google connect flow from the ui', async () => {
@@ -259,5 +262,99 @@ describe('App sync integration', () => {
     await userEvent.click(screen.getByRole('button', { name: /open sync settings/i }));
 
     expect(await screen.findByText(/syncing/i)).toBeInTheDocument();
+  });
+
+  it('shows the connected account email and supports adding another account', async () => {
+    mocks.listSyncAccounts.mockResolvedValueOnce({
+      data: [
+        {
+          id: '1',
+          owner_id: null,
+          provider: 'google',
+          provider_account_id: 'sub-alice',
+          display_name: 'alice@example.com',
+          expires_at: null,
+          scope: 'contacts',
+          sync_cursor: 'cursor-1',
+          sync_frequency_minutes: 30,
+          status: 'connected',
+          last_synced_at: '2026-09-08T12:00:00Z',
+          last_error: null,
+          created_at: '2026-09-08T11:00:00Z',
+          updated_at: '2026-09-08T12:00:00Z',
+        },
+      ],
+    });
+
+    render(<App />);
+    await userEvent.click(screen.getByRole('button', { name: /open sync settings/i }));
+
+    expect(await screen.findByText('alice@example.com')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /add google account/i })).toBeInTheDocument();
+  });
+
+  it('disconnects an account after confirmation', async () => {
+    mocks.listSyncAccounts.mockResolvedValueOnce({
+      data: [
+        {
+          id: '1',
+          owner_id: null,
+          provider: 'google',
+          provider_account_id: 'sub-alice',
+          display_name: 'alice@example.com',
+          expires_at: null,
+          scope: 'contacts',
+          sync_cursor: 'cursor-1',
+          sync_frequency_minutes: 30,
+          status: 'connected',
+          last_synced_at: '2026-09-08T12:00:00Z',
+          last_error: null,
+          created_at: '2026-09-08T11:00:00Z',
+          updated_at: '2026-09-08T12:00:00Z',
+        },
+      ],
+    });
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+
+    render(<App />);
+    await userEvent.click(screen.getByRole('button', { name: /open sync settings/i }));
+
+    await userEvent.click(await screen.findByRole('button', { name: /disconnect/i }));
+
+    await waitFor(() => {
+      expect(mocks.deleteSyncAccount).toHaveBeenCalledWith('1');
+    });
+  });
+
+  it('shows a reconnect action when an account needs attention', async () => {
+    mocks.listSyncAccounts.mockResolvedValueOnce({
+      data: [
+        {
+          id: '1',
+          owner_id: null,
+          provider: 'google',
+          provider_account_id: 'sub-alice',
+          display_name: 'alice@example.com',
+          expires_at: null,
+          scope: 'contacts',
+          sync_cursor: 'cursor-1',
+          sync_frequency_minutes: 30,
+          status: 'reconnect_required',
+          last_synced_at: '2026-09-08T12:00:00Z',
+          last_error: 'token expired',
+          created_at: '2026-09-08T11:00:00Z',
+          updated_at: '2026-09-08T12:00:00Z',
+        },
+      ],
+    });
+
+    render(<App />);
+    await userEvent.click(screen.getByRole('button', { name: /open sync settings/i }));
+
+    await userEvent.click(await screen.findByRole('button', { name: /^reconnect$/i }));
+
+    await waitFor(() => {
+      expect(mocks.beginGoogleSync).toHaveBeenCalled();
+    });
   });
 });
