@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import App from '../src/App';
 import type { PersonListResponse, SyncAccountListResponse } from '../src/types';
@@ -228,6 +228,27 @@ describe('App sync integration', () => {
       expect(mocks.updateSyncAccount).toHaveBeenCalledWith('1', {
         sync_frequency_minutes: 45,
       });
+    });
+  });
+
+  it('refreshes the contacts list automatically when the google popup completes, without a manual reload', async () => {
+    render(<App />);
+
+    await waitFor(() => {
+      expect(mocks.listPersons).toHaveBeenCalledTimes(1);
+    });
+
+    act(() => {
+      window.dispatchEvent(
+        new MessageEvent('message', {
+          origin: 'https://contacts.example',
+          data: { type: 'google-sync-complete' },
+        }),
+      );
+    });
+
+    await waitFor(() => {
+      expect(mocks.listPersons).toHaveBeenCalledTimes(2);
     });
   });
 

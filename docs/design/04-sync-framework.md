@@ -200,3 +200,16 @@ id, leading to duplicate contact creation on every sync cycle. The
 `sync_record_links` table keys the mapping by `(sync_account_id, person_id)`
 so each account keeps its own record independently.
 
+## Periodic reconciliation fix (2026-09-09)
+
+`Repository.ListDue` (accounts whose `sync_frequency_minutes` interval has
+elapsed) existed but was never called anywhere. In practice this meant a
+connected account only ever pulled remote changes once, immediately after
+connecting; new contacts added on the provider side afterward were never
+imported unless a local edit happened to enqueue an unrelated sync job. Fixed
+by having `Runner.RunLoop` call a new `runDueAccounts` step on every tick,
+which checks each connected account's own `sync_frequency_minutes` against its
+`last_synced_at` and calls the adapter with an empty `Job{}` (pull-only, no
+local mutation to push) when due. One account's failure does not stop
+reconciliation of the others.
+

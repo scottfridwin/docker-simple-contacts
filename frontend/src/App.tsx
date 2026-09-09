@@ -111,7 +111,7 @@ export default function App() {
   const [syncDrafts, setSyncDrafts] = useState<Record<string, SyncAccountDraft>>({});
   const [syncDrawerOpen, setSyncDrawerOpen] = useState(false);
   const [view, setView] = useState<View>({ mode: 'list' });
-  const [loading, setLoading] = useState(false);
+  const [personsLoaded, setPersonsLoaded] = useState(false);
   const [syncLoading, setSyncLoading] = useState(false);
   const [syncLoaded, setSyncLoaded] = useState(false);
   const [syncConnecting, setSyncConnecting] = useState(false);
@@ -130,7 +130,6 @@ export default function App() {
     if (isPrivacyPage) {
       return;
     }
-    setLoading(true);
     setError(null);
     try {
       const loader = showDeleted ? listDeletedPersons : listPersons;
@@ -152,7 +151,7 @@ export default function App() {
         setError(err instanceof Error ? err.message : 'Failed to load contacts');
       }
     } finally {
-      setLoading(false);
+      setPersonsLoaded(true);
     }
   }, [isPrivacyPage, page, search, showDeleted]);
 
@@ -216,11 +215,12 @@ export default function App() {
       return;
     }
     const onFocus = () => {
+      void refresh();
       void refreshSyncAccounts();
     };
     window.addEventListener('focus', onFocus);
     return () => window.removeEventListener('focus', onFocus);
-  }, [isPrivacyPage, refreshSyncAccounts]);
+  }, [isPrivacyPage, refresh, refreshSyncAccounts]);
 
   useEffect(() => {
     if (isPrivacyPage) {
@@ -230,11 +230,12 @@ export default function App() {
       if (event.origin !== window.location.origin) return;
       if (event.data?.type === 'google-sync-complete') {
         void refreshSyncAccounts();
+        void refresh();
       }
     };
     window.addEventListener('message', onMessage);
     return () => window.removeEventListener('message', onMessage);
-  }, [isPrivacyPage, refreshSyncAccounts]);
+  }, [isPrivacyPage, refresh, refreshSyncAccounts]);
 
   // Poll for live sync status: fast while a first sync is still in flight,
   // slower otherwise, so the panel updates itself like an app instead of
@@ -253,9 +254,15 @@ export default function App() {
     const id = window.setInterval(() => {
       if (document.hidden) return;
       void refreshSyncAccounts();
+      // A connected account can pull in new contacts on its own schedule (not
+      // just right after connecting), so keep the contacts list fresh too
+      // instead of requiring a manual reload.
+      if (syncAccounts.length > 0) {
+        void refresh();
+      }
     }, delay);
     return () => window.clearInterval(id);
-  }, [authenticationRequired, isPrivacyPage, refreshSyncAccounts, syncAccounts]);
+  }, [authenticationRequired, isPrivacyPage, refresh, refreshSyncAccounts, syncAccounts]);
 
   useEffect(() => {
     if (!syncDrawerOpen) {
@@ -667,7 +674,7 @@ export default function App() {
               </>
             )}
           </div>
-          {loading ? (
+          {!personsLoaded ? (
             <p>Loading…</p>
           ) : (
             <PersonList

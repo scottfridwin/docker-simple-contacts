@@ -13,6 +13,7 @@ import (
 
 type accountStore interface {
 	List(context.Context, int) ([]Account, error)
+	ListDue(context.Context, time.Time) ([]Account, error)
 }
 
 type jobQueue interface {
@@ -70,11 +71,44 @@ func (r *Runner) RunLoop(ctx context.Context, interval time.Duration) error {
 		if _, err := r.RunOnce(ctx); err != nil && !errors.Is(err, context.Canceled) {
 			return err
 		}
+		// A single account failing to reconcile (e.g. an expired token) must not
+		// stop periodic sync for every other connected account, so errors here
+		// are absorbed per-account rather than propagated.
+		r.runDueAccounts(ctx)
 		select {
 		case <-ctx.Done():
 			return nil
 		case <-ticker.C:
 		}
+	}
+}
+
+// runDueAccounts reconciles connected accounts whose configured sync
+// frequency has elapsed, independent of any queued local-change job. Without
+// this, a connected account only ever pulls remote changes once (right after
+// connecting) and never again unless a local contact happens to change.
+func (r *Runner) runDueAccounts(ctx context.Context) {
+	if r == nil || r.accounts == nil || r.processor == nil {
+		return
+	}
+	now := time.Now()
+	accounts, err := r.accounts.ListDue(ctx, now)
+	if err != nil {
+		return
+	}
+	for _, account := range accounts {
+		freq := time.Duration(account.SyncFrequencyMinutes) * time.Minute
+		if freq <= 0 {
+			freq = 5 * time.Minute
+		}
+		if account.LastSyncedAt != nil && now.Sub(*account.LastSyncedAt) < freq {
+			continue
+		}
+		accountCtx := ctx
+		if account.OwnerID != nil && *account.OwnerID != uuid.Nil {
+			accountCtx = authn.WithUserID(ctx, *account.OwnerID)
+		}
+		_ = r.processor.Process(accountCtx, account, Job{})
 	}
 }
 
