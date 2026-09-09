@@ -14,6 +14,7 @@ const mocks = vi.hoisted(() => ({
   permanentlyDeletePerson: vi.fn(),
   restorePerson: vi.fn(),
   updatePerson: vi.fn(),
+  updateSyncAccount: vi.fn(),
 }));
 
 vi.mock('../src/api', () => ({
@@ -38,6 +39,7 @@ vi.mock('../src/api', () => ({
   permanentlyDeletePerson: mocks.permanentlyDeletePerson,
   restorePerson: mocks.restorePerson,
   updatePerson: mocks.updatePerson,
+  updateSyncAccount: mocks.updateSyncAccount,
 }));
 
 describe('App sync integration', () => {
@@ -58,6 +60,7 @@ describe('App sync integration', () => {
       authorization_url: 'https://accounts.google.com/o/oauth2/v2/auth?state=abc',
       state: 'abc',
     });
+    mocks.updateSyncAccount.mockResolvedValue({});
     Object.defineProperty(window, 'open', {
       value: vi.fn().mockReturnValue({ close: vi.fn() }),
       writable: true,
@@ -109,7 +112,8 @@ describe('App sync integration', () => {
 
     expect(await screen.findByRole('heading', { name: /connected accounts/i })).toBeInTheDocument();
     expect(screen.getByText('google')).toBeInTheDocument();
-    expect(screen.getByText('connected')).toBeInTheDocument();
+    expect(screen.getByRole('combobox', { name: /sync status/i })).toHaveValue('connected');
+    expect(screen.getByRole('spinbutton', { name: /sync frequency minutes/i })).toHaveValue(30);
     expect(screen.getByText(/people\/abc/i)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /connect google/i })).toBeInTheDocument();
   });
@@ -142,6 +146,48 @@ describe('App sync integration', () => {
       expect(window.location.assign).toHaveBeenCalledWith(
         'https://accounts.google.com/o/oauth2/v2/auth?state=abc',
       );
+    });
+  });
+
+  it('enables save only after account changes and submits updated values', async () => {
+    mocks.listSyncAccounts.mockResolvedValueOnce({
+      data: [
+        {
+          id: '1',
+          owner_id: null,
+          provider: 'google',
+          provider_account_id: 'people/abc',
+          access_token: null,
+          refresh_token: null,
+          expires_at: null,
+          scope: 'contacts',
+          sync_cursor: 'cursor-1',
+          sync_frequency_minutes: 30,
+          status: 'connected',
+          last_synced_at: '2026-09-08T12:00:00Z',
+          last_error: null,
+          created_at: '2026-09-08T11:00:00Z',
+          updated_at: '2026-09-08T12:00:00Z',
+        },
+      ],
+    });
+
+    render(<App />);
+
+    const saveButton = await screen.findByRole('button', { name: /save changes/i });
+    expect(saveButton).toBeDisabled();
+
+    await userEvent.clear(screen.getByRole('spinbutton', { name: /sync frequency minutes/i }));
+    await userEvent.type(screen.getByRole('spinbutton', { name: /sync frequency minutes/i }), '45');
+
+    expect(saveButton).toBeEnabled();
+    await userEvent.click(saveButton);
+
+    await waitFor(() => {
+      expect(mocks.updateSyncAccount).toHaveBeenCalledWith('1', {
+        sync_frequency_minutes: 45,
+        status: 'connected',
+      });
     });
   });
 });

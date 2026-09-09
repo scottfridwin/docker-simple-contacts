@@ -3,6 +3,7 @@ import type {
   GoogleOAuthBeginResponse,
   Person,
   PersonListResponse,
+  SyncAccount,
   SyncAccountListResponse,
   UpdatePersonInput,
   ValidationDetail,
@@ -122,6 +123,13 @@ export function permanentlyDeletePerson(id: string): Promise<void> {
 
 export function listSyncAccounts(): Promise<SyncAccountListResponse> {
   return request<SyncAccountListResponse>('/sync-accounts');
+}
+
+export function updateSyncAccount(id: string, input: Partial<SyncAccount>): Promise<SyncAccount> {
+  return request<SyncAccount>(`/sync-accounts/${id}`, {
+    method: 'PATCH',
+    body: JSON.stringify(input),
+  });
 }
 
 export function beginGoogleSync(redirectUri?: string): Promise<GoogleOAuthBeginResponse> {

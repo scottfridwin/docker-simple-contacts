@@ -18,6 +18,11 @@ export interface Person {
   deleted_at?: string | null;
 }
 
+export interface SyncMetadata {
+  googleResourceName?: string | null;
+  googleUpdatedAt?: string | null;
+}
+
 export interface PersonListResponse {
   data: Person[];
   page: number;

@@ -43,6 +43,7 @@ describe('PersonForm', () => {
       phone_numbers: [],
       middle_names: ['A', 'B'],
       custom_fields: { blood_type: 'O+' },
+      sync_metadata: {},
     });
   });
 

@@ -30,7 +30,7 @@ func NewRepository(pool *pgxpool.Pool) *Repository {
 // Create inserts a new sync account.
 func (r *Repository) Create(ctx context.Context, account *Account) (*Account, error) {
 	if account.SyncFrequencyMinutes <= 0 {
-		account.SyncFrequencyMinutes = 60
+		account.SyncFrequencyMinutes = 5
 	}
 	if account.Status == "" {
 		account.Status = "connected"

@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import type { CustomFieldType, Person } from '../types';
+import type { CustomFieldType, Person, SyncMetadata } from '../types';
 import {
   buildCustomFields,
   inferType,
@@ -16,6 +16,7 @@ export interface PersonFormValues {
   birthdate: string;
   phone_numbers: string[];
   custom_fields: Record<string, string | number | boolean>;
+  sync_metadata?: SyncMetadata;
 }
 
 interface PersonFormProps {
@@ -26,13 +27,25 @@ interface PersonFormProps {
   onCancel: () => void;
 }
 
+const RESERVED_SYNC_FIELDS = new Set(['google_resource_name', '_google_updated_at', 'contacts_local_id']);
+
 function draftsFromPerson(person?: Person): DraftCustomField[] {
   if (!person) return [];
-  return Object.entries(person.custom_fields ?? {}).map(([key, value]) => ({
-    key,
-    type: inferType(value),
-    value: String(value),
-  }));
+  return Object.entries(person.custom_fields ?? {})
+    .filter(([key]) => !RESERVED_SYNC_FIELDS.has(key))
+    .map(([key, value]) => ({
+      key,
+      type: inferType(value),
+      value: String(value),
+    }));
+}
+
+function syncMetadataFromPerson(person?: Person): SyncMetadata {
+  if (!person) return {};
+  return {
+    googleResourceName: (person.custom_fields?.google_resource_name as string | undefined) ?? null,
+    googleUpdatedAt: (person.custom_fields?._google_updated_at as string | undefined) ?? null,
+  };
 }
 
 const TYPES: CustomFieldType[] = ['string', 'number', 'boolean', 'date'];
@@ -105,6 +118,7 @@ export function PersonForm({
   const [birthdate, setBirthdate] = useState(initial?.birthdate ?? '');
   const [phoneNumbers, setPhoneNumbers] = useState<string[]>(initial?.phone_numbers ?? []);
   const [drafts, setDrafts] = useState<DraftCustomField[]>(draftsFromPerson(initial));
+  const [syncMetadata] = useState<SyncMetadata>(syncMetadataFromPerson(initial));
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [fieldErrors, setFieldErrors] = useState<Record<number, string>>({});
 
@@ -143,7 +157,12 @@ export function PersonForm({
       birthdate: birthdate.trim(),
       middle_names: middleNames.map((s) => s.trim()).filter(Boolean),
       phone_numbers: phoneNumbers.map((s) => s.trim()).filter(Boolean),
-      custom_fields: fields,
+      custom_fields: {
+        ...fields,
+        ...(syncMetadata.googleResourceName ? { google_resource_name: syncMetadata.googleResourceName } : {}),
+        ...(syncMetadata.googleUpdatedAt ? { _google_updated_at: syncMetadata.googleUpdatedAt } : {}),
+      },
+      sync_metadata: syncMetadata,
     });
   };
 
@@ -260,6 +279,26 @@ export function PersonForm({
           Add custom field
         </button>
       </fieldset>
+
+      {(syncMetadata.googleResourceName || syncMetadata.googleUpdatedAt) && (
+        <fieldset className="sync-metadata" aria-label="sync metadata">
+          <legend>Sync metadata</legend>
+          <div className="sync-metadata-grid">
+            {syncMetadata.googleResourceName && (
+              <div>
+                <span className="sync-metadata-label">Google resource</span>
+                <code className="sync-metadata-value">{syncMetadata.googleResourceName}</code>
+              </div>
+            )}
+            {syncMetadata.googleUpdatedAt && (
+              <div>
+                <span className="sync-metadata-label">Google updated</span>
+                <code className="sync-metadata-value">{syncMetadata.googleUpdatedAt}</code>
+              </div>
+            )}
+          </div>
+        </fieldset>
+      )}
 
       <div className="actions">
         <button type="submit" disabled={submitting}>

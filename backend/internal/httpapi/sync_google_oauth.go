@@ -3,7 +3,9 @@ package httpapi
 import (
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -79,6 +81,10 @@ func (h *googleOAuthHandler) callback(w http.ResponseWriter, r *http.Request) {
 	refreshed, err := h.repo.GetByID(r.Context(), account.ID)
 	if err != nil {
 		writeJSON(w, http.StatusOK, account)
+		return
+	}
+	if wantsHTML(r) {
+		writeGoogleCallbackHTML(w, refreshed)
 		return
 	}
 	writeJSON(w, http.StatusOK, refreshed)
@@ -172,4 +178,53 @@ func secureStateEqual(expected, actual string) bool {
 func stringPtr(value string) *string {
 	v := value
 	return &v
+}
+
+func wantsHTML(r *http.Request) bool {
+	accept := r.Header.Get("Accept")
+	if accept == "" {
+		return true
+	}
+	return strings.Contains(accept, "text/html") && !strings.Contains(accept, "application/json")
+}
+
+func writeGoogleCallbackHTML(w http.ResponseWriter, account *contactsync.Account) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	payload, _ := json.Marshal(account)
+	_, _ = fmt.Fprintf(w, `<!doctype html>
+<html lang="en">
+<head>
+	<meta charset="utf-8" />
+	<meta name="viewport" content="width=device-width, initial-scale=1" />
+	<title>Google sync complete</title>
+	<style>
+		body { font-family: system-ui, -apple-system, Segoe UI, sans-serif; margin: 0; min-height: 100vh; display: grid; place-items: center; background: #f9fafb; color: #111827; }
+		main { max-width: 28rem; padding: 2rem; text-align: center; background: white; border: 1px solid #e5e7eb; border-radius: 1rem; box-shadow: 0 1rem 2.5rem rgba(15, 23, 42, 0.08); }
+		p { line-height: 1.5; color: #374151; }
+		.muted { color: #6b7280; font-size: 0.92rem; }
+		button { font: inherit; padding: 0.7rem 1rem; border: 0; border-radius: 0.6rem; background: #1e3a8a; color: white; cursor: pointer; }
+	</style>
+</head>
+<body>
+	<main>
+		<h1>Authorization complete</h1>
+		<p>You can close this window and return to the app.</p>
+		<p class="muted">If the app does not refresh automatically, click the button below.</p>
+		<button type="button" onclick="window.opener && window.opener.postMessage({type: 'google-sync-complete', account: %s}, window.location.origin); window.close();">Close window</button>
+	</main>
+	<script>
+		(function () {
+			try {
+				if (window.opener && !window.opener.closed) {
+					window.opener.postMessage({ type: 'google-sync-complete', account: %s }, window.location.origin);
+				}
+			} catch (e) {}
+			window.setTimeout(function () {
+				window.close();
+			}, 800);
+		}());
+	</script>
+</body>
+</html>`, payload, payload)
 }

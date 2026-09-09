@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -136,10 +137,17 @@ func TestGoogleOAuthCallbackUpsertAndSync(t *testing.T) {
 
 	cbReq := httptest.NewRequest(http.MethodGet, "/api/v1/sync/google/callback?state="+beginPayload.State+"&code=valid", nil)
 	cbReq.AddCookie(cookies[0])
+	cbReq.Header.Set("Accept", "text/html")
 	cbRec := httptest.NewRecorder()
 	h.ServeHTTP(cbRec, cbReq)
 	if cbRec.Code != http.StatusOK {
 		t.Fatalf("callback status = %d body=%s", cbRec.Code, cbRec.Body.String())
+	}
+	if got := cbRec.Header().Get("Content-Type"); got != "text/html; charset=utf-8" {
+		t.Fatalf("content type = %q, want text/html", got)
+	}
+	if body := cbRec.Body.String(); !strings.Contains(body, "Authorization complete") {
+		t.Fatalf("callback body missing completion message: %s", body)
 	}
 	if adapter.syncCalls != 1 {
 		t.Fatalf("sync calls = %d, want 1", adapter.syncCalls)
@@ -155,6 +163,37 @@ func TestGoogleOAuthCallbackUpsertAndSync(t *testing.T) {
 	}
 	if len(accounts.Data) != 1 || accounts.Data[0].Provider != "google" {
 		t.Fatalf("unexpected account list: %+v", accounts)
+	}
+}
+
+func TestGoogleOAuthCallbackReturnsJSONForApiClients(t *testing.T) {
+	adapter := &fakeGoogleAdapter{
+		authRequest: contactsync.AuthRequest{AuthorizationURL: "https://accounts.google.com/o/oauth2/v2/auth?state=abc", State: "abc"},
+		authSession: contactsync.AuthSession{
+			ProviderAccountID: "people/123",
+			AccessToken:       "access-token",
+			Scope:             "https://www.googleapis.com/auth/contacts",
+		},
+	}
+	h := testSyncGoogleRouter(adapter)
+
+	begin := doJSON(t, h, http.MethodGet, "/api/v1/sync/google/begin", nil)
+	var beginPayload googleBeginResponse
+	_ = json.Unmarshal(begin.Body.Bytes(), &beginPayload)
+	cookies := begin.Result().Cookies()
+	cbReq := httptest.NewRequest(http.MethodGet, "/api/v1/sync/google/callback?state="+beginPayload.State+"&code=valid", nil)
+	cbReq.AddCookie(cookies[0])
+	cbReq.Header.Set("Accept", "application/json")
+	cbRec := httptest.NewRecorder()
+	h.ServeHTTP(cbRec, cbReq)
+	if cbRec.Code != http.StatusOK {
+		t.Fatalf("callback status = %d body=%s", cbRec.Code, cbRec.Body.String())
+	}
+	if got := cbRec.Header().Get("Content-Type"); !strings.HasPrefix(got, "application/json") {
+		t.Fatalf("content type = %q, want application/json", got)
+	}
+	if !strings.Contains(cbRec.Body.String(), "people/123") {
+		t.Fatalf("expected JSON response body, got %s", cbRec.Body.String())
 	}
 }
 

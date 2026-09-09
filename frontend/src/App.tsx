@@ -10,12 +10,18 @@ import {
   permanentlyDeletePerson,
   restorePerson,
   updatePerson,
+  updateSyncAccount,
 } from './api';
 import type { Person, SyncAccount } from './types';
 import { PersonForm, type PersonFormValues } from './components/PersonForm';
 import { PersonList } from './components/PersonList';
 
 type View = { mode: 'list' } | { mode: 'create' } | { mode: 'edit'; person: Person };
+
+type SyncAccountDraft = {
+  sync_frequency_minutes: string;
+  status: string;
+};
 
 function getAppPathname() {
   return window.location.pathname.replace(/\/+$/, '') || '/';
@@ -63,10 +69,12 @@ export default function App() {
   const isPrivacyPage = getAppPathname() === '/privacy';
   const [persons, setPersons] = useState<Person[]>([]);
   const [syncAccounts, setSyncAccounts] = useState<SyncAccount[]>([]);
+  const [syncDrafts, setSyncDrafts] = useState<Record<string, SyncAccountDraft>>({});
   const [view, setView] = useState<View>({ mode: 'list' });
   const [loading, setLoading] = useState(false);
   const [syncLoading, setSyncLoading] = useState(false);
   const [syncConnecting, setSyncConnecting] = useState(false);
+  const [syncSavingId, setSyncSavingId] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [syncError, setSyncError] = useState<string | null>(null);
@@ -116,6 +124,17 @@ export default function App() {
     try {
       const res = await listSyncAccounts();
       setSyncAccounts(res.data);
+      setSyncDrafts(
+        Object.fromEntries(
+          res.data.map((account) => [
+            account.id,
+            {
+              sync_frequency_minutes: String(account.sync_frequency_minutes),
+              status: account.status,
+            },
+          ]),
+        ),
+      );
     } catch (err) {
       if (err instanceof ApiRequestError && err.status === 401) {
         setSyncAccounts([]);
@@ -178,6 +197,51 @@ export default function App() {
       setSyncError(err instanceof Error ? err.message : 'Failed to start Google sync');
     } finally {
       setSyncConnecting(false);
+    }
+  };
+
+  useEffect(() => {
+    const onMessage = (event: MessageEvent) => {
+      if (event.origin !== window.location.origin) return;
+      if (event.data?.type === 'google-sync-complete') {
+        void refreshSyncAccounts();
+      }
+    };
+    window.addEventListener('message', onMessage);
+    return () => window.removeEventListener('message', onMessage);
+  }, [refreshSyncAccounts]);
+
+  const updateSyncDraft = (id: string, patch: Partial<SyncAccountDraft>) => {
+    setSyncDrafts((prev) => ({
+      ...prev,
+      [id]: { ...prev[id], ...patch },
+    }));
+  };
+
+  const getSyncDraftState = (account: SyncAccount) => {
+    const draft = syncDrafts[account.id];
+    const frequency = Number(draft?.sync_frequency_minutes ?? account.sync_frequency_minutes);
+    const status = draft?.status ?? account.status;
+    const validFrequency = Number.isFinite(frequency) && Number.isInteger(frequency) && frequency >= 5;
+    const changed = frequency !== account.sync_frequency_minutes || status !== account.status;
+    return { draft, frequency, status, validFrequency, changed };
+  };
+
+  const saveSyncAccount = async (account: SyncAccount) => {
+    const { frequency, status, validFrequency, changed } = getSyncDraftState(account);
+    if (!changed || !validFrequency) return;
+    setSyncError(null);
+    setSyncSavingId(account.id);
+    try {
+      await updateSyncAccount(account.id, {
+        sync_frequency_minutes: frequency,
+        status,
+      });
+      await refreshSyncAccounts();
+    } catch (err) {
+      setSyncError(err instanceof Error ? err.message : 'Failed to update sync account');
+    } finally {
+      setSyncSavingId((prev) => (prev === account.id ? null : prev));
     }
   };
 
@@ -326,8 +390,11 @@ export default function App() {
           <p className="empty">No sync accounts configured yet.</p>
         ) : (
           <ul className="sync-account-list">
-            {syncAccounts.map((account) => (
-              <li key={account.id} className="sync-account-card">
+            {syncAccounts.map((account) => {
+              const state = getSyncDraftState(account);
+              const disabled = syncSavingId === account.id || !state.changed || !state.validFrequency;
+              return (
+                <li key={account.id} className="sync-account-card">
                 <div className="sync-account-head">
                   <strong>{account.provider}</strong>
                   <span className={`sync-status sync-status-${account.status}`}>
@@ -349,16 +416,55 @@ export default function App() {
                   </div>
                   <div>
                     <dt>Frequency</dt>
-                    <dd>Every {account.sync_frequency_minutes} min</dd>
+                    <dd>
+                      <label className="sync-inline-field">
+                        <span className="sr-only">Sync frequency minutes</span>
+                        <input
+                          type="number"
+                          min={5}
+                          step={1}
+                          value={syncDrafts[account.id]?.sync_frequency_minutes ?? account.sync_frequency_minutes}
+                          onChange={(e) =>
+                            updateSyncDraft(account.id, { sync_frequency_minutes: e.target.value })
+                          }
+                        />
+                      </label>
+                    </dd>
                   </div>
                   <div>
                     <dt>Cursor</dt>
                     <dd>{account.sync_cursor || '—'}</dd>
                   </div>
+                  <div>
+                    <dt>Status</dt>
+                    <dd>
+                      <label className="sync-inline-field">
+                        <span className="sr-only">Sync status</span>
+                        <select
+                          value={syncDrafts[account.id]?.status ?? account.status}
+                          onChange={(e) => updateSyncDraft(account.id, { status: e.target.value })}
+                        >
+                          <option value="connected">connected</option>
+                          <option value="reconnect_required">reconnect_required</option>
+                          <option value="error">error</option>
+                        </select>
+                      </label>
+                    </dd>
+                  </div>
                 </dl>
+                <div className="sync-account-actions">
+                  <button
+                    type="button"
+                    onClick={() => void saveSyncAccount(account)}
+                    disabled={disabled}
+                  >
+                    {syncSavingId === account.id ? 'Saving…' : 'Save changes'}
+                  </button>
+                </div>
                 {account.last_error && <p className="sync-account-error">{account.last_error}</p>}
-              </li>
-            ))}
+                </li>
+              );
+            })}
           </ul>
         )}
       </section>

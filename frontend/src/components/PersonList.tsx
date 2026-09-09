@@ -9,6 +9,8 @@ interface PersonListProps {
   onPermanentDelete?: (person: Person) => void;
 }
 
+const RESERVED_SYNC_FIELDS = new Set(['google_resource_name', '_google_updated_at', 'contacts_local_id']);
+
 export function PersonList({
   persons,
   onEdit,
@@ -34,9 +36,10 @@ export function PersonList({
             {(person.phone_numbers ?? []).length > 0 && (
               <span className="person-meta">{person.phone_numbers.join(' · ')}</span>
             )}
-            {Object.keys(person.custom_fields ?? {}).length > 0 && (
+            {Object.entries(person.custom_fields ?? {}).some(([key]) => !RESERVED_SYNC_FIELDS.has(key)) && (
               <span className="person-meta">
                 {Object.entries(person.custom_fields)
+                  .filter(([key]) => !RESERVED_SYNC_FIELDS.has(key))
                   .map(([k, v]) => `${k}: ${String(v)}`)
                   .join(' · ')}
               </span>
