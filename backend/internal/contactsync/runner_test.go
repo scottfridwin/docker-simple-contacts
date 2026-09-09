@@ -72,10 +72,14 @@ type fakeProcessor struct {
 	processed []string
 	calls     int
 	err       error
+	panics    bool
 }
 
 func (f *fakeProcessor) Process(_ context.Context, account Account, job Job) error {
 	f.calls++
+	if f.panics {
+		panic("simulated processor panic")
+	}
 	if f.err != nil {
 		return f.err
 	}
@@ -148,6 +152,51 @@ func TestRunnerRunDueAccountsReconcilesOnSchedule(t *testing.T) {
 }
 
 func timePtr(t time.Time) *time.Time { return &t }
+
+// TestRunDueAccountsSurvivesProcessorPanic guards against one account's
+// malformed data (e.g. an unexpected provider response deep in an adapter)
+// taking down reconciliation for every other due account in the same tick.
+func TestRunDueAccountsSurvivesProcessorPanic(t *testing.T) {
+	panicking := Account{ID: uuid.New(), Provider: "google", SyncFrequencyMinutes: 5}
+	fine := Account{ID: uuid.New(), Provider: "google", SyncFrequencyMinutes: 5}
+
+	proc := &fakeProcessor{panics: true}
+	runner := NewRunner(
+		&fakeAccountStore{due: []Account{panicking, fine}},
+		&fakeQueue{},
+		proc,
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+	)
+	runner.runDueAccounts(context.Background())
+
+	if proc.calls != 2 {
+		t.Fatalf("expected both accounts to be attempted despite the panic, got %d calls", proc.calls)
+	}
+}
+
+// TestRunLoopSurvivesProcessorPanic guards the same failure mode at the
+// RunLoop level: an unrecovered panic in a goroutine crashes the whole
+// process (unlike an HTTP handler panic, which net/http contains per
+// request), so background sync must never let one bad record kill the app.
+func TestRunLoopSurvivesProcessorPanic(t *testing.T) {
+	job := Job{ID: uuid.New(), Status: JobStatusPending}
+	proc := &fakeProcessor{panics: true}
+	runner := NewRunner(
+		&fakeAccountStore{accounts: []Account{{Provider: "google"}}},
+		&fakeQueue{jobs: []Job{job}},
+		proc,
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+	)
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Millisecond)
+	defer cancel()
+
+	if err := runner.RunLoop(ctx, 20*time.Millisecond); err != nil {
+		t.Fatalf("RunLoop returned error, want nil (loop must survive panics): %v", err)
+	}
+	if proc.calls < 2 {
+		t.Fatalf("expected the loop to keep ticking after a panic, got %d attempts", proc.calls)
+	}
+}
 
 // TestRunLoopSurvivesPersistentFailures guards a critical resilience bug:
 // RunLoop used to return (and its caller's goroutine would exit) the moment

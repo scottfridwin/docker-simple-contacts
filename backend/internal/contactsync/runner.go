@@ -76,16 +76,29 @@ func (r *Runner) RunLoop(ctx context.Context, interval time.Duration) error {
 	defer ticker.Stop()
 
 	for {
-		if _, err := r.RunOnce(ctx); err != nil && !errors.Is(err, context.Canceled) {
-			r.logger.Error("sync job processing failed", "error", err)
-		}
-		r.runDueAccounts(ctx)
+		r.tick(ctx)
 		select {
 		case <-ctx.Done():
 			return nil
 		case <-ticker.C:
 		}
 	}
+}
+
+// tick runs one iteration of job processing and due-account reconciliation,
+// recovering from any panic so this goroutine (and therefore the whole
+// process, since nothing else supervises it) never dies from an unexpected
+// panic deep in a provider adapter.
+func (r *Runner) tick(ctx context.Context) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			r.logger.Error("recovered from panic in sync loop", "panic", rec)
+		}
+	}()
+	if _, err := r.RunOnce(ctx); err != nil && !errors.Is(err, context.Canceled) {
+		r.logger.Error("sync job processing failed", "error", err)
+	}
+	r.runDueAccounts(ctx)
 }
 
 // runDueAccounts reconciles connected accounts whose configured sync
@@ -115,10 +128,22 @@ func (r *Runner) runDueAccounts(ctx context.Context) {
 			accountCtx = authn.WithUserID(ctx, *account.OwnerID)
 		}
 		r.logger.Info("reconciling due sync account", "account_id", account.ID, "provider", account.Provider)
-		if err := r.processor.Process(accountCtx, account, Job{}); err != nil {
+		if err := r.safeProcess(accountCtx, account, Job{}); err != nil {
 			r.logger.Error("periodic sync failed", "account_id", account.ID, "provider", account.Provider, "error", err)
 		}
 	}
+}
+
+// safeProcess invokes the processor, recovering from any panic and
+// converting it into a regular error. A single malformed record or
+// unexpected provider response must never crash the whole sync loop.
+func (r *Runner) safeProcess(ctx context.Context, account Account, job Job) (err error) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			err = fmt.Errorf("panic processing sync for account %s: %v", account.ID, rec)
+		}
+	}()
+	return r.processor.Process(ctx, account, job)
 }
 
 func (r *Runner) runJob(ctx context.Context, job Job) error {
@@ -137,7 +162,7 @@ func (r *Runner) runJob(ctx context.Context, job Job) error {
 		return nil
 	}
 	for _, account := range accounts {
-		if err := r.processor.Process(accountCtx, account, job); err != nil {
+		if err := r.safeProcess(accountCtx, account, job); err != nil {
 			if markErr := r.jobs.MarkFailed(accountCtx, job.ID, err.Error()); markErr != nil {
 				return fmt.Errorf("marking job %s failed: %w", job.ID, markErr)
 			}

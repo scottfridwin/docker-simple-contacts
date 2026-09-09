@@ -499,10 +499,14 @@ export default function App() {
       {error && (
         <div className="banner error" role="alert">
           {error}
-          {error === 'Authentication required' && (
+          {error === 'Authentication required' ? (
             <a href="/auth/login" className="login-link">
               Sign in with Authentik
             </a>
+          ) : (
+            <button type="button" className="ghost" onClick={() => void refresh()}>
+              Retry
+            </button>
           )}
         </div>
       )}
@@ -542,6 +546,9 @@ export default function App() {
         {syncError && (
           <div className="banner error" role="alert">
             {syncError}
+            <button type="button" className="ghost" onClick={() => void refreshSyncAccounts()}>
+              Retry
+            </button>
           </div>
         )}
         <div className="sync-drawer-actions">

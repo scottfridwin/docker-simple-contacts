@@ -74,15 +74,15 @@ func run() error {
 	logger := logging.New(cfg.LogLevel, cfg.IsProduction())
 	logger.Info("starting contacts server", "env", cfg.Env, "port", cfg.Port)
 
-	if err := db.Migrate(cfg.DatabaseURL()); err != nil {
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	if err := db.Migrate(ctx, cfg.DatabaseURL(), logger); err != nil {
 		return err
 	}
 	logger.Info("migrations applied")
 
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
-
-	pool, err := db.Connect(ctx, cfg.DatabaseURL())
+	pool, err := db.Connect(ctx, cfg.DatabaseURL(), logger)
 	if err != nil {
 		return err
 	}
@@ -127,7 +127,7 @@ func run() error {
 			ClientSecret: cfg.AuthentikSecret,
 			RedirectURL:  cfg.AuthentikRedirect,
 			SessionKey:   cfg.SessionSecret,
-		}, accountRepo)
+		}, accountRepo, logger)
 		if err != nil {
 			return err
 		}
@@ -182,6 +182,11 @@ func runPurgeLoop(ctx context.Context, logger *slog.Logger, svc *person.Service,
 	defer ticker.Stop()
 
 	purge := func() {
+		defer func() {
+			if rec := recover(); rec != nil {
+				logger.Error("recovered from panic in purge loop", "panic", rec)
+			}
+		}()
 		count, err := svc.PurgeExpired(ctx, window)
 		if err != nil {
 			logger.Error("purge failed", "error", err)
