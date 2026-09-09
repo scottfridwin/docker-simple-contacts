@@ -210,4 +210,32 @@ describe('App sync integration', () => {
       });
     });
   });
+
+  it('shows a live syncing indicator before the first background sync completes', async () => {
+    mocks.listSyncAccounts.mockResolvedValueOnce({
+      data: [
+        {
+          id: '1',
+          owner_id: null,
+          provider: 'google',
+          provider_account_id: 'people/abc',
+          access_token: null,
+          refresh_token: null,
+          expires_at: null,
+          scope: 'contacts',
+          sync_cursor: '',
+          sync_frequency_minutes: 5,
+          status: 'connected',
+          last_synced_at: null,
+          last_error: null,
+          created_at: '2026-09-08T11:00:00Z',
+          updated_at: '2026-09-08T11:00:00Z',
+        },
+      ],
+    });
+
+    render(<App />);
+
+    expect(await screen.findByText(/syncing/i)).toBeInTheDocument();
+  });
 });

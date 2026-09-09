@@ -230,6 +230,27 @@ export default function App() {
     return () => window.removeEventListener('message', onMessage);
   }, [isPrivacyPage, refreshSyncAccounts]);
 
+  // Poll for live sync status: fast while a first sync is still in flight,
+  // slower otherwise, so the panel updates itself like an app instead of
+  // requiring a manual page reload.
+  useEffect(() => {
+    if (isPrivacyPage || authenticationRequired) {
+      return;
+    }
+    const hasPendingSync = syncAccounts.some(
+      (account) =>
+        !account.last_synced_at &&
+        account.status !== 'reconnect_required' &&
+        account.status !== 'error',
+    );
+    const delay = hasPendingSync ? 3000 : 30000;
+    const id = window.setInterval(() => {
+      if (document.hidden) return;
+      void refreshSyncAccounts();
+    }, delay);
+    return () => window.clearInterval(id);
+  }, [authenticationRequired, isPrivacyPage, refreshSyncAccounts, syncAccounts]);
+
   if (isPrivacyPage) {
     return <PrivacyPolicyPage />;
   }
@@ -419,6 +440,10 @@ export default function App() {
               const state = getSyncDraftState(account);
               const disabled =
                 syncSavingId === account.id || !state.changed || !state.validFrequency;
+              const isSyncing =
+                !account.last_synced_at &&
+                account.status !== 'reconnect_required' &&
+                account.status !== 'error';
               return (
                 <li key={account.id} className="sync-account-card">
                   <div className="sync-account-head">
@@ -435,9 +460,16 @@ export default function App() {
                     <div>
                       <dt>Last sync</dt>
                       <dd>
-                        {account.last_synced_at
-                          ? new Date(account.last_synced_at).toLocaleString()
-                          : 'Never'}
+                        {isSyncing ? (
+                          <span className="sync-live-indicator">
+                            <span className="sync-live-dot" aria-hidden="true" />
+                            Syncing…
+                          </span>
+                        ) : account.last_synced_at ? (
+                          new Date(account.last_synced_at).toLocaleString()
+                        ) : (
+                          'Never'
+                        )}
                       </dd>
                     </div>
                     <div>
