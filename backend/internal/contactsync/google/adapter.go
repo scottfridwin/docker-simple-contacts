@@ -446,6 +446,15 @@ func (a *Adapter) exportLocal(ctx context.Context, accountID uuid.UUID, session 
 func (a *Adapter) mergeRemoteRecord(ctx context.Context, accountID uuid.UUID, session contactsync.AuthSession, remote contactsync.ProviderRecord) error {
 	remoteModel, localID := remoteToLocal(remote)
 	if localID == nil {
+		if remote.Record.Tombstone.Deleted {
+			// A tombstone for a contact we never linked (e.g. deleted before
+			// we ever saw it, or deleted by another client). There's nothing
+			// local to create or delete - creating one here would then try
+			// to push it back to Google using the already-deleted
+			// resourceName, which 404s ("Requested entity was not found")
+			// and aborts the whole sync run.
+			return nil
+		}
 		created, _, err := a.people.Create(contactsync.WithSyncOrigin(ctx), remoteModel)
 		if err != nil {
 			return fmt.Errorf("creating local person from google record %s: %w", remote.Record.ExternalID, err)
@@ -462,6 +471,11 @@ func (a *Adapter) mergeRemoteRecord(ctx context.Context, accountID uuid.UUID, se
 	if err != nil {
 		if !errors.Is(err, person.ErrNotFound) {
 			return fmt.Errorf("loading local person %s: %w", localID.String(), err)
+		}
+		if remote.Record.Tombstone.Deleted {
+			// The local person is already gone (soft/hard deleted) and the
+			// remote record is a tombstone too - nothing to reconcile.
+			return nil
 		}
 		created, _, createErr := a.people.Create(contactsync.WithSyncOrigin(ctx), remoteModel)
 		if createErr != nil {

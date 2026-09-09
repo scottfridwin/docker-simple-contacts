@@ -1,6 +1,7 @@
 package google
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -200,5 +201,60 @@ func TestToProviderRecordMapsNewContactFields(t *testing.T) {
 	}
 	if v := fieldString(fields, "birthdate"); v != "1989-04-19" {
 		t.Fatalf("birthdate = %q", v)
+	}
+}
+
+// stubPersonService fails the test if any mutating method is called, so it
+// can assert a code path is a pure no-op.
+type stubPersonService struct {
+	t *testing.T
+}
+
+func (s *stubPersonService) Get(context.Context, uuid.UUID) (*person.Person, error) {
+	s.t.Fatal("unexpected Get call")
+	return nil, nil
+}
+
+func (s *stubPersonService) Create(context.Context, person.CreateInput) (*person.Person, person.ValidationErrors, error) {
+	s.t.Fatal("unexpected Create call")
+	return nil, nil, nil
+}
+
+func (s *stubPersonService) Update(context.Context, uuid.UUID, person.UpdateInput) (*person.Person, person.ValidationErrors, error) {
+	s.t.Fatal("unexpected Update call")
+	return nil, nil, nil
+}
+
+func (s *stubPersonService) Delete(context.Context, uuid.UUID) error {
+	s.t.Fatal("unexpected Delete call")
+	return nil
+}
+
+func (s *stubPersonService) List(context.Context, person.ListParams) ([]person.Person, int, error) {
+	s.t.Fatal("unexpected List call")
+	return nil, 0, nil
+}
+
+// TestMergeRemoteRecordSkipsUnknownTombstone guards a real production
+// incident: a Google contact deleted before we ever linked it arrives as a
+// tombstone (Metadata.Deleted=true) with no local_id field, so remoteToLocal
+// returns a nil local id. The old code treated "no local id" as "brand new
+// contact" unconditionally, creating a local Person from the empty tombstone
+// and then pushing it back to Google using the already-deleted resourceName,
+// which 404s ("Requested entity was not found") and aborts the entire sync
+// run for the account (observed live: account flipped to
+// status=reconnect_required after every periodic sync).
+func TestMergeRemoteRecordSkipsUnknownTombstone(t *testing.T) {
+	adapter := &Adapter{people: &stubPersonService{t: t}}
+	remote := contactsync.ProviderRecord{
+		Record: contactsync.Record{
+			ExternalID: "people/c6126766398320782690",
+			Tombstone:  contactsync.Tombstone{Deleted: true},
+			Fields:     map[string]contactsync.FieldState{},
+		},
+	}
+
+	if err := adapter.mergeRemoteRecord(context.Background(), uuid.New(), contactsync.AuthSession{}, remote); err != nil {
+		t.Fatalf("mergeRemoteRecord: %v", err)
 	}
 }
