@@ -407,3 +407,41 @@ preserve expected behavior.
   `AccessToken`/`RefreshToken` are now `json:"-"` so OAuth tokens are never
   sent to the browser.
 
+## Post-implementation decision log (2026-09-10)
+
+### G) Expanded contact fields for real-world export fidelity
+Real Google/Outlook/vCard contact exports carry more structure than the v1
+Person model supported (a single string for phone numbers, no email, address,
+company, or notes fields at all). To let synced/imported contacts round-trip
+without data loss, the following first-class fields were added:
+
+- `emails`: array of labeled entries (`{label, value}`), max 10, each value a
+  valid email address ≤ 254 chars, label ≤ 50 chars. Mirrors the existing
+  phone number policy shape.
+- `phone_numbers`: **breaking change** — upgraded from a plain string array to
+  the same labeled-entry shape as emails (`{label, value}`), so a number's
+  type (mobile/home/work) survives round-trips through Google. Existing plain
+  strings are migrated to `{label: '', value: <string>}` in
+  `000008_add_contact_fields.up.sql`.
+- `addresses`: array of structured entries (`{label, street, city, region,
+  postal_code, country}`), max 10 entries, each string field ≤ 255 chars.
+- `organization`: a single optional `{name, title, department}` object (not a
+  list — Google supports multiple organizations per contact, but v1 only
+  keeps the first one to match the "one current job" mental model most users
+  have).
+- `notes`: a single optional free-text field, ≤ 4096 chars.
+
+Explicitly deferred (not implemented, revisit only with a new design
+decision): contact relations (e.g. spouse/child), non-birthday events (e.g.
+anniversary), Google-only contact group/label sync, name prefix/suffix,
+phonetic names.
+
+Also fixed as part of this work: `nickname` and `birthdate` already existed on
+the Person model but were never mapped to/from Google's People API
+(`nicknames` and `birthdays` fields respectively) — this was a pre-existing
+gap, not a new field, so it's now wired up alongside the fields above since
+both appear in real contact exports.
+
+Storage: `emails`, `phone_numbers`, and `addresses` are `JSONB NOT NULL
+DEFAULT '[]'`; `organization` is nullable `JSONB`; `notes` is nullable `TEXT`.
+

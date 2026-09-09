@@ -620,6 +620,32 @@ input[type='number'] {
   flex: 1;
 }
 
+.labeled-field-label {
+  flex: 0 0 30%;
+  max-width: 8rem;
+}
+
+.address-field-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+  margin-bottom: 0.5rem;
+  padding-bottom: 0.5rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.address-field-row input {
+  flex: 1 1 8rem;
+  min-width: 0;
+}
+
+.organization-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
 .btn-icon {
   padding: 0;
   width: 2rem;

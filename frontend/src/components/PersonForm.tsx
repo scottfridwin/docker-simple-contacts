@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import type { CustomFieldType, Person, SyncMetadata } from '../types';
+import type { Address, CustomFieldType, LabeledValue, Person, SyncMetadata } from '../types';
 import {
   buildCustomFields,
   inferType,
@@ -14,7 +14,11 @@ export interface PersonFormValues {
   nickname: string;
   pronouns: string;
   birthdate: string;
-  phone_numbers: string[];
+  emails: LabeledValue[];
+  phone_numbers: LabeledValue[];
+  addresses: Address[];
+  organization: { name: string; title: string; department: string };
+  notes: string;
   custom_fields: Record<string, string | number | boolean>;
   sync_metadata?: SyncMetadata;
 }
@@ -107,6 +111,146 @@ function StringListField({
   );
 }
 
+function LabeledListField({
+  label,
+  values,
+  onChange,
+  maxItems,
+  inputType = 'text',
+}: {
+  label: string;
+  values: LabeledValue[];
+  onChange: (values: LabeledValue[]) => void;
+  maxItems?: number;
+  inputType?: string;
+}) {
+  const update = (i: number, patch: Partial<LabeledValue>) =>
+    onChange(values.map((v, j) => (j === i ? { ...v, ...patch } : v)));
+  const remove = (i: number) => onChange(values.filter((_, j) => j !== i));
+  const add = () => onChange([...values, { label: '', value: '' }]);
+  const canAdd = maxItems === undefined || values.length < maxItems;
+
+  return (
+    <div className="array-field">
+      <span className="array-field-label">{label}</span>
+      {values.map((v, i) => (
+        <div className="array-field-row" key={i}>
+          <input
+            aria-label={`${label} ${i + 1} label`}
+            placeholder="label"
+            className="labeled-field-label"
+            value={v.label}
+            onChange={(e) => update(i, { label: e.target.value })}
+          />
+          <input
+            aria-label={`${label} ${i + 1}`}
+            type={inputType}
+            value={v.value}
+            onChange={(e) => update(i, { value: e.target.value })}
+          />
+          <button
+            type="button"
+            className="btn-icon btn-remove"
+            onClick={() => remove(i)}
+            aria-label={`remove ${label} ${i + 1}`}
+          >
+            ✕
+          </button>
+        </div>
+      ))}
+      {canAdd && (
+        <button
+          type="button"
+          className="btn-icon btn-add"
+          onClick={add}
+          aria-label={`add ${label}`}
+        >
+          +
+        </button>
+      )}
+    </div>
+  );
+}
+
+function AddressListField({
+  values,
+  onChange,
+  maxItems,
+}: {
+  values: Address[];
+  onChange: (values: Address[]) => void;
+  maxItems?: number;
+}) {
+  const update = (i: number, patch: Partial<Address>) =>
+    onChange(values.map((v, j) => (j === i ? { ...v, ...patch } : v)));
+  const remove = (i: number) => onChange(values.filter((_, j) => j !== i));
+  const add = () =>
+    onChange([
+      ...values,
+      { label: '', street: '', city: '', region: '', postal_code: '', country: '' },
+    ]);
+  const canAdd = maxItems === undefined || values.length < maxItems;
+
+  return (
+    <div className="array-field">
+      <span className="array-field-label">Addresses</span>
+      {values.map((v, i) => (
+        <div className="address-field-row" key={i}>
+          <input
+            aria-label={`address ${i + 1} label`}
+            placeholder="label"
+            value={v.label ?? ''}
+            onChange={(e) => update(i, { label: e.target.value })}
+          />
+          <input
+            aria-label={`address ${i + 1} street`}
+            placeholder="street"
+            value={v.street ?? ''}
+            onChange={(e) => update(i, { street: e.target.value })}
+          />
+          <input
+            aria-label={`address ${i + 1} city`}
+            placeholder="city"
+            value={v.city ?? ''}
+            onChange={(e) => update(i, { city: e.target.value })}
+          />
+          <input
+            aria-label={`address ${i + 1} region`}
+            placeholder="region"
+            value={v.region ?? ''}
+            onChange={(e) => update(i, { region: e.target.value })}
+          />
+          <input
+            aria-label={`address ${i + 1} postal code`}
+            placeholder="postal code"
+            value={v.postal_code ?? ''}
+            onChange={(e) => update(i, { postal_code: e.target.value })}
+          />
+          <input
+            aria-label={`address ${i + 1} country`}
+            placeholder="country"
+            value={v.country ?? ''}
+            onChange={(e) => update(i, { country: e.target.value })}
+          />
+          <button
+            type="button"
+            className="btn-icon btn-remove"
+            onClick={() => remove(i)}
+            aria-label={`remove address ${i + 1}`}
+          >
+            ✕
+          </button>
+        </div>
+      ))}
+      {canAdd && (
+        <button type="button" className="btn-icon btn-add" onClick={add} aria-label="add address">
+          +
+        </button>
+      )}
+    </div>
+  );
+}
+
 export function PersonForm({
   initial,
   submitting,
@@ -120,7 +264,13 @@ export function PersonForm({
   const [nickname, setNickname] = useState(initial?.nickname ?? '');
   const [pronouns, setPronouns] = useState(initial?.pronouns ?? '');
   const [birthdate, setBirthdate] = useState(initial?.birthdate ?? '');
-  const [phoneNumbers, setPhoneNumbers] = useState<string[]>(initial?.phone_numbers ?? []);
+  const [emails, setEmails] = useState<LabeledValue[]>(initial?.emails ?? []);
+  const [phoneNumbers, setPhoneNumbers] = useState<LabeledValue[]>(initial?.phone_numbers ?? []);
+  const [addresses, setAddresses] = useState<Address[]>(initial?.addresses ?? []);
+  const [orgName, setOrgName] = useState(initial?.organization?.name ?? '');
+  const [orgTitle, setOrgTitle] = useState(initial?.organization?.title ?? '');
+  const [orgDepartment, setOrgDepartment] = useState(initial?.organization?.department ?? '');
+  const [notes, setNotes] = useState(initial?.notes ?? '');
   const [drafts, setDrafts] = useState<DraftCustomField[]>(draftsFromPerson(initial));
   const [syncMetadata] = useState<SyncMetadata>(syncMetadataFromPerson(initial));
   const [errors, setErrors] = useState<Record<string, string>>({});
@@ -160,7 +310,28 @@ export function PersonForm({
       pronouns: pronouns.trim(),
       birthdate: birthdate.trim(),
       middle_names: middleNames.map((s) => s.trim()).filter(Boolean),
-      phone_numbers: phoneNumbers.map((s) => s.trim()).filter(Boolean),
+      emails: emails
+        .map((e) => ({ label: e.label.trim(), value: e.value.trim() }))
+        .filter((e) => e.value),
+      phone_numbers: phoneNumbers
+        .map((p) => ({ label: p.label.trim(), value: p.value.trim() }))
+        .filter((p) => p.value),
+      addresses: addresses
+        .map((a) => ({
+          label: a.label?.trim() ?? '',
+          street: a.street?.trim() ?? '',
+          city: a.city?.trim() ?? '',
+          region: a.region?.trim() ?? '',
+          postal_code: a.postal_code?.trim() ?? '',
+          country: a.country?.trim() ?? '',
+        }))
+        .filter((a) => a.street || a.city || a.region || a.postal_code || a.country),
+      organization: {
+        name: orgName.trim(),
+        title: orgTitle.trim(),
+        department: orgDepartment.trim(),
+      },
+      notes: notes.trim(),
       custom_fields: {
         ...fields,
         ...(syncMetadata.googleResourceName
@@ -228,12 +399,41 @@ export function PersonForm({
         {combinedErrors.birthdate && <span className="error">{combinedErrors.birthdate}</span>}
       </div>
 
-      <StringListField
+      <LabeledListField label="Emails" values={emails} onChange={setEmails} maxItems={10} />
+
+      <LabeledListField
         label="Phone numbers"
         values={phoneNumbers}
         onChange={setPhoneNumbers}
         maxItems={10}
       />
+
+      <AddressListField values={addresses} onChange={setAddresses} maxItems={10} />
+
+      <fieldset className="organization-field">
+        <legend>Organization</legend>
+        <div className="field">
+          <label htmlFor="org_name">Company</label>
+          <input id="org_name" value={orgName} onChange={(e) => setOrgName(e.target.value)} />
+        </div>
+        <div className="field">
+          <label htmlFor="org_title">Title</label>
+          <input id="org_title" value={orgTitle} onChange={(e) => setOrgTitle(e.target.value)} />
+        </div>
+        <div className="field">
+          <label htmlFor="org_department">Department</label>
+          <input
+            id="org_department"
+            value={orgDepartment}
+            onChange={(e) => setOrgDepartment(e.target.value)}
+          />
+        </div>
+      </fieldset>
+
+      <div className="field">
+        <label htmlFor="notes">Notes</label>
+        <textarea id="notes" value={notes} onChange={(e) => setNotes(e.target.value)} rows={4} />
+      </div>
 
       <fieldset className="custom-fields">
         <legend>Custom fields</legend>

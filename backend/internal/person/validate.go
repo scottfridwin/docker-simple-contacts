@@ -6,20 +6,30 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/scottfridlund/contacts/backend/internal/contactsync"
 )
 
 // Custom field policy constants (from implementation decisions).
 const (
-	MaxCustomFields      = 64
-	MaxKeyLength         = 64
-	MaxStringValueLength = 1024
-	MaxNameLength        = 255
-	MaxMiddleNames       = 16
-	MaxPhoneNumbers      = 10
-	MaxPhoneNumberLength = 50
+	MaxCustomFields       = 64
+	MaxKeyLength          = 64
+	MaxStringValueLength  = 1024
+	MaxNameLength         = 255
+	MaxMiddleNames        = 16
+	MaxPhoneNumbers       = 10
+	MaxPhoneNumberLength  = 50
+	MaxEmails             = 10
+	MaxEmailLength        = 254
+	MaxLabelLength        = 50
+	MaxAddresses          = 10
+	MaxAddressFieldLength = 255
+	MaxOrgFieldLength     = 255
+	MaxNotesLength        = 4096
 )
 
 var snakeCaseKey = regexp.MustCompile(`^[a-z][a-z0-9]*(_[a-z0-9]+)*$`)
+var emailPattern = regexp.MustCompile(`^[^\s@]+@[^\s@]+\.[^\s@]+$`)
 
 // ValidationError describes a single field-level validation failure.
 type ValidationError struct {
@@ -58,6 +68,14 @@ func ValidateCreate(in CreateInput) ValidationErrors {
 	}
 	errs = append(errs, ValidateCustomFields(in.CustomFields)...)
 	errs = append(errs, validatePhoneNumbers(in.PhoneNumbers)...)
+	errs = append(errs, validateEmails(in.Emails)...)
+	errs = append(errs, validateAddresses(in.Addresses)...)
+	if in.Organization != nil {
+		errs = append(errs, validateOrganization(*in.Organization)...)
+	}
+	if in.Notes != nil {
+		errs = append(errs, validateNotes(*in.Notes)...)
+	}
 	return errs
 }
 
@@ -84,6 +102,18 @@ func ValidateUpdate(in UpdateInput) ValidationErrors {
 	}
 	if in.PhoneNumbersSet && in.PhoneNumbers != nil {
 		errs = append(errs, validatePhoneNumbers(*in.PhoneNumbers)...)
+	}
+	if in.EmailsSet && in.Emails != nil {
+		errs = append(errs, validateEmails(*in.Emails)...)
+	}
+	if in.AddressesSet && in.Addresses != nil {
+		errs = append(errs, validateAddresses(*in.Addresses)...)
+	}
+	if in.OrganizationSet && in.Organization != nil {
+		errs = append(errs, validateOrganization(*in.Organization)...)
+	}
+	if in.NotesSet && in.Notes != nil {
+		errs = append(errs, validateNotes(*in.Notes)...)
 	}
 	if in.CustomFieldsSet {
 		errs = append(errs, ValidateCustomFields(in.CustomFields)...)
@@ -116,21 +146,91 @@ func validateBirthdate(value string) ValidationErrors {
 	return nil
 }
 
-func validatePhoneNumbers(numbers []string) ValidationErrors {
+func validatePhoneNumbers(numbers []contactsync.LabeledValue) ValidationErrors {
 	if len(numbers) > MaxPhoneNumbers {
 		return ValidationErrors{{Field: "phone_numbers", Message: fmt.Sprintf("must contain at most %d entries", MaxPhoneNumbers)}}
 	}
 	var errs ValidationErrors
 	for i, n := range numbers {
-		if strings.TrimSpace(n) == "" {
-			errs = append(errs, ValidationError{Field: fmt.Sprintf("phone_numbers[%d]", i), Message: "must not be empty"})
+		if strings.TrimSpace(n.Value) == "" {
+			errs = append(errs, ValidationError{Field: fmt.Sprintf("phone_numbers[%d].value", i), Message: "must not be empty"})
 			continue
 		}
-		if len(n) > MaxPhoneNumberLength {
-			errs = append(errs, ValidationError{Field: fmt.Sprintf("phone_numbers[%d]", i), Message: fmt.Sprintf("must be at most %d characters", MaxPhoneNumberLength)})
+		if len(n.Value) > MaxPhoneNumberLength {
+			errs = append(errs, ValidationError{Field: fmt.Sprintf("phone_numbers[%d].value", i), Message: fmt.Sprintf("must be at most %d characters", MaxPhoneNumberLength)})
+		}
+		if len(n.Label) > MaxLabelLength {
+			errs = append(errs, ValidationError{Field: fmt.Sprintf("phone_numbers[%d].label", i), Message: fmt.Sprintf("must be at most %d characters", MaxLabelLength)})
 		}
 	}
 	return errs
+}
+
+func validateEmails(emails []contactsync.LabeledValue) ValidationErrors {
+	if len(emails) > MaxEmails {
+		return ValidationErrors{{Field: "emails", Message: fmt.Sprintf("must contain at most %d entries", MaxEmails)}}
+	}
+	var errs ValidationErrors
+	for i, e := range emails {
+		value := strings.TrimSpace(e.Value)
+		if value == "" {
+			errs = append(errs, ValidationError{Field: fmt.Sprintf("emails[%d].value", i), Message: "must not be empty"})
+			continue
+		}
+		if len(value) > MaxEmailLength {
+			errs = append(errs, ValidationError{Field: fmt.Sprintf("emails[%d].value", i), Message: fmt.Sprintf("must be at most %d characters", MaxEmailLength)})
+		} else if !emailPattern.MatchString(value) {
+			errs = append(errs, ValidationError{Field: fmt.Sprintf("emails[%d].value", i), Message: "must be a valid email address"})
+		}
+		if len(e.Label) > MaxLabelLength {
+			errs = append(errs, ValidationError{Field: fmt.Sprintf("emails[%d].label", i), Message: fmt.Sprintf("must be at most %d characters", MaxLabelLength)})
+		}
+	}
+	return errs
+}
+
+func validateAddresses(addresses []contactsync.Address) ValidationErrors {
+	if len(addresses) > MaxAddresses {
+		return ValidationErrors{{Field: "addresses", Message: fmt.Sprintf("must contain at most %d entries", MaxAddresses)}}
+	}
+	var errs ValidationErrors
+	for i, a := range addresses {
+		if strings.TrimSpace(a.Street) == "" && strings.TrimSpace(a.City) == "" &&
+			strings.TrimSpace(a.Region) == "" && strings.TrimSpace(a.PostalCode) == "" && strings.TrimSpace(a.Country) == "" {
+			errs = append(errs, ValidationError{Field: fmt.Sprintf("addresses[%d]", i), Message: "must have at least one address field set"})
+			continue
+		}
+		for field, value := range map[string]string{
+			"label": a.Label, "street": a.Street, "city": a.City,
+			"region": a.Region, "postal_code": a.PostalCode, "country": a.Country,
+		} {
+			max := MaxAddressFieldLength
+			if field == "label" {
+				max = MaxLabelLength
+			}
+			if len(value) > max {
+				errs = append(errs, ValidationError{Field: fmt.Sprintf("addresses[%d].%s", i, field), Message: fmt.Sprintf("must be at most %d characters", max)})
+			}
+		}
+	}
+	return errs
+}
+
+func validateOrganization(org contactsync.Organization) ValidationErrors {
+	var errs ValidationErrors
+	for field, value := range map[string]string{"name": org.Name, "title": org.Title, "department": org.Department} {
+		if len(value) > MaxOrgFieldLength {
+			errs = append(errs, ValidationError{Field: "organization." + field, Message: fmt.Sprintf("must be at most %d characters", MaxOrgFieldLength)})
+		}
+	}
+	return errs
+}
+
+func validateNotes(notes string) ValidationErrors {
+	if len(notes) > MaxNotesLength {
+		return ValidationErrors{{Field: "notes", Message: fmt.Sprintf("must be at most %d characters", MaxNotesLength)}}
+	}
+	return nil
 }
 
 func validateMiddleNames(names []string) ValidationErrors {

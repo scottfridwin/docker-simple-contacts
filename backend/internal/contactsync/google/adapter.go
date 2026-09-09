@@ -232,8 +232,7 @@ func (a *Adapter) RefreshAuthorization(ctx context.Context, session contactsync.
 // ListChanges lists incremental remote updates since the previous sync token.
 func (a *Adapter) ListChanges(ctx context.Context, session contactsync.AuthSession, cursor string) (contactsync.ChangePage, error) {
 	values := url.Values{}
-	values.Set("personFields", "names,phoneNumbers,metadata,userDefined")
-	values.Set("pageSize", "200")
+	values.Set("personFields", googlePersonFields)
 	values.Set("requestSyncToken", "true")
 	if cursor != "" {
 		values.Set("syncToken", cursor)
@@ -285,7 +284,7 @@ func (a *Adapter) UpsertRecord(ctx context.Context, session contactsync.AuthSess
 	}
 	payload := toGooglePerson(record, current.ETag)
 	values := url.Values{}
-	values.Set("updatePersonFields", "names,phoneNumbers,userDefined")
+	values.Set("updatePersonFields", googleUpdatePersonFields)
 	var updated googlePerson
 	if err := a.patchJSON(ctx, session.AccessToken, "/"+record.ExternalID+":updateContact?"+values.Encode(), payload, &updated); err != nil {
 		return contactsync.ProviderRecord{}, err
@@ -507,6 +506,14 @@ func (a *Adapter) mergeRemoteRecord(ctx context.Context, accountID uuid.UUID, se
 			LastNameSet:     true,
 			PhoneNumbers:    &remoteModel.PhoneNumbers,
 			PhoneNumbersSet: true,
+			Emails:          &remoteModel.Emails,
+			EmailsSet:       true,
+			Addresses:       &remoteModel.Addresses,
+			AddressesSet:    true,
+			Organization:    remoteModel.Organization,
+			OrganizationSet: true,
+			Notes:           remoteModel.Notes,
+			NotesSet:        true,
 		}
 		if _, _, err := a.people.Update(contactsync.WithSyncOrigin(ctx), local.ID, update); err != nil {
 			return fmt.Errorf("updating local person %s: %w", local.ID.String(), err)
@@ -584,7 +591,21 @@ func snapshotToRecord(snapshot contactsync.PersonSnapshot) contactsync.Record {
 	record.Fields["first_name"] = contactsync.FieldState{IsSet: true, Value: snapshot.FirstName, UpdatedAt: snapshot.UpdatedAt}
 	record.Fields["middle_names"] = contactsync.FieldState{IsSet: true, Value: append([]string(nil), snapshot.MiddleNames...), UpdatedAt: snapshot.UpdatedAt}
 	record.Fields["last_name"] = contactsync.FieldState{IsSet: true, Value: snapshot.LastName, UpdatedAt: snapshot.UpdatedAt}
-	record.Fields["phone_numbers"] = contactsync.FieldState{IsSet: true, Value: append([]string(nil), snapshot.PhoneNumbers...), UpdatedAt: snapshot.UpdatedAt}
+	record.Fields["phone_numbers"] = contactsync.FieldState{IsSet: true, Value: append([]contactsync.LabeledValue(nil), snapshot.PhoneNumbers...), UpdatedAt: snapshot.UpdatedAt}
+	record.Fields["emails"] = contactsync.FieldState{IsSet: true, Value: append([]contactsync.LabeledValue(nil), snapshot.Emails...), UpdatedAt: snapshot.UpdatedAt}
+	record.Fields["addresses"] = contactsync.FieldState{IsSet: true, Value: append([]contactsync.Address(nil), snapshot.Addresses...), UpdatedAt: snapshot.UpdatedAt}
+	if snapshot.Organization != nil {
+		record.Fields["organization"] = contactsync.FieldState{IsSet: true, Value: snapshot.Organization, UpdatedAt: snapshot.UpdatedAt}
+	}
+	if snapshot.Notes != nil {
+		record.Fields["notes"] = contactsync.FieldState{IsSet: true, Value: *snapshot.Notes, UpdatedAt: snapshot.UpdatedAt}
+	}
+	if snapshot.Nickname != nil {
+		record.Fields["nickname"] = contactsync.FieldState{IsSet: true, Value: *snapshot.Nickname, UpdatedAt: snapshot.UpdatedAt}
+	}
+	if snapshot.Birthdate != nil {
+		record.Fields["birthdate"] = contactsync.FieldState{IsSet: true, Value: *snapshot.Birthdate, UpdatedAt: snapshot.UpdatedAt}
+	}
 	if snapshot.ID != uuid.Nil {
 		record.Fields["local_id"] = contactsync.FieldState{IsSet: true, Value: snapshot.ID.String(), UpdatedAt: snapshot.UpdatedAt}
 	}
@@ -602,9 +623,23 @@ func personToRecord(p person.Person, externalID string) contactsync.Record {
 			"first_name":    {IsSet: true, Value: p.FirstName, UpdatedAt: p.UpdatedAt},
 			"middle_names":  {IsSet: true, Value: append([]string(nil), p.MiddleNames...), UpdatedAt: p.UpdatedAt},
 			"last_name":     {IsSet: true, Value: p.LastName, UpdatedAt: p.UpdatedAt},
-			"phone_numbers": {IsSet: true, Value: append([]string(nil), p.PhoneNumbers...), UpdatedAt: p.UpdatedAt},
+			"phone_numbers": {IsSet: true, Value: append([]contactsync.LabeledValue(nil), p.PhoneNumbers...), UpdatedAt: p.UpdatedAt},
+			"emails":        {IsSet: true, Value: append([]contactsync.LabeledValue(nil), p.Emails...), UpdatedAt: p.UpdatedAt},
+			"addresses":     {IsSet: true, Value: append([]contactsync.Address(nil), p.Addresses...), UpdatedAt: p.UpdatedAt},
 			"local_id":      {IsSet: true, Value: p.ID.String(), UpdatedAt: p.UpdatedAt},
 		},
+	}
+	if p.Organization != nil {
+		record.Fields["organization"] = contactsync.FieldState{IsSet: true, Value: p.Organization, UpdatedAt: p.UpdatedAt}
+	}
+	if p.Notes != nil {
+		record.Fields["notes"] = contactsync.FieldState{IsSet: true, Value: *p.Notes, UpdatedAt: p.UpdatedAt}
+	}
+	if p.Nickname != nil {
+		record.Fields["nickname"] = contactsync.FieldState{IsSet: true, Value: *p.Nickname, UpdatedAt: p.UpdatedAt}
+	}
+	if p.Birthdate != nil {
+		record.Fields["birthdate"] = contactsync.FieldState{IsSet: true, Value: *p.Birthdate, UpdatedAt: p.UpdatedAt}
 	}
 	return record
 }
@@ -613,7 +648,9 @@ func remoteToLocal(record contactsync.ProviderRecord) (person.CreateInput, *uuid
 	firstName := fieldString(record.Record.Fields, "first_name")
 	middleNames := fieldStrings(record.Record.Fields, "middle_names")
 	lastName := fieldString(record.Record.Fields, "last_name")
-	phoneNumbers := fieldStrings(record.Record.Fields, "phone_numbers")
+	phoneNumbers := fieldLabeledValues(record.Record.Fields, "phone_numbers")
+	emails := fieldLabeledValues(record.Record.Fields, "emails")
+	addresses := fieldAddresses(record.Record.Fields, "addresses")
 	if firstName == "" {
 		firstName = "Unknown"
 	}
@@ -624,7 +661,19 @@ func remoteToLocal(record contactsync.ProviderRecord) (person.CreateInput, *uuid
 		FirstName:    firstName,
 		MiddleNames:  middleNames,
 		LastName:     lastName,
-		PhoneNumbers: normalizePhones(phoneNumbers),
+		PhoneNumbers: normalizeLabeledValues(phoneNumbers, 10, 50),
+		Emails:       normalizeLabeledValues(emails, 10, 254),
+		Addresses:    addresses,
+		Organization: fieldOrganization(record.Record.Fields, "organization"),
+	}
+	if notes := fieldString(record.Record.Fields, "notes"); notes != "" {
+		create.Notes = &notes
+	}
+	if nickname := fieldString(record.Record.Fields, "nickname"); nickname != "" {
+		create.Nickname = &nickname
+	}
+	if birthdate := fieldString(record.Record.Fields, "birthdate"); birthdate != "" {
+		create.Birthdate = &birthdate
 	}
 	localIDRaw := fieldString(record.Record.Fields, "local_id")
 	if localIDRaw == "" {
@@ -654,26 +703,13 @@ func stringPtr(v string) *string {
 	return &s
 }
 
-func normalizePhones(values []string) []string {
-	if len(values) > 10 {
-		values = values[:10]
-	}
-	out := make([]string, 0, len(values))
-	for _, value := range values {
-		trimmed := strings.TrimSpace(value)
-		if trimmed == "" {
-			continue
-		}
-		if len(trimmed) > 50 {
-			trimmed = trimmed[:50]
-		}
-		out = append(out, trimmed)
-	}
-	if out == nil {
-		return []string{}
-	}
-	return out
-}
+// googlePersonFields and googleUpdatePersonFields list the People API field
+// masks we read and write, respectively. Keep these in sync with the mapping
+// logic in toProviderRecord/toGooglePerson below.
+const (
+	googlePersonFields       = "names,nicknames,emailAddresses,phoneNumbers,addresses,organizations,biographies,birthdays,metadata,userDefined"
+	googleUpdatePersonFields = "names,nicknames,emailAddresses,phoneNumbers,addresses,organizations,biographies,birthdays,userDefined"
+)
 
 func fieldString(fields map[string]contactsync.FieldState, key string) string {
 	field, ok := fields[key]
@@ -710,6 +746,77 @@ func fieldStrings(fields map[string]contactsync.FieldState, key string) []string
 	}
 }
 
+// fieldLabeledValues returns a defensive copy of a []contactsync.LabeledValue
+// field (e.g. emails or phone_numbers), or an empty (never nil) slice.
+func fieldLabeledValues(fields map[string]contactsync.FieldState, key string) []contactsync.LabeledValue {
+	field, ok := fields[key]
+	if !ok || !field.IsSet || field.Value == nil {
+		return []contactsync.LabeledValue{}
+	}
+	values, ok := field.Value.([]contactsync.LabeledValue)
+	if !ok {
+		return []contactsync.LabeledValue{}
+	}
+	out := make([]contactsync.LabeledValue, len(values))
+	copy(out, values)
+	return out
+}
+
+// fieldAddresses returns a defensive copy of a []contactsync.Address field, or
+// an empty (never nil) slice.
+func fieldAddresses(fields map[string]contactsync.FieldState, key string) []contactsync.Address {
+	field, ok := fields[key]
+	if !ok || !field.IsSet || field.Value == nil {
+		return []contactsync.Address{}
+	}
+	values, ok := field.Value.([]contactsync.Address)
+	if !ok {
+		return []contactsync.Address{}
+	}
+	out := make([]contactsync.Address, len(values))
+	copy(out, values)
+	return out
+}
+
+// fieldOrganization returns the *contactsync.Organization stored in a field,
+// or nil if unset.
+func fieldOrganization(fields map[string]contactsync.FieldState, key string) *contactsync.Organization {
+	field, ok := fields[key]
+	if !ok || !field.IsSet || field.Value == nil {
+		return nil
+	}
+	org, ok := field.Value.(*contactsync.Organization)
+	if !ok {
+		return nil
+	}
+	return org
+}
+
+// normalizeLabeledValues trims/truncates and drops empty-valued entries from
+// a slice of labeled values (emails, phone numbers), enforcing count and
+// length caps. It never returns nil.
+func normalizeLabeledValues(values []contactsync.LabeledValue, maxCount, maxValueLen int) []contactsync.LabeledValue {
+	if len(values) > maxCount {
+		values = values[:maxCount]
+	}
+	out := make([]contactsync.LabeledValue, 0, len(values))
+	for _, v := range values {
+		value := strings.TrimSpace(v.Value)
+		if value == "" {
+			continue
+		}
+		if len(value) > maxValueLen {
+			value = value[:maxValueLen]
+		}
+		label := strings.TrimSpace(v.Label)
+		if len(label) > 50 {
+			label = label[:50]
+		}
+		out = append(out, contactsync.LabeledValue{Label: label, Value: value})
+	}
+	return out
+}
+
 type googleConnectionsResponse struct {
 	Connections   []googlePerson `json:"connections"`
 	NextPageToken string         `json:"nextPageToken"`
@@ -717,12 +824,18 @@ type googleConnectionsResponse struct {
 }
 
 type googlePerson struct {
-	ResourceName string              `json:"resourceName"`
-	ETag         string              `json:"etag"`
-	Metadata     googleMetadata      `json:"metadata"`
-	Names        []googleName        `json:"names"`
-	PhoneNumbers []googlePhoneNumber `json:"phoneNumbers"`
-	UserDefined  []googleUserDefined `json:"userDefined"`
+	ResourceName   string               `json:"resourceName"`
+	ETag           string               `json:"etag"`
+	Metadata       googleMetadata       `json:"metadata"`
+	Names          []googleName         `json:"names"`
+	Nicknames      []googleNickname     `json:"nicknames"`
+	EmailAddresses []googleEmailAddress `json:"emailAddresses"`
+	PhoneNumbers   []googlePhoneNumber  `json:"phoneNumbers"`
+	Addresses      []googleAddress      `json:"addresses"`
+	Organizations  []googleOrganization `json:"organizations"`
+	Biographies    []googleBiography    `json:"biographies"`
+	Birthdays      []googleBirthday     `json:"birthdays"`
+	UserDefined    []googleUserDefined  `json:"userDefined"`
 }
 
 type googleMetadata struct {
@@ -746,6 +859,46 @@ type googleName struct {
 
 type googlePhoneNumber struct {
 	Value string `json:"value"`
+	Type  string `json:"type,omitempty"`
+}
+
+type googleNickname struct {
+	Value string `json:"value,omitempty"`
+}
+
+type googleEmailAddress struct {
+	Value string `json:"value,omitempty"`
+	Type  string `json:"type,omitempty"`
+}
+
+type googleAddress struct {
+	StreetAddress string `json:"streetAddress,omitempty"`
+	City          string `json:"city,omitempty"`
+	Region        string `json:"region,omitempty"`
+	PostalCode    string `json:"postalCode,omitempty"`
+	Country       string `json:"country,omitempty"`
+	Type          string `json:"type,omitempty"`
+}
+
+type googleOrganization struct {
+	Name       string `json:"name,omitempty"`
+	Title      string `json:"title,omitempty"`
+	Department string `json:"department,omitempty"`
+}
+
+type googleBiography struct {
+	Value       string `json:"value,omitempty"`
+	ContentType string `json:"contentType,omitempty"`
+}
+
+type googleBirthday struct {
+	Date *googleDate `json:"date,omitempty"`
+}
+
+type googleDate struct {
+	Year  int `json:"year,omitempty"`
+	Month int `json:"month,omitempty"`
+	Day   int `json:"day,omitempty"`
 }
 
 type googleUserDefined struct {
@@ -764,13 +917,54 @@ func toProviderRecord(in googlePerson) contactsync.ProviderRecord {
 	}
 	fields["middle_names"] = contactsync.FieldState{IsSet: true, Value: middle, UpdatedAt: updatedAt}
 	fields["last_name"] = contactsync.FieldState{IsSet: name.FamilyName != "", Value: name.FamilyName, UpdatedAt: updatedAt}
-	phones := make([]string, 0, len(in.PhoneNumbers))
+	phones := make([]contactsync.LabeledValue, 0, len(in.PhoneNumbers))
 	for _, number := range in.PhoneNumbers {
 		if strings.TrimSpace(number.Value) != "" {
-			phones = append(phones, number.Value)
+			phones = append(phones, contactsync.LabeledValue{Label: number.Type, Value: number.Value})
 		}
 	}
-	fields["phone_numbers"] = contactsync.FieldState{IsSet: true, Value: normalizePhones(phones), UpdatedAt: updatedAt}
+	fields["phone_numbers"] = contactsync.FieldState{IsSet: true, Value: normalizeLabeledValues(phones, 10, 50), UpdatedAt: updatedAt}
+	emails := make([]contactsync.LabeledValue, 0, len(in.EmailAddresses))
+	for _, email := range in.EmailAddresses {
+		if strings.TrimSpace(email.Value) != "" {
+			emails = append(emails, contactsync.LabeledValue{Label: email.Type, Value: email.Value})
+		}
+	}
+	fields["emails"] = contactsync.FieldState{IsSet: true, Value: normalizeLabeledValues(emails, 10, 254), UpdatedAt: updatedAt}
+	addresses := make([]contactsync.Address, 0, len(in.Addresses))
+	for _, addr := range in.Addresses {
+		if strings.TrimSpace(addr.StreetAddress) == "" && strings.TrimSpace(addr.City) == "" &&
+			strings.TrimSpace(addr.Region) == "" && strings.TrimSpace(addr.PostalCode) == "" && strings.TrimSpace(addr.Country) == "" {
+			continue
+		}
+		addresses = append(addresses, contactsync.Address{
+			Label:      addr.Type,
+			Street:     addr.StreetAddress,
+			City:       addr.City,
+			Region:     addr.Region,
+			PostalCode: addr.PostalCode,
+			Country:    addr.Country,
+		})
+	}
+	fields["addresses"] = contactsync.FieldState{IsSet: true, Value: addresses, UpdatedAt: updatedAt}
+	if len(in.Organizations) > 0 {
+		org := in.Organizations[0]
+		fields["organization"] = contactsync.FieldState{IsSet: true, Value: &contactsync.Organization{
+			Name:       org.Name,
+			Title:      org.Title,
+			Department: org.Department,
+		}, UpdatedAt: updatedAt}
+	}
+	if len(in.Biographies) > 0 {
+		notes := in.Biographies[0].Value
+		fields["notes"] = contactsync.FieldState{IsSet: true, Value: notes, UpdatedAt: updatedAt}
+	}
+	if len(in.Nicknames) > 0 && strings.TrimSpace(in.Nicknames[0].Value) != "" {
+		fields["nickname"] = contactsync.FieldState{IsSet: true, Value: in.Nicknames[0].Value, UpdatedAt: updatedAt}
+	}
+	if birthdate := formatGoogleBirthday(in.Birthdays); birthdate != nil {
+		fields["birthdate"] = contactsync.FieldState{IsSet: true, Value: *birthdate, UpdatedAt: updatedAt}
+	}
 	fields[remoteUpdatedFieldKey] = contactsync.FieldState{IsSet: true, Value: updatedAt.Format(time.RFC3339Nano), UpdatedAt: updatedAt}
 	for _, item := range in.UserDefined {
 		if item.Key == localIDUserDefinedKey {
@@ -805,10 +999,43 @@ func toGooglePerson(record contactsync.Record, etag string) googlePerson {
 	if len(middleNames) > 0 {
 		middleName = middleNames[0]
 	}
-	phones := fieldStrings(record.Fields, "phone_numbers")
+	phones := normalizeLabeledValues(fieldLabeledValues(record.Fields, "phone_numbers"), 10, 50)
 	phoneValues := make([]googlePhoneNumber, 0, len(phones))
-	for _, number := range normalizePhones(phones) {
-		phoneValues = append(phoneValues, googlePhoneNumber{Value: number})
+	for _, number := range phones {
+		phoneValues = append(phoneValues, googlePhoneNumber{Value: number.Value, Type: number.Label})
+	}
+	emails := normalizeLabeledValues(fieldLabeledValues(record.Fields, "emails"), 10, 254)
+	emailValues := make([]googleEmailAddress, 0, len(emails))
+	for _, email := range emails {
+		emailValues = append(emailValues, googleEmailAddress{Value: email.Value, Type: email.Label})
+	}
+	addresses := fieldAddresses(record.Fields, "addresses")
+	addressValues := make([]googleAddress, 0, len(addresses))
+	for _, addr := range addresses {
+		addressValues = append(addressValues, googleAddress{
+			StreetAddress: addr.Street,
+			City:          addr.City,
+			Region:        addr.Region,
+			PostalCode:    addr.PostalCode,
+			Country:       addr.Country,
+			Type:          addr.Label,
+		})
+	}
+	var organizations []googleOrganization
+	if org := fieldOrganization(record.Fields, "organization"); org != nil {
+		organizations = []googleOrganization{{Name: org.Name, Title: org.Title, Department: org.Department}}
+	}
+	var biographies []googleBiography
+	if notes := fieldString(record.Fields, "notes"); notes != "" {
+		biographies = []googleBiography{{Value: notes, ContentType: "TEXT_PLAIN"}}
+	}
+	var nicknames []googleNickname
+	if nickname := fieldString(record.Fields, "nickname"); nickname != "" {
+		nicknames = []googleNickname{{Value: nickname}}
+	}
+	var birthdate *string
+	if value := fieldString(record.Fields, "birthdate"); value != "" {
+		birthdate = &value
 	}
 	userDefined := []googleUserDefined{}
 	localID := fieldString(record.Fields, "local_id")
@@ -823,9 +1050,41 @@ func toGooglePerson(record contactsync.Record, etag string) googlePerson {
 			MiddleName: middleName,
 			FamilyName: lastName,
 		}},
-		PhoneNumbers: phoneValues,
-		UserDefined:  userDefined,
+		Nicknames:      nicknames,
+		EmailAddresses: emailValues,
+		PhoneNumbers:   phoneValues,
+		Addresses:      addressValues,
+		Organizations:  organizations,
+		Biographies:    biographies,
+		Birthdays:      toGoogleBirthday(birthdate),
+		UserDefined:    userDefined,
 	}
+}
+
+// formatGoogleBirthday returns the first fully-specified (year/month/day)
+// birthday as an ISO-8601 date string, or nil if none is present.
+func formatGoogleBirthday(birthdays []googleBirthday) *string {
+	for _, b := range birthdays {
+		if b.Date == nil || b.Date.Year == 0 || b.Date.Month == 0 || b.Date.Day == 0 {
+			continue
+		}
+		s := fmt.Sprintf("%04d-%02d-%02d", b.Date.Year, b.Date.Month, b.Date.Day)
+		return &s
+	}
+	return nil
+}
+
+// toGoogleBirthday converts an ISO-8601 date string into the Google People
+// API's structured birthday representation.
+func toGoogleBirthday(birthdate *string) []googleBirthday {
+	if birthdate == nil || strings.TrimSpace(*birthdate) == "" {
+		return nil
+	}
+	t, err := time.Parse("2006-01-02", *birthdate)
+	if err != nil {
+		return nil
+	}
+	return []googleBirthday{{Date: &googleDate{Year: t.Year(), Month: int(t.Month()), Day: t.Day()}}}
 }
 
 func selectName(names []googleName) googleName {
@@ -867,7 +1126,7 @@ func parseRemoteUpdatedAt(metadata googleMetadata) time.Time {
 func (a *Adapter) getContact(ctx context.Context, token string, resource string) (googlePerson, error) {
 	resource = strings.TrimPrefix(resource, "/")
 	values := url.Values{}
-	values.Set("personFields", "names,phoneNumbers,metadata,userDefined")
+	values.Set("personFields", googlePersonFields)
 	var out googlePerson
 	if err := a.getJSON(ctx, token, "/"+resource+"?"+values.Encode(), &out); err != nil {
 		return googlePerson{}, err

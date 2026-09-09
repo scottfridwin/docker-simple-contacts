@@ -217,7 +217,7 @@ func TestServiceUpdateNewOptionalFields(t *testing.T) {
 	nick := "Ace"
 	pro := "they/them"
 	bd := "1990-06-15"
-	nums := []string{"+1-555-0100"}
+	nums := []contactsync.LabeledValue{{Label: "mobile", Value: "+1-555-0100"}}
 	updated, verrs, err := svc.Update(context.Background(), created.ID, UpdateInput{
 		Nickname:        &nick,
 		NicknameSet:     true,
@@ -240,7 +240,7 @@ func TestServiceUpdateNewOptionalFields(t *testing.T) {
 	if updated.Birthdate == nil || *updated.Birthdate != "1990-06-15" {
 		t.Errorf("Birthdate = %v", updated.Birthdate)
 	}
-	if len(updated.PhoneNumbers) != 1 || updated.PhoneNumbers[0] != "+1-555-0100" {
+	if len(updated.PhoneNumbers) != 1 || updated.PhoneNumbers[0].Value != "+1-555-0100" {
 		t.Errorf("PhoneNumbers = %v", updated.PhoneNumbers)
 	}
 
@@ -248,7 +248,7 @@ func TestServiceUpdateNewOptionalFields(t *testing.T) {
 	updated, _, _ = svc.Update(context.Background(), created.ID, UpdateInput{
 		Nickname:        nil,
 		NicknameSet:     true,
-		PhoneNumbers:    &[]string{},
+		PhoneNumbers:    &[]contactsync.LabeledValue{},
 		PhoneNumbersSet: true,
 	})
 	if updated.Nickname != nil {

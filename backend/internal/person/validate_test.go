@@ -3,6 +3,8 @@ package person
 import (
 	"strings"
 	"testing"
+
+	"github.com/scottfridlund/contacts/backend/internal/contactsync"
 )
 
 func TestValidateCreateRequiresNames(t *testing.T) {
@@ -98,24 +100,24 @@ func TestValidateNewFields(t *testing.T) {
 }
 
 func TestValidatePhoneNumbers(t *testing.T) {
-	tooMany := make([]string, MaxPhoneNumbers+1)
+	tooMany := make([]contactsync.LabeledValue, MaxPhoneNumbers+1)
 	for i := range tooMany {
-		tooMany[i] = "555-000"
+		tooMany[i] = contactsync.LabeledValue{Value: "555-000"}
 	}
 	if errs := ValidateCreate(CreateInput{FirstName: "A", LastName: "B", PhoneNumbers: tooMany}); !errs.HasErrors() {
 		t.Error("expected error for too many phone numbers")
 	}
 
-	if errs := ValidateCreate(CreateInput{FirstName: "A", LastName: "B", PhoneNumbers: []string{""}}); !errs.HasErrors() {
+	if errs := ValidateCreate(CreateInput{FirstName: "A", LastName: "B", PhoneNumbers: []contactsync.LabeledValue{{Value: ""}}}); !errs.HasErrors() {
 		t.Error("expected error for empty phone number")
 	}
 
 	long := strings.Repeat("1", MaxPhoneNumberLength+1)
-	if errs := ValidateCreate(CreateInput{FirstName: "A", LastName: "B", PhoneNumbers: []string{long}}); !errs.HasErrors() {
+	if errs := ValidateCreate(CreateInput{FirstName: "A", LastName: "B", PhoneNumbers: []contactsync.LabeledValue{{Value: long}}}); !errs.HasErrors() {
 		t.Error("expected error for phone number exceeding max length")
 	}
 
-	if errs := ValidateCreate(CreateInput{FirstName: "A", LastName: "B", PhoneNumbers: []string{"+1-555-0100", "555-0101"}}); errs.HasErrors() {
+	if errs := ValidateCreate(CreateInput{FirstName: "A", LastName: "B", PhoneNumbers: []contactsync.LabeledValue{{Label: "mobile", Value: "+1-555-0100"}, {Label: "home", Value: "555-0101"}}}); errs.HasErrors() {
 		t.Errorf("expected no errors for valid phone numbers, got: %s", errs.Error())
 	}
 }
@@ -141,6 +143,49 @@ func TestValidateUpdateFields(t *testing.T) {
 	valid := "Ok"
 	if errs := ValidateUpdate(UpdateInput{FirstName: &valid, FirstNameSet: true}); errs.HasErrors() {
 		t.Errorf("unexpected errors: %s", errs.Error())
+	}
+}
+
+func TestValidateEmails(t *testing.T) {
+	if errs := ValidateCreate(CreateInput{FirstName: "A", LastName: "B", Emails: []contactsync.LabeledValue{{Label: "home", Value: "not-an-email"}}}); !errs.HasErrors() {
+		t.Error("expected error for invalid email address")
+	}
+	if errs := ValidateCreate(CreateInput{FirstName: "A", LastName: "B", Emails: []contactsync.LabeledValue{{Label: "home", Value: "a@example.com"}}}); errs.HasErrors() {
+		t.Errorf("expected no errors for valid email, got: %s", errs.Error())
+	}
+	tooMany := make([]contactsync.LabeledValue, MaxEmails+1)
+	for i := range tooMany {
+		tooMany[i] = contactsync.LabeledValue{Value: "a@example.com"}
+	}
+	if errs := ValidateCreate(CreateInput{FirstName: "A", LastName: "B", Emails: tooMany}); !errs.HasErrors() {
+		t.Error("expected error for too many emails")
+	}
+}
+
+func TestValidateAddresses(t *testing.T) {
+	if errs := ValidateCreate(CreateInput{FirstName: "A", LastName: "B", Addresses: []contactsync.Address{{Label: "home", City: "Springfield"}}}); errs.HasErrors() {
+		t.Errorf("expected no errors for valid address, got: %s", errs.Error())
+	}
+	long := strings.Repeat("x", MaxAddressFieldLength+1)
+	if errs := ValidateCreate(CreateInput{FirstName: "A", LastName: "B", Addresses: []contactsync.Address{{City: long}}}); !errs.HasErrors() {
+		t.Error("expected error for oversized address field")
+	}
+}
+
+func TestValidateOrganization(t *testing.T) {
+	long := strings.Repeat("x", MaxOrgFieldLength+1)
+	if errs := ValidateCreate(CreateInput{FirstName: "A", LastName: "B", Organization: &contactsync.Organization{Name: long}}); !errs.HasErrors() {
+		t.Error("expected error for oversized organization field")
+	}
+	if errs := ValidateCreate(CreateInput{FirstName: "A", LastName: "B", Organization: &contactsync.Organization{Name: "Acme", Title: "Engineer"}}); errs.HasErrors() {
+		t.Errorf("expected no errors for valid organization, got: %s", errs.Error())
+	}
+}
+
+func TestValidateNotes(t *testing.T) {
+	long := strings.Repeat("x", MaxNotesLength+1)
+	if errs := ValidateCreate(CreateInput{FirstName: "A", LastName: "B", Notes: &long}); !errs.HasErrors() {
+		t.Error("expected error for oversized notes")
 	}
 }
 

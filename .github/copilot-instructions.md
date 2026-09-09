@@ -39,8 +39,11 @@ conflict.
 
 - Required Person fields: `first_name`, `last_name`. `display_name` is always
   derived from name parts and is not settable. Optional fields: `nickname`,
-  `pronouns`, `birthdate` (ISO-8601 date string, YYYY-MM-DD), `phone_numbers`
-  (string array, max 10, each ≤ 50 chars).
+  `pronouns`, `birthdate` (ISO-8601 date string, YYYY-MM-DD), `emails` and
+  `phone_numbers` (arrays of labeled entries `{label, value}`, max 10 each),
+  `addresses` (array of structured entries `{label, street, city, region,
+  postal_code, country}`, max 10), `organization` (single `{name, title,
+  department}` object), `notes` (free-text string, max 4096 chars).
 - Custom fields: `snake_case` keys; string/number/boolean/date values; max 64
   fields; key ≤ 64; string ≤ 1024; `null` rejected.
 - Soft delete + 30-day purge. List defaults: page 25 / max 100, sort

@@ -2,6 +2,26 @@ export type CustomFieldType = 'string' | 'number' | 'boolean' | 'date';
 
 export type CustomFieldValue = string | number | boolean;
 
+export interface LabeledValue {
+  label: string;
+  value: string;
+}
+
+export interface Address {
+  label?: string;
+  street?: string;
+  city?: string;
+  region?: string;
+  postal_code?: string;
+  country?: string;
+}
+
+export interface Organization {
+  name?: string;
+  title?: string;
+  department?: string;
+}
+
 export interface Person {
   id: string;
   first_name: string;
@@ -11,7 +31,11 @@ export interface Person {
   nickname?: string | null;
   pronouns?: string | null;
   birthdate?: string | null;
-  phone_numbers: string[];
+  emails: LabeledValue[];
+  phone_numbers: LabeledValue[];
+  addresses: Address[];
+  organization?: Organization | null;
+  notes?: string | null;
   custom_fields: Record<string, CustomFieldValue>;
   created_at: string;
   updated_at: string;
@@ -64,7 +88,11 @@ export interface CreatePersonInput {
   nickname?: string;
   pronouns?: string;
   birthdate?: string;
-  phone_numbers?: string[];
+  emails?: LabeledValue[];
+  phone_numbers?: LabeledValue[];
+  addresses?: Address[];
+  organization?: Organization | null;
+  notes?: string;
   custom_fields?: Record<string, CustomFieldValue>;
 }
 

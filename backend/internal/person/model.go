@@ -12,31 +12,39 @@ import (
 
 // Person is the single domain entity supported in v1.
 type Person struct {
-	ID           uuid.UUID      `json:"id"`
-	FirstName    string         `json:"first_name"`
-	MiddleNames  []string       `json:"middle_names"`
-	LastName     string         `json:"last_name"`
-	DisplayName  string         `json:"display_name"`
-	Nickname     *string        `json:"nickname,omitempty"`
-	Pronouns     *string        `json:"pronouns,omitempty"`
-	Birthdate    *string        `json:"birthdate,omitempty"`
-	PhoneNumbers []string       `json:"phone_numbers"`
-	CustomFields map[string]any `json:"custom_fields"`
-	CreatedAt    time.Time      `json:"created_at"`
-	UpdatedAt    time.Time      `json:"updated_at"`
-	DeletedAt    *time.Time     `json:"deleted_at,omitempty"`
+	ID           uuid.UUID                  `json:"id"`
+	FirstName    string                     `json:"first_name"`
+	MiddleNames  []string                   `json:"middle_names"`
+	LastName     string                     `json:"last_name"`
+	DisplayName  string                     `json:"display_name"`
+	Nickname     *string                    `json:"nickname,omitempty"`
+	Pronouns     *string                    `json:"pronouns,omitempty"`
+	Birthdate    *string                    `json:"birthdate,omitempty"`
+	Emails       []contactsync.LabeledValue `json:"emails"`
+	PhoneNumbers []contactsync.LabeledValue `json:"phone_numbers"`
+	Addresses    []contactsync.Address      `json:"addresses"`
+	Organization *contactsync.Organization  `json:"organization,omitempty"`
+	Notes        *string                    `json:"notes,omitempty"`
+	CustomFields map[string]any             `json:"custom_fields"`
+	CreatedAt    time.Time                  `json:"created_at"`
+	UpdatedAt    time.Time                  `json:"updated_at"`
+	DeletedAt    *time.Time                 `json:"deleted_at,omitempty"`
 }
 
 // CreateInput is the payload accepted when creating a Person.
 type CreateInput struct {
-	FirstName    string         `json:"first_name"`
-	MiddleNames  []string       `json:"middle_names"`
-	LastName     string         `json:"last_name"`
-	Nickname     *string        `json:"nickname"`
-	Pronouns     *string        `json:"pronouns"`
-	Birthdate    *string        `json:"birthdate"`
-	PhoneNumbers []string       `json:"phone_numbers"`
-	CustomFields map[string]any `json:"custom_fields"`
+	FirstName    string                     `json:"first_name"`
+	MiddleNames  []string                   `json:"middle_names"`
+	LastName     string                     `json:"last_name"`
+	Nickname     *string                    `json:"nickname"`
+	Pronouns     *string                    `json:"pronouns"`
+	Birthdate    *string                    `json:"birthdate"`
+	Emails       []contactsync.LabeledValue `json:"emails"`
+	PhoneNumbers []contactsync.LabeledValue `json:"phone_numbers"`
+	Addresses    []contactsync.Address      `json:"addresses"`
+	Organization *contactsync.Organization  `json:"organization"`
+	Notes        *string                    `json:"notes"`
+	CustomFields map[string]any             `json:"custom_fields"`
 }
 
 // UpdateInput is the payload accepted when patching a Person. Pointer fields and
@@ -48,7 +56,11 @@ type UpdateInput struct {
 	Nickname     *string
 	Pronouns     *string
 	Birthdate    *string
-	PhoneNumbers *[]string
+	Emails       *[]contactsync.LabeledValue
+	PhoneNumbers *[]contactsync.LabeledValue
+	Addresses    *[]contactsync.Address
+	Organization *contactsync.Organization
+	Notes        *string
 	CustomFields map[string]any
 
 	FirstNameSet    bool
@@ -57,7 +69,11 @@ type UpdateInput struct {
 	NicknameSet     bool
 	PronounsSet     bool
 	BirthdateSet    bool
+	EmailsSet       bool
 	PhoneNumbersSet bool
+	AddressesSet    bool
+	OrganizationSet bool
+	NotesSet        bool
 	CustomFieldsSet bool
 }
 
@@ -101,7 +117,11 @@ func (p Person) Snapshot(ownerID *uuid.UUID) contactsync.PersonSnapshot {
 		Nickname:     p.Nickname,
 		Pronouns:     p.Pronouns,
 		Birthdate:    p.Birthdate,
-		PhoneNumbers: append([]string(nil), p.PhoneNumbers...),
+		Emails:       append([]contactsync.LabeledValue(nil), p.Emails...),
+		PhoneNumbers: append([]contactsync.LabeledValue(nil), p.PhoneNumbers...),
+		Addresses:    append([]contactsync.Address(nil), p.Addresses...),
+		Organization: p.Organization,
+		Notes:        p.Notes,
 		CustomFields: cloneMap(p.CustomFields),
 		DeletedAt:    p.DeletedAt,
 		CreatedAt:    p.CreatedAt,

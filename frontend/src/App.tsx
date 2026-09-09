@@ -363,7 +363,14 @@ export default function App() {
         nickname: values.nickname || undefined,
         pronouns: values.pronouns || undefined,
         birthdate: values.birthdate || undefined,
+        emails: values.emails.length ? values.emails : undefined,
         phone_numbers: values.phone_numbers.length ? values.phone_numbers : undefined,
+        addresses: values.addresses.length ? values.addresses : undefined,
+        organization:
+          values.organization.name || values.organization.title || values.organization.department
+            ? values.organization
+            : undefined,
+        notes: values.notes || undefined,
         custom_fields: values.custom_fields,
       };
       if (view.mode === 'edit') {

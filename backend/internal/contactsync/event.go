@@ -18,6 +18,30 @@ const (
 	ChangeKindHardDeleted ChangeKind = "hard_deleted"
 )
 
+// LabeledValue is a labeled scalar value, used for multi-value fields like
+// emails and phone numbers (e.g. label "Home", value "example@example.com").
+type LabeledValue struct {
+	Label string `json:"label"`
+	Value string `json:"value"`
+}
+
+// Address is one labeled postal address.
+type Address struct {
+	Label      string `json:"label"`
+	Street     string `json:"street"`
+	City       string `json:"city"`
+	Region     string `json:"region"`
+	PostalCode string `json:"postal_code"`
+	Country    string `json:"country"`
+}
+
+// Organization describes a Person's employer/role.
+type Organization struct {
+	Name       string `json:"name,omitempty"`
+	Title      string `json:"title,omitempty"`
+	Department string `json:"department,omitempty"`
+}
+
 // PersonSnapshot is the provider-neutral shape used by the sync core.
 type PersonSnapshot struct {
 	ID           uuid.UUID      `json:"id"`
@@ -29,7 +53,11 @@ type PersonSnapshot struct {
 	Nickname     *string        `json:"nickname,omitempty"`
 	Pronouns     *string        `json:"pronouns,omitempty"`
 	Birthdate    *string        `json:"birthdate,omitempty"`
-	PhoneNumbers []string       `json:"phone_numbers"`
+	Emails       []LabeledValue `json:"emails"`
+	PhoneNumbers []LabeledValue `json:"phone_numbers"`
+	Addresses    []Address      `json:"addresses"`
+	Organization *Organization  `json:"organization,omitempty"`
+	Notes        *string        `json:"notes,omitempty"`
 	CustomFields map[string]any `json:"custom_fields"`
 	DeletedAt    *time.Time     `json:"deleted_at,omitempty"`
 	CreatedAt    time.Time      `json:"created_at"`

@@ -295,7 +295,7 @@ func TestPatchNewFields(t *testing.T) {
 		"nickname":      "Ace",
 		"pronouns":      "they/them",
 		"birthdate":     "1990-06-15",
-		"phone_numbers": []string{"+1-555-0100"},
+		"phone_numbers": []map[string]string{{"label": "mobile", "value": "+1-555-0100"}},
 	})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
@@ -428,7 +428,11 @@ func TestDecodeUpdateFields(t *testing.T) {
 	cases := []string{
 		`{"first_name":"A"}`, `{"last_name":"B"}`, `{"middle_names":["M"]}`,
 		`{"nickname":"N"}`, `{"pronouns":"they"}`, `{"birthdate":"2020-01-01"}`,
-		`{"phone_numbers":["555"]}`, `{"custom_fields":{"x":"y"}}`,
+		`{"phone_numbers":[{"label":"mobile","value":"555"}]}`,
+		`{"emails":[{"label":"home","value":"a@example.com"}]}`,
+		`{"addresses":[{"label":"home","city":"Springfield"}]}`,
+		`{"organization":{"name":"Acme","title":"Engineer"}}`, `{"organization":null}`,
+		`{"notes":"hello"}`, `{"custom_fields":{"x":"y"}}`,
 	}
 	for _, body := range cases {
 		req := httptest.NewRequest(http.MethodPatch, "/", bytes.NewBufferString(body))
@@ -442,7 +446,9 @@ func TestDecodeUpdateRejectsMalformedFields(t *testing.T) {
 	cases := []string{
 		`{"first_name":1}`, `{"last_name":1}`, `{"middle_names":"x"}`,
 		`{"nickname":1}`, `{"pronouns":1}`, `{"birthdate":1}`,
-		`{"phone_numbers":"x"}`, `{"custom_fields":"x"}`, `{"unknown":true}`,
+		`{"phone_numbers":"x"}`, `{"phone_numbers":["555"]}`,
+		`{"emails":"x"}`, `{"addresses":"x"}`, `{"organization":"x"}`, `{"notes":1}`,
+		`{"custom_fields":"x"}`, `{"unknown":true}`,
 	}
 
 	for _, body := range cases {

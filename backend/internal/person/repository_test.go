@@ -6,6 +6,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	"github.com/scottfridlund/contacts/backend/internal/contactsync"
 )
 
 type scanStub struct {
@@ -25,6 +27,12 @@ func (s scanStub) Scan(dest ...any) error {
 			*d = value.(string)
 		case *[]string:
 			*d = value.([]string)
+		case *[]contactsync.LabeledValue:
+			*d = value.([]contactsync.LabeledValue)
+		case *[]contactsync.Address:
+			*d = value.([]contactsync.Address)
+		case **contactsync.Organization:
+			*d = value.(*contactsync.Organization)
 		case **string:
 			*d = value.(*string)
 		case *map[string]any:
@@ -42,7 +50,9 @@ func TestScanPersonNormalizesNilCollections(t *testing.T) {
 	now := time.Now()
 	p, err := scanPerson(scanStub{values: []any{
 		uuid.New(), "First", []string(nil), "Last", "First Last",
-		(*string)(nil), (*string)(nil), (*string)(nil), []string(nil), map[string]any(nil),
+		(*string)(nil), (*string)(nil), (*string)(nil),
+		[]contactsync.LabeledValue(nil), []contactsync.LabeledValue(nil), []contactsync.Address(nil),
+		(*contactsync.Organization)(nil), (*string)(nil), map[string]any(nil),
 		now, now, (*time.Time)(nil),
 	}})
 	if err != nil {
@@ -67,7 +77,9 @@ func TestScanPersonPreservesValues(t *testing.T) {
 	deleted := now.Add(time.Hour)
 	p, err := scanPerson(scanStub{values: []any{
 		uuid.New(), "First", []string{"M"}, "Last", "First M Last",
-		&nickname, (*string)(nil), &nickname, []string{"555"}, map[string]any{"x": "y"},
+		&nickname, (*string)(nil), &nickname,
+		[]contactsync.LabeledValue{{Value: "a@example.com"}}, []contactsync.LabeledValue{{Value: "555"}}, []contactsync.Address{{City: "Springfield"}},
+		&contactsync.Organization{Name: "Acme"}, &nickname, map[string]any{"x": "y"},
 		now, now, &deleted,
 	}})
 	if err != nil {

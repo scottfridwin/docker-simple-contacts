@@ -103,3 +103,102 @@ func TestRemoteToLocalProducesUpdatableMiddleNames(t *testing.T) {
 		t.Fatal("PhoneNumbers is nil, would violate the persons.phone_numbers NOT NULL constraint")
 	}
 }
+
+// TestToGooglePersonMapsNewContactFields ensures emails, addresses,
+// organization, notes, nickname, and birthdate all round-trip into the
+// Google People API payload shape.
+func TestToGooglePersonMapsNewContactFields(t *testing.T) {
+	notes := "Met at a conference."
+	nickname := "Ace"
+	birthdate := "1989-04-19"
+	record := contactsync.Record{
+		Fields: map[string]contactsync.FieldState{
+			"first_name": {IsSet: true, Value: "Scott"},
+			"last_name":  {IsSet: true, Value: "Fridlund"},
+			"emails": {IsSet: true, Value: []contactsync.LabeledValue{
+				{Label: "work", Value: "scott@example.com"},
+			}},
+			"phone_numbers": {IsSet: true, Value: []contactsync.LabeledValue{
+				{Label: "mobile", Value: "+1-555-0100"},
+			}},
+			"addresses": {IsSet: true, Value: []contactsync.Address{
+				{Label: "home", Street: "1 Main St", City: "Springfield", Region: "IL", PostalCode: "62701", Country: "US"},
+			}},
+			"organization": {IsSet: true, Value: &contactsync.Organization{Name: "Acme", Title: "Engineer"}},
+			"notes":        {IsSet: true, Value: notes},
+			"nickname":     {IsSet: true, Value: nickname},
+			"birthdate":    {IsSet: true, Value: birthdate},
+		},
+	}
+
+	out := toGooglePerson(record, "etag")
+	if len(out.EmailAddresses) != 1 || out.EmailAddresses[0].Value != "scott@example.com" || out.EmailAddresses[0].Type != "work" {
+		t.Fatalf("EmailAddresses = %+v", out.EmailAddresses)
+	}
+	if len(out.PhoneNumbers) != 1 || out.PhoneNumbers[0].Value != "+1-555-0100" || out.PhoneNumbers[0].Type != "mobile" {
+		t.Fatalf("PhoneNumbers = %+v", out.PhoneNumbers)
+	}
+	if len(out.Addresses) != 1 || out.Addresses[0].City != "Springfield" {
+		t.Fatalf("Addresses = %+v", out.Addresses)
+	}
+	if len(out.Organizations) != 1 || out.Organizations[0].Name != "Acme" {
+		t.Fatalf("Organizations = %+v", out.Organizations)
+	}
+	if len(out.Biographies) != 1 || out.Biographies[0].Value != notes {
+		t.Fatalf("Biographies = %+v", out.Biographies)
+	}
+	if len(out.Nicknames) != 1 || out.Nicknames[0].Value != nickname {
+		t.Fatalf("Nicknames = %+v", out.Nicknames)
+	}
+	if len(out.Birthdays) != 1 || out.Birthdays[0].Date == nil || out.Birthdays[0].Date.Year != 1989 || out.Birthdays[0].Date.Month != 4 || out.Birthdays[0].Date.Day != 19 {
+		t.Fatalf("Birthdays = %+v", out.Birthdays)
+	}
+}
+
+// TestToProviderRecordMapsNewContactFields is the inverse of the above: it
+// verifies a Google API response is parsed back into the expected field
+// values.
+func TestToProviderRecordMapsNewContactFields(t *testing.T) {
+	in := googlePerson{
+		ResourceName: "people/c1",
+		Names:        []googleName{{GivenName: "Scott", FamilyName: "Fridlund"}},
+		Nicknames:    []googleNickname{{Value: "Ace"}},
+		EmailAddresses: []googleEmailAddress{
+			{Value: "scott@example.com", Type: "work"},
+		},
+		PhoneNumbers: []googlePhoneNumber{
+			{Value: "+1-555-0100", Type: "mobile"},
+		},
+		Addresses: []googleAddress{
+			{StreetAddress: "1 Main St", City: "Springfield", Region: "IL", PostalCode: "62701", Country: "US", Type: "home"},
+		},
+		Organizations: []googleOrganization{{Name: "Acme", Title: "Engineer"}},
+		Biographies:   []googleBiography{{Value: "Met at a conference."}},
+		Birthdays:     []googleBirthday{{Date: &googleDate{Year: 1989, Month: 4, Day: 19}}},
+	}
+
+	got := toProviderRecord(in)
+	fields := got.Record.Fields
+
+	if v := fieldLabeledValues(fields, "emails"); len(v) != 1 || v[0].Value != "scott@example.com" || v[0].Label != "work" {
+		t.Fatalf("emails = %+v", v)
+	}
+	if v := fieldLabeledValues(fields, "phone_numbers"); len(v) != 1 || v[0].Value != "+1-555-0100" || v[0].Label != "mobile" {
+		t.Fatalf("phone_numbers = %+v", v)
+	}
+	if v := fieldAddresses(fields, "addresses"); len(v) != 1 || v[0].City != "Springfield" {
+		t.Fatalf("addresses = %+v", v)
+	}
+	if org := fieldOrganization(fields, "organization"); org == nil || org.Name != "Acme" {
+		t.Fatalf("organization = %+v", org)
+	}
+	if v := fieldString(fields, "notes"); v != "Met at a conference." {
+		t.Fatalf("notes = %q", v)
+	}
+	if v := fieldString(fields, "nickname"); v != "Ace" {
+		t.Fatalf("nickname = %q", v)
+	}
+	if v := fieldString(fields, "birthdate"); v != "1989-04-19" {
+		t.Fatalf("birthdate = %q", v)
+	}
+}

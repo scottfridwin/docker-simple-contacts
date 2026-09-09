@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/scottfridlund/contacts/backend/internal/authn"
+	"github.com/scottfridlund/contacts/backend/internal/contactsync"
 )
 
 // ErrNotFound is returned when a Person does not exist or is soft-deleted.
@@ -37,25 +38,23 @@ var allowedSortFields = map[string]string{
 
 // Create inserts a new Person and returns the stored record.
 func (r *Repository) Create(ctx context.Context, p *Person) (*Person, error) {
-	if p.PhoneNumbers == nil {
-		p.PhoneNumbers = []string{}
-	}
+	normalizePersonSlices(p)
 	ownerID, owned := authn.UserID(ctx)
 	const qOwned = `
-		INSERT INTO persons (owner_id, first_name, middle_names, last_name, display_name, nickname, pronouns, birthdate, phone_numbers, custom_fields)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-		RETURNING id, first_name, middle_names, last_name, display_name, nickname, pronouns, birthdate, phone_numbers, custom_fields,
+		INSERT INTO persons (owner_id, first_name, middle_names, last_name, display_name, nickname, pronouns, birthdate, emails, phone_numbers, addresses, organization, notes, custom_fields)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+		RETURNING id, first_name, middle_names, last_name, display_name, nickname, pronouns, birthdate, emails, phone_numbers, addresses, organization, notes, custom_fields,
 		          created_at, updated_at, deleted_at`
 	const qLegacy = `
-		INSERT INTO persons (first_name, middle_names, last_name, display_name, nickname, pronouns, birthdate, phone_numbers, custom_fields)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-		RETURNING id, first_name, middle_names, last_name, display_name, nickname, pronouns, birthdate, phone_numbers, custom_fields,
+		INSERT INTO persons (first_name, middle_names, last_name, display_name, nickname, pronouns, birthdate, emails, phone_numbers, addresses, organization, notes, custom_fields)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+		RETURNING id, first_name, middle_names, last_name, display_name, nickname, pronouns, birthdate, emails, phone_numbers, addresses, organization, notes, custom_fields,
 		          created_at, updated_at, deleted_at`
 	var row pgx.Row
 	if owned {
-		row = r.pool.QueryRow(ctx, qOwned, ownerID, p.FirstName, p.MiddleNames, p.LastName, p.DisplayName, p.Nickname, p.Pronouns, p.Birthdate, p.PhoneNumbers, p.CustomFields)
+		row = r.pool.QueryRow(ctx, qOwned, ownerID, p.FirstName, p.MiddleNames, p.LastName, p.DisplayName, p.Nickname, p.Pronouns, p.Birthdate, p.Emails, p.PhoneNumbers, p.Addresses, p.Organization, p.Notes, p.CustomFields)
 	} else {
-		row = r.pool.QueryRow(ctx, qLegacy, p.FirstName, p.MiddleNames, p.LastName, p.DisplayName, p.Nickname, p.Pronouns, p.Birthdate, p.PhoneNumbers, p.CustomFields)
+		row = r.pool.QueryRow(ctx, qLegacy, p.FirstName, p.MiddleNames, p.LastName, p.DisplayName, p.Nickname, p.Pronouns, p.Birthdate, p.Emails, p.PhoneNumbers, p.Addresses, p.Organization, p.Notes, p.CustomFields)
 	}
 	return scanPerson(row)
 }
@@ -63,7 +62,7 @@ func (r *Repository) Create(ctx context.Context, p *Person) (*Person, error) {
 // GetByID returns a single non-deleted Person by ID.
 func (r *Repository) GetByID(ctx context.Context, id uuid.UUID) (*Person, error) {
 	q := `
-		SELECT id, first_name, middle_names, last_name, display_name, nickname, pronouns, birthdate, phone_numbers, custom_fields,
+		SELECT id, first_name, middle_names, last_name, display_name, nickname, pronouns, birthdate, emails, phone_numbers, addresses, organization, notes, custom_fields,
 		       created_at, updated_at, deleted_at
 		FROM persons
 		WHERE id = $1 AND deleted_at IS NULL`
@@ -82,7 +81,7 @@ func (r *Repository) GetByID(ctx context.Context, id uuid.UUID) (*Person, error)
 // GetDeletedByID returns a soft-deleted Person by ID.
 func (r *Repository) GetDeletedByID(ctx context.Context, id uuid.UUID) (*Person, error) {
 	q := `
-		SELECT id, first_name, middle_names, last_name, display_name, nickname, pronouns, birthdate, phone_numbers, custom_fields,
+		SELECT id, first_name, middle_names, last_name, display_name, nickname, pronouns, birthdate, emails, phone_numbers, addresses, organization, notes, custom_fields,
 		       created_at, updated_at, deleted_at
 		FROM persons
 		WHERE id = $1 AND deleted_at IS NOT NULL`
@@ -142,7 +141,7 @@ func (r *Repository) List(ctx context.Context, params ListParams) ([]Person, int
 
 	// Secondary sort on id keeps ordering deterministic across pages.
 	listQ := fmt.Sprintf(`
-		SELECT id, first_name, middle_names, last_name, display_name, nickname, pronouns, birthdate, phone_numbers, custom_fields,
+		SELECT id, first_name, middle_names, last_name, display_name, nickname, pronouns, birthdate, emails, phone_numbers, addresses, organization, notes, custom_fields,
 		       created_at, updated_at, deleted_at
 		FROM persons
 		WHERE %s
@@ -193,7 +192,7 @@ func (r *Repository) ListDeleted(ctx context.Context, params ListParams) ([]Pers
 		pageSize = 100
 	}
 	q := fmt.Sprintf(`
-		SELECT id, first_name, middle_names, last_name, display_name, nickname, pronouns, birthdate, phone_numbers, custom_fields,
+		SELECT id, first_name, middle_names, last_name, display_name, nickname, pronouns, birthdate, emails, phone_numbers, addresses, organization, notes, custom_fields,
 		       created_at, updated_at, deleted_at
 		FROM persons WHERE deleted_at IS NOT NULL
 		ORDER BY %s %s, id ASC LIMIT $1 OFFSET $2`, sortColumn, direction)
@@ -218,20 +217,18 @@ func (r *Repository) ListDeleted(ctx context.Context, params ListParams) ([]Pers
 
 // Update applies a patch to an existing Person and returns the updated record.
 func (r *Repository) Update(ctx context.Context, id uuid.UUID, p *Person) (*Person, error) {
-	if p.PhoneNumbers == nil {
-		p.PhoneNumbers = []string{}
-	}
+	normalizePersonSlices(p)
 	q := `
 		UPDATE persons
 		SET first_name = $2, middle_names = $3, last_name = $4,
 		    display_name = $5, nickname = $6, pronouns = $7, birthdate = $8,
-		    phone_numbers = $9, custom_fields = $10, updated_at = now()
+		    emails = $9, phone_numbers = $10, addresses = $11, organization = $12, notes = $13, custom_fields = $14, updated_at = now()
 		WHERE id = $1 AND deleted_at IS NULL
-		RETURNING id, first_name, middle_names, last_name, display_name, nickname, pronouns, birthdate, phone_numbers, custom_fields,
+		RETURNING id, first_name, middle_names, last_name, display_name, nickname, pronouns, birthdate, emails, phone_numbers, addresses, organization, notes, custom_fields,
 		          created_at, updated_at, deleted_at`
-	args := []any{id, p.FirstName, p.MiddleNames, p.LastName, p.DisplayName, p.Nickname, p.Pronouns, p.Birthdate, p.PhoneNumbers, p.CustomFields}
+	args := []any{id, p.FirstName, p.MiddleNames, p.LastName, p.DisplayName, p.Nickname, p.Pronouns, p.Birthdate, p.Emails, p.PhoneNumbers, p.Addresses, p.Organization, p.Notes, p.CustomFields}
 	if ownerID, ok := authn.UserID(ctx); ok {
-		q = strings.Replace(q, "WHERE id = $1", "WHERE id = $1 AND owner_id = $11", 1)
+		q = strings.Replace(q, "WHERE id = $1", "WHERE id = $1 AND owner_id = $15", 1)
 		args = append(args, ownerID)
 	}
 	person, err := scanPerson(r.pool.QueryRow(ctx, q, args...))
@@ -312,19 +309,31 @@ func scanPerson(s scanner) (*Person, error) {
 	var p Person
 	if err := s.Scan(
 		&p.ID, &p.FirstName, &p.MiddleNames, &p.LastName, &p.DisplayName,
-		&p.Nickname, &p.Pronouns, &p.Birthdate, &p.PhoneNumbers,
+		&p.Nickname, &p.Pronouns, &p.Birthdate, &p.Emails, &p.PhoneNumbers, &p.Addresses, &p.Organization, &p.Notes,
 		&p.CustomFields, &p.CreatedAt, &p.UpdatedAt, &p.DeletedAt,
 	); err != nil {
 		return nil, err
 	}
-	if p.MiddleNames == nil {
-		p.MiddleNames = []string{}
-	}
-	if p.PhoneNumbers == nil {
-		p.PhoneNumbers = []string{}
-	}
+	normalizePersonSlices(&p)
 	if p.CustomFields == nil {
 		p.CustomFields = map[string]any{}
 	}
 	return &p, nil
+}
+
+// normalizePersonSlices ensures nil slices become empty slices, since the
+// JSONB columns backing these fields are NOT NULL.
+func normalizePersonSlices(p *Person) {
+	if p.MiddleNames == nil {
+		p.MiddleNames = []string{}
+	}
+	if p.Emails == nil {
+		p.Emails = []contactsync.LabeledValue{}
+	}
+	if p.PhoneNumbers == nil {
+		p.PhoneNumbers = []contactsync.LabeledValue{}
+	}
+	if p.Addresses == nil {
+		p.Addresses = []contactsync.Address{}
+	}
 }

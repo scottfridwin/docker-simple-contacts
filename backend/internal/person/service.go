@@ -57,7 +57,15 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (*Person, Validati
 	}
 	phoneNumbers := in.PhoneNumbers
 	if phoneNumbers == nil {
-		phoneNumbers = []string{}
+		phoneNumbers = []contactsync.LabeledValue{}
+	}
+	emails := in.Emails
+	if emails == nil {
+		emails = []contactsync.LabeledValue{}
+	}
+	addresses := in.Addresses
+	if addresses == nil {
+		addresses = []contactsync.Address{}
 	}
 	customFields := in.CustomFields
 	if customFields == nil {
@@ -72,7 +80,11 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (*Person, Validati
 		Nickname:     in.Nickname,
 		Pronouns:     in.Pronouns,
 		Birthdate:    in.Birthdate,
+		Emails:       emails,
 		PhoneNumbers: phoneNumbers,
+		Addresses:    addresses,
+		Organization: in.Organization,
+		Notes:        in.Notes,
 		CustomFields: customFields,
 	}
 	created, err := s.repo.Create(ctx, p)
@@ -189,8 +201,28 @@ func applyUpdate(current *Person, in UpdateInput) {
 		if in.PhoneNumbers != nil {
 			current.PhoneNumbers = *in.PhoneNumbers
 		} else {
-			current.PhoneNumbers = []string{}
+			current.PhoneNumbers = []contactsync.LabeledValue{}
 		}
+	}
+	if in.EmailsSet {
+		if in.Emails != nil {
+			current.Emails = *in.Emails
+		} else {
+			current.Emails = []contactsync.LabeledValue{}
+		}
+	}
+	if in.AddressesSet {
+		if in.Addresses != nil {
+			current.Addresses = *in.Addresses
+		} else {
+			current.Addresses = []contactsync.Address{}
+		}
+	}
+	if in.OrganizationSet {
+		current.Organization = in.Organization
+	}
+	if in.NotesSet {
+		current.Notes = in.Notes
 	}
 	if in.CustomFieldsSet {
 		if in.CustomFields != nil {

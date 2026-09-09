@@ -171,6 +171,16 @@ A `Person` has:
 - `id` (server-generated UUID), `first_name`, `last_name` (required)
 - `middle_names` (optional ordered array of strings)
 - `display_name` (optional; derived from the name parts when blank)
+- `nickname`, `pronouns` (optional strings)
+- `birthdate` (optional ISO-8601 date string, `YYYY-MM-DD`)
+- `emails` (optional array of labeled entries, max 10: `{label, value}`, value
+  must be a valid email address)
+- `phone_numbers` (optional array of labeled entries, max 10: `{label,
+  value}`, e.g. `{"label": "mobile", "value": "+1-555-0100"}`)
+- `addresses` (optional array of structured entries, max 10: `{label, street,
+  city, region, postal_code, country}`)
+- `organization` (optional single object: `{name, title, department}`)
+- `notes` (optional free-text string, max 4096 chars)
 - `custom_fields` (JSONB map)
 - `created_at`, `updated_at`, `deleted_at` (soft delete)
 

@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/scottfridlund/contacts/backend/internal/contactsync"
 )
 
 // These tests run only with `-tags=integration` and require TEST_DATABASE_URL
@@ -37,7 +39,7 @@ func TestRepositoryCRUD(t *testing.T) {
 		MiddleNames:  []string{"Q"},
 		LastName:     "Tester",
 		DisplayName:  "Integration Q Tester",
-		PhoneNumbers: []string{"+1-555-0100"},
+		PhoneNumbers: []contactsync.LabeledValue{{Label: "mobile", Value: "+1-555-0100"}},
 		CustomFields: map[string]any{"blood_type": "O+", "age": float64(30)},
 	})
 	if err != nil {

@@ -311,6 +311,28 @@ components:
       description: >-
         Map of snake_case keys to scalar values. Max 64 fields; key max 64
         chars; string value max 1024 chars.
+    LabeledValue:
+      type: object
+      required: [label, value]
+      properties:
+        label: { type: string, maxLength: 50, example: mobile }
+        value: { type: string }
+      description: A single labeled entry, used for both emails and phone numbers.
+    Address:
+      type: object
+      properties:
+        label: { type: string, maxLength: 50, example: home }
+        street: { type: string, maxLength: 255 }
+        city: { type: string, maxLength: 255 }
+        region: { type: string, maxLength: 255 }
+        postal_code: { type: string, maxLength: 255 }
+        country: { type: string, maxLength: 255 }
+    Organization:
+      type: object
+      properties:
+        name: { type: string, maxLength: 255 }
+        title: { type: string, maxLength: 255 }
+        department: { type: string, maxLength: 255 }
     Person:
       type: object
       required: [id, first_name, last_name, display_name, created_at, updated_at]
@@ -325,10 +347,24 @@ components:
         nickname: { type: string, nullable: true }
         pronouns: { type: string, nullable: true }
         birthdate: { type: string, format: date, nullable: true }
+        emails:
+          type: array
+          maxItems: 10
+          items: { $ref: '#/components/schemas/LabeledValue' }
         phone_numbers:
           type: array
           maxItems: 10
-          items: { type: string, maxLength: 50 }
+          items: { $ref: '#/components/schemas/LabeledValue' }
+        addresses:
+          type: array
+          maxItems: 10
+          items: { $ref: '#/components/schemas/Address' }
+        organization:
+          type: object
+          allOf:
+            - $ref: '#/components/schemas/Organization'
+          nullable: true
+        notes: { type: string, maxLength: 4096, nullable: true }
         custom_fields:
           $ref: '#/components/schemas/CustomFields'
         created_at: { type: string, format: date-time }
@@ -349,9 +385,18 @@ components:
         nickname: { type: string, maxLength: 255 }
         pronouns: { type: string, maxLength: 255 }
         birthdate: { type: string, format: date }
+        emails:
+          type: array
+          items: { $ref: '#/components/schemas/LabeledValue' }
         phone_numbers:
           type: array
-          items: { type: string, maxLength: 50 }
+          items: { $ref: '#/components/schemas/LabeledValue' }
+        addresses:
+          type: array
+          items: { $ref: '#/components/schemas/Address' }
+        organization:
+          $ref: '#/components/schemas/Organization'
+        notes: { type: string, maxLength: 4096 }
         custom_fields:
           $ref: '#/components/schemas/CustomFields'
     UpdatePersonInput:
@@ -365,9 +410,21 @@ components:
         nickname: { type: string, maxLength: 255 }
         pronouns: { type: string, maxLength: 255 }
         birthdate: { type: string, format: date }
+        emails:
+          type: array
+          items: { $ref: '#/components/schemas/LabeledValue' }
         phone_numbers:
           type: array
-          items: { type: string, maxLength: 50 }
+          items: { $ref: '#/components/schemas/LabeledValue' }
+        addresses:
+          type: array
+          items: { $ref: '#/components/schemas/Address' }
+        organization:
+          type: object
+          allOf:
+            - $ref: '#/components/schemas/Organization'
+          nullable: true
+        notes: { type: string, maxLength: 4096, nullable: true }
         custom_fields:
           $ref: '#/components/schemas/CustomFields'
     PersonListResponse:
