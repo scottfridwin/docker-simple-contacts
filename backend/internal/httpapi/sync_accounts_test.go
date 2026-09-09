@@ -18,7 +18,8 @@ import (
 )
 
 type fakeSyncAccountStore struct {
-	items map[uuid.UUID]*contactsync.Account
+	items     map[uuid.UUID]*contactsync.Account
+	createErr error
 }
 
 func newFakeSyncAccountStore() *fakeSyncAccountStore {
@@ -34,6 +35,9 @@ func (f *fakeSyncAccountStore) List(_ context.Context, _ int) ([]contactsync.Acc
 }
 
 func (f *fakeSyncAccountStore) Create(_ context.Context, account *contactsync.Account) (*contactsync.Account, error) {
+	if f.createErr != nil {
+		return nil, f.createErr
+	}
 	cp := *account
 	cp.ID = uuid.New()
 	cp.CreatedAt = time.Now()

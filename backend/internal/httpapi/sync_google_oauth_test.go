@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
+
 	"github.com/scottfridlund/contacts/backend/internal/contactsync"
 	"github.com/scottfridlund/contacts/backend/internal/person"
 )
@@ -89,6 +91,36 @@ func testSyncGoogleRouter(adapter contactsync.Adapter) http.Handler {
 	personSvc := person.NewService(personStore)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	return NewRouter(logger, personSvc, personStore, newFakeSyncAccountStore(), adapter, []string{"http://localhost:5173"})
+}
+
+// TestGoogleOAuthCallbackStaleSessionReturns401 guards a real production bug:
+// a signed, still-unexpired session cookie can outlive its DB user row (e.g.
+// after a data reset), causing an owner_id foreign-key violation on insert.
+// That must surface as 401 (prompting re-login), not an opaque 500.
+func TestGoogleOAuthCallbackStaleSessionReturns401(t *testing.T) {
+	adapter := &fakeGoogleAdapter{
+		authRequest: contactsync.AuthRequest{AuthorizationURL: "https://accounts.google.com/o/oauth2/v2/auth?state=abc", State: "abc"},
+		authSession: contactsync.AuthSession{ProviderAccountID: "sub-1", AccessToken: "access-token"},
+	}
+	store := newFakeSyncAccountStore()
+	store.createErr = &pgconn.PgError{Code: "23503", ConstraintName: "sync_accounts_owner_id_fkey"}
+	personStore := newFakeStore()
+	personSvc := person.NewService(personStore)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	h := NewRouter(logger, personSvc, personStore, store, adapter, []string{"http://localhost:5173"})
+
+	begin := doJSON(t, h, http.MethodGet, "/api/v1/sync/google/begin", nil)
+	var beginPayload googleBeginResponse
+	_ = json.Unmarshal(begin.Body.Bytes(), &beginPayload)
+	cookies := begin.Result().Cookies()
+	cbReq := httptest.NewRequest(http.MethodGet, "/api/v1/sync/google/callback?state="+beginPayload.State+"&code=valid", nil)
+	cbReq.AddCookie(cookies[0])
+	cbRec := httptest.NewRecorder()
+	h.ServeHTTP(cbRec, cbReq)
+
+	if cbRec.Code != http.StatusUnauthorized {
+		t.Fatalf("callback status = %d, want 401, body=%s", cbRec.Code, cbRec.Body.String())
+	}
 }
 
 func TestGoogleOAuthBegin(t *testing.T) {

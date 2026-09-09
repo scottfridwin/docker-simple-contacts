@@ -12,6 +12,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
+
 	"github.com/scottfridlund/contacts/backend/internal/contactsync"
 )
 
@@ -20,6 +22,11 @@ const googleStateCookie = "contacts_google_sync_state"
 // backgroundSyncTimeout bounds the async post-OAuth contact sync so a stuck
 // provider call can't run forever.
 const backgroundSyncTimeout = 10 * time.Minute
+
+// errStaleSession indicates the caller's session cookie refers to a user
+// account that no longer exists in the database (e.g. after a data reset
+// while a signed, still-unexpired cookie remained in the browser).
+var errStaleSession = errors.New("session refers to an account that no longer exists")
 
 type googleOAuthHandler struct {
 	repo    syncAccountStore
@@ -81,6 +88,10 @@ func (h *googleOAuthHandler) callback(w http.ResponseWriter, r *http.Request) {
 	account, err := h.upsertGoogleAccount(r, session)
 	if err != nil {
 		h.logError(r, "storing google sync account failed", err)
+		if errors.Is(err, errStaleSession) {
+			writeError(w, http.StatusUnauthorized, "unauthorized", "your session has expired, please sign in again", nil)
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "internal_error", "failed to store google sync account", nil)
 		return
 	}
@@ -148,7 +159,7 @@ func (h *googleOAuthHandler) upsertGoogleAccount(r *http.Request, session contac
 			accounts[i].Scope = session.Scope
 			accounts[i].Status = "connected"
 			accounts[i].LastError = nil
-			return h.repo.Update(r.Context(), &accounts[i])
+			return asStaleSessionErr(h.repo.Update(r.Context(), &accounts[i]))
 		}
 	}
 	account := &contactsync.Account{
@@ -164,7 +175,20 @@ func (h *googleOAuthHandler) upsertGoogleAccount(r *http.Request, session contac
 		expiresAt := session.ExpiresAt.UTC()
 		account.ExpiresAt = &expiresAt
 	}
-	return h.repo.Create(r.Context(), account)
+	return asStaleSessionErr(h.repo.Create(r.Context(), account))
+}
+
+// asStaleSessionErr rewrites a foreign-key violation on sync_accounts.owner_id
+// into errStaleSession, so the caller can respond 401 instead of 500.
+func asStaleSessionErr(account *contactsync.Account, err error) (*contactsync.Account, error) {
+	if err == nil {
+		return account, nil
+	}
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == "23503" && strings.Contains(pgErr.ConstraintName, "owner_id") {
+		return nil, errStaleSession
+	}
+	return nil, err
 }
 
 func randomStateToken() (string, error) {
