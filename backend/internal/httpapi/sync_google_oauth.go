@@ -45,6 +45,7 @@ func (h *googleOAuthHandler) begin(w http.ResponseWriter, r *http.Request) {
 	redirectURI := strings.TrimSpace(r.URL.Query().Get("redirect_uri"))
 	authRequest, err := h.adapter.BeginAuthorization(r.Context(), redirectURI, state)
 	if err != nil {
+		h.logError(r, "google oauth begin failed", err)
 		writeError(w, http.StatusBadRequest, "invalid_request", err.Error(), nil)
 		return
 	}
@@ -72,12 +73,14 @@ func (h *googleOAuthHandler) callback(w http.ResponseWriter, r *http.Request) {
 	}
 	session, err := h.adapter.CompleteAuthorization(r.Context(), code)
 	if err != nil {
+		h.logError(r, "google oauth code exchange failed", err)
 		writeError(w, http.StatusBadRequest, "invalid_request", err.Error(), nil)
 		return
 	}
 
 	account, err := h.upsertGoogleAccount(r, session)
 	if err != nil {
+		h.logError(r, "storing google sync account failed", err)
 		writeError(w, http.StatusInternalServerError, "internal_error", "failed to store google sync account", nil)
 		return
 	}
@@ -103,6 +106,13 @@ func (h *googleOAuthHandler) runBackgroundSync(account contactsync.Account) {
 			h.logger.Error("background google sync failed", "account_id", account.ID, "error", err)
 		}
 	}()
+}
+
+func (h *googleOAuthHandler) logError(r *http.Request, msg string, err error) {
+	if h.logger == nil {
+		return
+	}
+	h.logger.Error(msg, "request_id", RequestIDFromContext(r.Context()), "error", err)
 }
 
 func (h *googleOAuthHandler) upsertGoogleAccount(r *http.Request, session contactsync.AuthSession) (*contactsync.Account, error) {
