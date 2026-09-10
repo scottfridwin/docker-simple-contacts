@@ -78,10 +78,9 @@ docs/design/            authoritative design documents
   as a free-text name (no record link); import links to an existing contact
   only on an exact, unambiguous display-name match, otherwise the
   relationship stays name-only.
-- **Custom fields**: lowercase `snake_case` keys; scalar values of type
-  string / number / boolean / date; max 64 fields; key ≤ 64 chars; string ≤ 1024
-  chars. Dates are ISO-8601 strings (JSON has no date type). `null` is rejected —
-  omit a field to remove it.
+- **Custom fields**: any non-empty, printable key (case-sensitive, no format
+  requirement) up to 64 chars; string/number/boolean values; max 64 fields;
+  string ≤ 1024 chars. `null` is rejected — omit a field to remove it.
 - **Delete**: soft delete (recycle bin); a background job purges rows soft-deleted
   more than `PURGE_AFTER_DAYS` (default 30) ago.
 - **List**: page size 25 (max 100); default sort `last_name, first_name asc`;
@@ -124,10 +123,15 @@ docs/design/            authoritative design documents
   use; do not expose them as generic editable custom fields in list/detail
   UI. New Google syncs track remote record ids per account via the
   `sync_record_links` table, not `Person.custom_fields`. `Person.custom_fields`
-  itself is **not synced with Google** in either direction - only the fixed
-  built-in fields are mapped. A contact's own Google-side `userDefined`
-  entries (Google's native custom-field concept) are preserved on every
-  write apart from our reserved key, never overwritten wholesale.
+  **is synced with Google bidirectionally** via `userDefined` entries: keys
+  are used verbatim as the Google label (no snake_case/humanization), values
+  are stringified on export and type-sniffed (number/boolean/string) on
+  import. There is no origin distinction - a field added directly in Google
+  Contacts is treated the same as one added locally, and propagates to every
+  other Google account the Person is linked to. `toGooglePerson` rebuilds
+  `userDefined` authoritatively from `custom_fields` plus the reserved
+  `contacts_local_id` tag on every write (no longer merges with whatever was
+  there before).
 - **Sync robustness**: a single record failing to merge/export is logged
   and skipped, not treated as fatal for the whole pull/export - and the
   cursor returned reflects whatever progress was actually made, never a

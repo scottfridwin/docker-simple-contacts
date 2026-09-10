@@ -8,9 +8,11 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"net/http"
 	"net/url"
 	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -276,7 +278,7 @@ func (a *Adapter) FetchRecord(ctx context.Context, session contactsync.AuthSessi
 // UpsertRecord creates or updates one remote contact.
 func (a *Adapter) UpsertRecord(ctx context.Context, session contactsync.AuthSession, record contactsync.Record) (contactsync.ProviderRecord, error) {
 	if strings.TrimSpace(record.ExternalID) == "" {
-		payload := toGooglePerson(record, "", nil)
+		payload := toGooglePerson(record, "")
 		var created googlePerson
 		if err := a.postJSON(ctx, session.AccessToken, "/people:createContact", payload, &created); err != nil {
 			return contactsync.ProviderRecord{}, err
@@ -289,14 +291,14 @@ func (a *Adapter) UpsertRecord(ctx context.Context, session contactsync.AuthSess
 	}
 	values := url.Values{}
 	values.Set("updatePersonFields", googleUpdatePersonFields)
-	updated, err := a.updateContact(ctx, session.AccessToken, record, current.ETag, current.UserDefined, values)
+	updated, err := a.updateContact(ctx, session.AccessToken, record, current.ETag, values)
 	if isETagConflict(err) {
 		// The contact changed on Google's side between our read of its etag
 		// above and this update - re-read the now-current etag and retry
 		// once instead of failing the whole sync run.
 		current, refetchErr := a.getContact(ctx, session.AccessToken, record.ExternalID)
 		if refetchErr == nil {
-			updated, err = a.updateContact(ctx, session.AccessToken, record, current.ETag, current.UserDefined, values)
+			updated, err = a.updateContact(ctx, session.AccessToken, record, current.ETag, values)
 		}
 	}
 	if err != nil {
@@ -305,12 +307,9 @@ func (a *Adapter) UpsertRecord(ctx context.Context, session contactsync.AuthSess
 	return toProviderRecord(updated), nil
 }
 
-// updateContact sends one updateContact PATCH using the given etag. existing
-// is the contact's current userDefined list (from the read that produced
-// etag), preserved apart from our own reserved key so an update never wipes
-// out custom fields the user set up directly in Google Contacts.
-func (a *Adapter) updateContact(ctx context.Context, accessToken string, record contactsync.Record, etag string, existing []googleUserDefined, values url.Values) (googlePerson, error) {
-	payload := toGooglePerson(record, etag, existing)
+// updateContact sends one updateContact PATCH using the given etag.
+func (a *Adapter) updateContact(ctx context.Context, accessToken string, record contactsync.Record, etag string, values url.Values) (googlePerson, error) {
+	payload := toGooglePerson(record, etag)
 	var updated googlePerson
 	if err := a.patchJSON(ctx, accessToken, "/"+record.ExternalID+":updateContact?"+values.Encode(), payload, &updated); err != nil {
 		return googlePerson{}, err
@@ -643,9 +642,12 @@ func (a *Adapter) mergeRemoteRecord(ctx context.Context, accountID uuid.UUID, se
 		if match, ok := a.findUnlinkedMatch(ctx, accountID, remoteModel); ok {
 			return a.reconcileExisting(ctx, accountID, session, match, remoteModel, remote, pending)
 		}
-		created, _, err := a.people.Create(contactsync.WithSyncOrigin(ctx), remoteModel)
+		created, verrs, err := a.people.Create(contactsync.WithSyncOrigin(ctx), remoteModel)
 		if err != nil {
 			return fmt.Errorf("creating local person from google record %s: %w", remote.Record.ExternalID, err)
+		}
+		if verrs.HasErrors() {
+			return fmt.Errorf("creating local person from google record %s: %s", remote.Record.ExternalID, verrs.Error())
 		}
 		*pending = append(*pending, pendingRelationship{PersonID: created.ID, Fields: remote.Record.Fields})
 		out, upsertErr := a.UpsertRecord(ctx, session, a.attachRelationsForExport(ctx, created.ID, created.UpdatedAt, personToRecord(*created, remote.Record.ExternalID)))
@@ -666,9 +668,12 @@ func (a *Adapter) mergeRemoteRecord(ctx context.Context, accountID uuid.UUID, se
 			// remote record is a tombstone too - nothing to reconcile.
 			return nil
 		}
-		created, _, createErr := a.people.Create(contactsync.WithSyncOrigin(ctx), remoteModel)
+		created, verrs, createErr := a.people.Create(contactsync.WithSyncOrigin(ctx), remoteModel)
 		if createErr != nil {
 			return fmt.Errorf("creating local person for missing mapping: %w", createErr)
+		}
+		if verrs.HasErrors() {
+			return fmt.Errorf("creating local person for missing mapping: %s", verrs.Error())
 		}
 		*pending = append(*pending, pendingRelationship{PersonID: created.ID, Fields: remote.Record.Fields})
 		out, upsertErr := a.UpsertRecord(ctx, session, a.attachRelationsForExport(ctx, created.ID, created.UpdatedAt, personToRecord(*created, remote.Record.ExternalID)))
@@ -724,8 +729,12 @@ func (a *Adapter) reconcileExisting(ctx context.Context, accountID uuid.UUID, se
 
 	if remoteUpdatedAt.After(local.UpdatedAt) {
 		update := fieldAwareUpdate(remote.Record.Fields, remoteModel)
-		if _, _, err := a.people.Update(contactsync.WithSyncOrigin(ctx), local.ID, update); err != nil {
+		_, verrs, err := a.people.Update(contactsync.WithSyncOrigin(ctx), local.ID, update)
+		if err != nil {
 			return fmt.Errorf("updating local person %s: %w", local.ID.String(), err)
+		}
+		if verrs.HasErrors() {
+			return fmt.Errorf("updating local person %s: %s", local.ID.String(), verrs.Error())
 		}
 		*pending = append(*pending, pendingRelationship{PersonID: local.ID, Fields: remote.Record.Fields})
 		return nil
@@ -779,6 +788,10 @@ func fieldAwareUpdate(fields map[string]contactsync.FieldState, remoteModel pers
 	if fieldIsSet(fields, "notes") {
 		update.Notes = remoteModel.Notes
 		update.NotesSet = true
+	}
+	if fieldIsSet(fields, "custom_fields") {
+		update.CustomFields = remoteModel.CustomFields
+		update.CustomFieldsSet = true
 	}
 	return update
 }
@@ -887,6 +900,7 @@ func snapshotToRecord(snapshot contactsync.PersonSnapshot) contactsync.Record {
 	if snapshot.ID != uuid.Nil {
 		record.Fields["local_id"] = contactsync.FieldState{IsSet: true, Value: snapshot.ID.String(), UpdatedAt: snapshot.UpdatedAt}
 	}
+	record.Fields["custom_fields"] = contactsync.FieldState{IsSet: true, Value: cloneCustomFields(snapshot.CustomFields), UpdatedAt: snapshot.UpdatedAt}
 	return record
 }
 
@@ -919,6 +933,7 @@ func personToRecord(p person.Person, externalID string) contactsync.Record {
 	if p.Birthdate != nil {
 		record.Fields["birthdate"] = contactsync.FieldState{IsSet: true, Value: *p.Birthdate, UpdatedAt: p.UpdatedAt}
 	}
+	record.Fields["custom_fields"] = contactsync.FieldState{IsSet: true, Value: cloneCustomFields(p.CustomFields), UpdatedAt: p.UpdatedAt}
 	return record
 }
 
@@ -943,6 +958,7 @@ func remoteToLocal(record contactsync.ProviderRecord) (person.CreateInput, *uuid
 		Emails:       normalizeLabeledValues(emails, 10, 254),
 		Addresses:    addresses,
 		Organization: fieldOrganization(record.Record.Fields, "organization"),
+		CustomFields: person.SanitizeCustomFieldsForSync(fieldCustomFields(record.Record.Fields, "custom_fields")),
 	}
 	if notes := fieldString(record.Record.Fields, "notes"); notes != "" {
 		create.Notes = &notes
@@ -1068,6 +1084,72 @@ func fieldOrganization(fields map[string]contactsync.FieldState, key string) *co
 		return nil
 	}
 	return org
+}
+
+// fieldCustomFields returns the map[string]any stored in a field, or an
+// empty (never nil) map.
+func fieldCustomFields(fields map[string]contactsync.FieldState, key string) map[string]any {
+	field, ok := fields[key]
+	if !ok || !field.IsSet || field.Value == nil {
+		return map[string]any{}
+	}
+	values, ok := field.Value.(map[string]any)
+	if !ok {
+		return map[string]any{}
+	}
+	return values
+}
+
+// cloneCustomFields returns a shallow defensive copy, never nil.
+func cloneCustomFields(m map[string]any) map[string]any {
+	out := make(map[string]any, len(m))
+	for k, v := range m {
+		out[k] = v
+	}
+	return out
+}
+
+// stringifyCustomFieldValue renders a custom field's value as plain text for
+// Google's userDefined field, which has no concept of types. ok is false for
+// a value type we don't support (shouldn't occur given our own validation,
+// but this is data crossing a trust boundary).
+func stringifyCustomFieldValue(v any) (string, bool) {
+	switch value := v.(type) {
+	case string:
+		return value, true
+	case bool:
+		if value {
+			return "true", true
+		}
+		return "false", true
+	case float64:
+		return strconv.FormatFloat(value, 'f', -1, 64), true
+	case json.Number:
+		return value.String(), true
+	default:
+		return "", false
+	}
+}
+
+// sniffCustomFieldValue infers a typed value from a plain-text Google
+// userDefined value (Google itself has no concept of types): an exact
+// "true"/"false" becomes a bool, a cleanly-parseable finite number becomes a
+// float64, otherwise it stays a string. This intentionally mirrors how a
+// spreadsheet/CSV import would guess types from raw text. A value with
+// leading zeros (e.g. a zip code stored as "02134") will be misread as a
+// number and lose them on export - an accepted tradeoff of type-sniffing
+// plain text rather than encoding the type explicitly.
+func sniffCustomFieldValue(raw string) any {
+	switch raw {
+	case "true":
+		return true
+	case "false":
+		return false
+	}
+	if n, err := strconv.ParseFloat(raw, 64); err == nil && !math.IsInf(n, 0) && !math.IsNaN(n) {
+		return n
+	}
+	return raw
 }
 
 // normalizeLabeledValues trims/truncates and drops empty-valued entries from
@@ -1318,12 +1400,17 @@ func toProviderRecord(in googlePerson) contactsync.ProviderRecord {
 	}
 	fields["relations"] = contactsync.FieldState{IsSet: true, Value: relations, UpdatedAt: updatedAt}
 	fields[remoteUpdatedFieldKey] = contactsync.FieldState{IsSet: true, Value: updatedAt.Format(time.RFC3339Nano), UpdatedAt: updatedAt}
+	customFields := map[string]any{}
 	for _, item := range in.UserDefined {
 		if item.Key == localIDUserDefinedKey {
 			fields["local_id"] = contactsync.FieldState{IsSet: true, Value: item.Value, UpdatedAt: updatedAt}
-			break
+			continue
+		}
+		if key := strings.TrimSpace(item.Key); key != "" {
+			customFields[key] = sniffCustomFieldValue(item.Value)
 		}
 	}
+	fields["custom_fields"] = contactsync.FieldState{IsSet: true, Value: person.SanitizeCustomFieldsForSync(customFields), UpdatedAt: updatedAt}
 	return contactsync.ProviderRecord{
 		Record: contactsync.Record{
 			ExternalID: in.ResourceName,
@@ -1337,7 +1424,7 @@ func toProviderRecord(in googlePerson) contactsync.ProviderRecord {
 	}
 }
 
-func toGooglePerson(record contactsync.Record, etag string, existing []googleUserDefined) googlePerson {
+func toGooglePerson(record contactsync.Record, etag string) googlePerson {
 	firstName := fieldString(record.Fields, "first_name")
 	middleNames := fieldStrings(record.Fields, "middle_names")
 	lastName := fieldString(record.Fields, "last_name")
@@ -1390,11 +1477,16 @@ func toGooglePerson(record contactsync.Record, etag string, existing []googleUse
 		birthdate = &value
 	}
 	userDefined := []googleUserDefined{}
-	for _, item := range existing {
-		if item.Key != localIDUserDefinedKey {
-			userDefined = append(userDefined, item)
+	for key, value := range fieldCustomFields(record.Fields, "custom_fields") {
+		key = strings.TrimSpace(key)
+		if key == "" || key == localIDUserDefinedKey {
+			continue
+		}
+		if str, ok := stringifyCustomFieldValue(value); ok {
+			userDefined = append(userDefined, googleUserDefined{Key: key, Value: str})
 		}
 	}
+	sort.Slice(userDefined, func(i, j int) bool { return userDefined[i].Key < userDefined[j].Key })
 	localID := fieldString(record.Fields, "local_id")
 	if localID != "" {
 		userDefined = append(userDefined, googleUserDefined{Key: localIDUserDefinedKey, Value: localID})

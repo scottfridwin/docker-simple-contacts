@@ -138,7 +138,7 @@ func TestToGooglePersonMapsNewContactFields(t *testing.T) {
 		},
 	}
 
-	out := toGooglePerson(record, "etag", nil)
+	out := toGooglePerson(record, "etag")
 	if len(out.EmailAddresses) != 1 || out.EmailAddresses[0].Value != "scott@example.com" || out.EmailAddresses[0].Type != "work" {
 		t.Fatalf("EmailAddresses = %+v", out.EmailAddresses)
 	}
@@ -484,7 +484,7 @@ func TestToGooglePersonMapsRelations(t *testing.T) {
 			}},
 		},
 	}
-	out := toGooglePerson(record, "etag", nil)
+	out := toGooglePerson(record, "etag")
 	if len(out.Relations) != 1 || out.Relations[0].Person != "Jane Doe" || out.Relations[0].Type != "spouse" {
 		t.Fatalf("Relations = %+v", out.Relations)
 	}

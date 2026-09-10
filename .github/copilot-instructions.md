@@ -53,8 +53,9 @@ conflict.
   stored twice. No update endpoint - delete and recreate to change the type.
   Managed via `GET/POST /persons/{id}/relationships` and
   `DELETE /persons/{id}/relationships/{relationshipId}`.
-- Custom fields: `snake_case` keys; string/number/boolean/date values; max 64
-  fields; key ≤ 64; string ≤ 1024; `null` rejected.
+- Custom fields: any non-empty, printable key (case-sensitive, no format
+  requirement) up to 64 chars; string/number/boolean values; max 64 fields;
+  string ≤ 1024; `null` rejected.
 - Soft delete + 30-day purge. List defaults: page 25 / max 100, sort
   `last_name, first_name asc`, filters `first_name`/`last_name`/`favorite`.
   Favorites are shown in an always-visible UI section (separate fetch with
@@ -70,10 +71,15 @@ conflict.
   `contacts_local_id`) are reserved system fields and should not be exposed as
   normal editable custom fields. Per-account remote record ids live in the
   `sync_record_links` table, not `Person.custom_fields`. `Person.custom_fields`
-  itself is **not synced with Google** in either direction - only the fixed
-  built-in fields are mapped. A contact's own Google-side `userDefined`
-  entries (Google's native custom-field concept) are preserved on every
-  write apart from our reserved key, never overwritten wholesale.
+  **is synced with Google bidirectionally** via `userDefined` entries: keys
+  are used verbatim as the Google label (no snake_case/humanization), values
+  are stringified on export and type-sniffed (number/boolean/string) on
+  import. There is no origin distinction - a field added directly in Google
+  Contacts is treated the same as one added locally, and propagates to every
+  other Google account the Person is linked to. `toGooglePerson` rebuilds
+  `userDefined` authoritatively from `custom_fields` plus the reserved
+  `contacts_local_id` tag on every write (no longer merges with whatever was
+  there before).
 - Sync robustness: a single record failing to merge/export is logged and
   skipped, not treated as fatal for the whole pull/export - and the cursor
   returned reflects whatever progress was actually made, never a stale

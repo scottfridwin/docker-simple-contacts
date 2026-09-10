@@ -711,3 +711,73 @@ created a second time. Fixed by:
   failures now), the cursor already advanced through completed pages is
   returned and persisted, instead of the stale pre-run cursor.
 
+## Post-implementation decision log (2026-09-10, final)
+
+### N) Full bidirectional custom_fields <-> Google sync
+
+Reverses the "custom fields aren't synced" state of things from decision
+M above, after a design discussion with the user. Also **relaxes the
+original custom-field key-format decision** (section 4 above, "lowercase
+snake_case") - superseded by this entry, per explicit user request.
+
+- **Key format relaxed**: a custom field key is now any non-empty,
+  printable string (any case, spaces and punctuation allowed) up to 64
+  characters, case-sensitive, with no snake_case/normalization requirement.
+  `ValidateCustomFields`'s key check (`isValidCustomFieldKey`) only checks
+  trimmed-non-empty, length, and absence of control characters. The old
+  `snake_case` regex and the `_date`-key-suffix date-format special case
+  were both removed entirely (the latter because it was meaningless once
+  keys are freeform - a "date" is just a plain string value with no
+  special validation now, same as any other custom field).
+- **No prefix, no per-origin distinction**: every `userDefined` entry
+  except our own reserved `contacts_local_id` tag is treated as a regular
+  custom field, in both directions - there's no separate "system" vs
+  "user-native" bucket. A field added directly in Google Contacts, on a
+  contact already linked to this app, is pulled into `Person.custom_fields`
+  on the next sync exactly like a field added through this app's own UI.
+  Explicit, accepted consequence: a personal custom field a user only ever
+  typed into *one* connected Google account is no longer private to that
+  account - it becomes part of the shared `Person.custom_fields` and then
+  propagates to every other linked Google account (and the local UI) the
+  next time each syncs, the same way any other field edited directly in
+  one Google account already propagates everywhere.
+- **Keys round-trip verbatim** - no humanize/dehumanize transform. The key
+  you type in Google Contacts is exactly the key stored locally, and vice
+  versa (case-sensitive, byte-for-byte).
+- **Values**: stringified on export (number -> decimal string via
+  `strconv.FormatFloat`, boolean -> `"true"`/`"false"`, string as-is).
+  Sniffed back into a typed value on import (exact `"true"`/`"false"` ->
+  bool; a cleanly-parseable finite number -> float64; otherwise stays a
+  string) - `sniffCustomFieldValue`/`stringifyCustomFieldValue` in
+  `adapter.go`. Accepted tradeoffs: a value like a zip code with leading
+  zeros (`"02134"`) will be misread as a number and lose them once it
+  round-trips; `"Inf"`/`"NaN"`-looking text is explicitly guarded to stay
+  a string rather than becoming a floating-point special value.
+- **Merge granularity**: `custom_fields` is treated as one whole-map field
+  (a single `FieldState` in `contactsync.Record.Fields`), resolved by the
+  same whole-record last-write-wins timestamp comparison as every other
+  field - not per-key. This isn't actually coarser than the rest of the
+  sync model: Google has no per-`userDefined`-entry timestamp either, so
+  finer-grained resolution isn't achievable regardless of how the code is
+  structured.
+- **Import validation is lenient, never fails the sync**: new
+  `person.SanitizeCustomFieldsForSync` drops (doesn't error on) any
+  imported entry that doesn't fit the policy (oversized key/value,
+  control characters, more than 64 fields after a deterministic
+  alphabetical-key sort) - a single unusable custom field must not block
+  importing the rest of a contact's data. `toGooglePerson` rebuilds
+  Google's `userDefined` list *authoritatively* from `custom_fields` plus
+  the reserved tag on every write now (superseding decision M's
+  "preserve existing entries" approach, which is no longer meaningful
+  once every non-reserved entry is a first-class synced field rather than
+  opaque data to leave alone).
+- **Also fixed while implementing this**: `mergeRemoteRecord`'s three
+  `person.Create`/`Update` call sites were silently discarding the
+  `ValidationErrors` return value - a validation failure there returns a
+  nil `*Person` with a nil `error`, which would have panicked on
+  `created.ID` the first time imported custom field data (now far more
+  likely than before) tripped a validation rule. Both `err != nil` and
+  `verrs.HasErrors()` are now checked, treating a validation failure the
+  same as any other per-record sync error (logged and skipped, per
+  decision M).
+

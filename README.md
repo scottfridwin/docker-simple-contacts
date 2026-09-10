@@ -191,11 +191,11 @@ A `Person` has:
   `false`, showing who shared the contact
 - `created_at`, `updated_at`, `deleted_at` (soft delete)
 
-**Custom fields policy:** lowercase `snake_case` keys; scalar values of type
-string, number, boolean, or date; max 64 fields; key max 64 chars; string value
-max 1024 chars. JSON has no date type, so dates are ISO-8601 strings
-(`YYYY-MM-DD` or RFC 3339). `null` values are rejected — omit a field to remove
-it.
+**Custom fields policy:** any non-empty, printable key (case-sensitive, no
+format requirement) up to 64 chars; scalar values of type string, number, or
+boolean; max 64 fields; string value max 1024 chars. `null` values are
+rejected — omit a field to remove it. Custom fields sync bidirectionally with
+Google Contacts (see the Google sync section below).
 
 **Relationships:** a `Person` can be related to another `Person` (or, if the
 other person isn't in your contacts, just a free-text name) via one of five
@@ -245,11 +245,13 @@ shares via `GET/POST /persons/{id}/shares`, `DELETE
   "Add Google account" action); each connected account mirrors the full
   contact list both ways. Accounts are identified by the Google account's
   stable subject id and labeled in the UI with the connected email.
-- Only the fixed built-in `Person` fields are synced with Google (name,
-  emails, phone numbers, addresses, organization, notes, nickname,
-  birthdate, relationships); `custom_fields` are local-only and are not
-  pushed to or pulled from Google. A contact's own custom fields set up
-  directly in Google Contacts are left untouched by our sync.
+- `custom_fields` sync bidirectionally with Google Contacts as `userDefined`
+  entries: the key is used verbatim as the Google label, values are
+  stringified on export and type-sniffed (number/boolean/string) back on
+  import. There's no distinction between a field added locally and one
+  added directly in Google Contacts - both are treated the same, and a
+  field added in any one connected Google account propagates to every
+  other Google account (and the local record) that Person is linked to.
 - Frontend sync panel: connect Google and review sync status from the main app UI
 - Public privacy policy: `GET /privacy`
 - Public homepage purpose page: `GET /` remains readable without authentication and

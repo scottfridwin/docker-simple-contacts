@@ -4,8 +4,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/scottfridlund/contacts/backend/internal/contactsync"
 )
@@ -28,7 +30,6 @@ const (
 	MaxNotesLength        = 4096
 )
 
-var snakeCaseKey = regexp.MustCompile(`^[a-z][a-z0-9]*(_[a-z0-9]+)*$`)
 var emailPattern = regexp.MustCompile(`^[^\s@]+@[^\s@]+\.[^\s@]+$`)
 
 // ValidationError describes a single field-level validation failure.
@@ -250,12 +251,12 @@ func validateMiddleNames(names []string) ValidationErrors {
 	return errs
 }
 
-// ValidateCustomFields enforces the custom field policy: snake_case keys; scalar
-// values of type string, number, boolean, or date; bounded counts and lengths.
+// ValidateCustomFields enforces the custom field policy: any non-empty,
+// printable key up to MaxKeyLength characters (case-sensitive, no
+// normalization); scalar values of type string, number, or boolean; bounded
+// counts and lengths.
 //
-// Note: JSON has no native date type. Date values are represented as strings in
-// RFC 3339 or YYYY-MM-DD form and validated as such. Null values are rejected;
-// to remove a field, omit it from the payload.
+// Note: null values are rejected; to remove a field, omit it from the payload.
 func ValidateCustomFields(fields map[string]any) ValidationErrors {
 	if fields == nil {
 		return nil
@@ -266,15 +267,29 @@ func ValidateCustomFields(fields map[string]any) ValidationErrors {
 	}
 	for key, value := range fields {
 		field := "custom_fields." + key
-		if len(key) > MaxKeyLength {
-			errs = append(errs, ValidationError{Field: field, Message: fmt.Sprintf("key must be at most %d characters", MaxKeyLength)})
-		}
-		if !snakeCaseKey.MatchString(key) {
-			errs = append(errs, ValidationError{Field: field, Message: "key must be lowercase snake_case"})
+		if !isValidCustomFieldKey(key) {
+			errs = append(errs, ValidationError{Field: field, Message: fmt.Sprintf("key must be non-empty, at most %d characters, and contain no control characters", MaxKeyLength)})
 		}
 		errs = append(errs, validateCustomValue(field, value)...)
 	}
 	return errs
+}
+
+// isValidCustomFieldKey allows any printable key (letters, digits, spaces,
+// punctuation) - matching whatever the user typed, in this app or in
+// Google Contacts. Only non-empty, length, and control-character checks
+// apply; case and exact formatting are preserved as-is.
+func isValidCustomFieldKey(key string) bool {
+	trimmed := strings.TrimSpace(key)
+	if trimmed == "" || len(key) > MaxKeyLength {
+		return false
+	}
+	for _, r := range key {
+		if unicode.IsControl(r) {
+			return false
+		}
+	}
+	return true
 }
 
 func validateCustomValue(field string, value any) ValidationErrors {
@@ -289,23 +304,43 @@ func validateCustomValue(field string, value any) ValidationErrors {
 		if len(v) > MaxStringValueLength {
 			return ValidationErrors{{Field: field, Message: fmt.Sprintf("string value must be at most %d characters", MaxStringValueLength)}}
 		}
-		if strings.HasSuffix(field, "_date") && !IsDateString(v) {
-			return ValidationErrors{{Field: field, Message: "date value must be YYYY-MM-DD or RFC 3339"}}
-		}
 		return nil
 	default:
 		return ValidationErrors{{Field: field, Message: "value must be a string, number, boolean, or date string"}}
 	}
 }
 
-// IsDateString reports whether a value looks like a supported date representation.
-// Provided as a helper for clients; storage treats dates as strings.
-func IsDateString(s string) bool {
-	if _, err := time.Parse("2006-01-02", s); err == nil {
-		return true
+// SanitizeCustomFieldsForSync coerces an externally-sourced custom fields map
+// (e.g. parsed from a Google contact's userDefined entries) into one
+// guaranteed to pass ValidateCustomFields, by dropping - never erroring on -
+// anything that doesn't fit. A single oversized value or a contact with an
+// unusually large number of custom fields must not block importing the rest
+// of that contact's data. Keys are processed in sorted order so which
+// entries survive an over-the-cap truncation is deterministic.
+func SanitizeCustomFieldsForSync(raw map[string]any) map[string]any {
+	out := map[string]any{}
+	if len(raw) == 0 {
+		return out
 	}
-	_, err := time.Parse(time.RFC3339, s)
-	return err == nil
+	keys := make([]string, 0, len(raw))
+	for key := range raw {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		if len(out) >= MaxCustomFields {
+			break
+		}
+		if !isValidCustomFieldKey(key) {
+			continue
+		}
+		value := raw[key]
+		if validateCustomValue("custom_fields."+key, value).HasErrors() {
+			continue
+		}
+		out[key] = value
+	}
+	return out
 }
 
 func derefString(p *string) string {

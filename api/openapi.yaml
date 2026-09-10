@@ -447,8 +447,10 @@ components:
       additionalProperties:
         $ref: '#/components/schemas/CustomFieldValue'
       description: >-
-        Map of snake_case keys to scalar values. Max 64 fields; key max 64
-        chars; string value max 1024 chars.
+        Map of freeform (any non-empty, printable, case-sensitive) keys to
+        scalar values. Max 64 fields; key max 64 chars; string value max
+        1024 chars. Synced bidirectionally with Google Contacts as
+        userDefined entries.
     LabeledValue:
       type: object
       required: [label, value]

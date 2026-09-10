@@ -41,14 +41,18 @@ func TestValidateUpdateNilNameTreatedAsEmpty(t *testing.T) {
 
 func TestCustomFieldKeyFormat(t *testing.T) {
 	cases := map[string]bool{
-		"blood_type": true,
-		"age":        true,
-		"field1":     true,
-		"BloodType":  false,
-		"blood-type": false,
-		"_leading":   false,
-		"trailing_":  false,
-		"double__us": false,
+		"blood_type":    true,
+		"age":           true,
+		"field1":        true,
+		"BloodType":     true,
+		"Blood Type":    true,
+		"blood-type":    true,
+		"T-Shirt Size":  true,
+		"Employee ID #": true,
+		"":              false,
+		"   ":           false,
+		"has\ttab":      false,
+		"has\nnewline":  false,
 	}
 	for key, valid := range cases {
 		errs := ValidateCustomFields(map[string]any{key: "x"})
@@ -308,29 +312,56 @@ func TestDeriveDisplayName(t *testing.T) {
 	}
 }
 
-func TestIsDateString(t *testing.T) {
-	if !IsDateString("2026-08-25") {
-		t.Error("expected YYYY-MM-DD to be a date")
-	}
-	if !IsDateString("2026-08-25T10:00:00Z") {
-		t.Error("expected RFC3339 to be a date")
-	}
-	if IsDateString("not a date") {
-		t.Error("expected non-date string to be rejected")
-	}
-}
-
-func TestCustomDateFieldValidation(t *testing.T) {
-	if errs := ValidateCustomFields(map[string]any{"anniversary_date": "not-a-date"}); !errs.HasErrors() {
-		t.Error("expected invalid custom date to be rejected")
-	}
-}
-
 func TestValidateRelationshipInputRejectsOversizedName(t *testing.T) {
 	long := strings.Repeat("x", MaxNameLength+1)
 	errs := ValidateRelationshipInput(uuid.New(), RelationshipInput{Type: RelationSibling, RelatedPersonName: &long})
 	if !errs.HasErrors() {
 		t.Error("expected error for oversized related_person_name")
+	}
+}
+
+// TestSanitizeCustomFieldsForSync guards the lenient sync-import path: bad
+// data is dropped (never surfaced as an error, since a single unusable
+// custom field must not block importing the rest of a contact), and the
+// result always passes the strict ValidateCustomFields check.
+func TestSanitizeCustomFieldsForSync(t *testing.T) {
+	if got := SanitizeCustomFieldsForSync(nil); len(got) != 0 {
+		t.Errorf("expected empty map for nil input, got %+v", got)
+	}
+
+	longValue := strings.Repeat("x", MaxStringValueLength+1)
+	raw := map[string]any{
+		"Blood Type":  "O+",
+		"":            "dropped: empty key",
+		"has\x00null": "dropped: control character",
+		"too long":    longValue,
+		"nested":      map[string]any{"x": 1},
+		"is_vip":      true,
+		"shoe_size":   10.5,
+	}
+	got := SanitizeCustomFieldsForSync(raw)
+	want := map[string]any{"Blood Type": "O+", "is_vip": true, "shoe_size": 10.5}
+	if len(got) != len(want) {
+		t.Fatalf("SanitizeCustomFieldsForSync = %+v, want %+v", got, want)
+	}
+	for key, value := range want {
+		if got[key] != value {
+			t.Errorf("got[%q] = %#v, want %#v", key, got[key], value)
+		}
+	}
+	if errs := ValidateCustomFields(got); errs.HasErrors() {
+		t.Errorf("sanitized output must pass ValidateCustomFields, got errors: %s", errs.Error())
+	}
+}
+
+func TestSanitizeCustomFieldsForSyncEnforcesMaxCount(t *testing.T) {
+	raw := make(map[string]any, MaxCustomFields+5)
+	for i := 0; i < MaxCustomFields+5; i++ {
+		raw[itoa(i)] = "v"
+	}
+	got := SanitizeCustomFieldsForSync(raw)
+	if len(got) != MaxCustomFields {
+		t.Fatalf("len(got) = %d, want %d", len(got), MaxCustomFields)
 	}
 }
 

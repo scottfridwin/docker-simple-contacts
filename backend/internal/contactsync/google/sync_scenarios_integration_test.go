@@ -370,44 +370,77 @@ func TestScenario_ModifyInContacts(t *testing.T) {
 	}
 }
 
-// TestUpsertRecordPreservesExistingUserDefinedFields guards a real data-loss
-// bug: pushing a local edit to Google used to always overwrite the entire
-// userDefined field with just our own reserved contacts_local_id entry,
-// silently wiping out any custom field the user had set up directly in
-// Google Contacts (our own app-level custom_fields are a separate, still
-// unsynced concept - see docs/design/03-implementation-decisions.md).
-func TestUpsertRecordPreservesExistingUserDefinedFields(t *testing.T) {
+// TestScenario_CustomFieldsSyncBothWays guards the full bidirectional
+// custom_fields <-> Google userDefined mapping: exporting a local custom
+// field of each supported type (string/number/boolean) produces plain-text
+// userDefined entries under the exact same key (no snake_case requirement,
+// no prefix), and a field added/edited directly in Google - including one
+// Google itself never saw before - gets pulled back in with its type
+// sniffed from the raw text, without disturbing our own reserved
+// contacts_local_id tag.
+func TestScenario_CustomFieldsSyncBothWays(t *testing.T) {
 	sc := newScenario(t)
-	local, resourceName := sc.linked("Katherine", "Johnson")
-
-	// Simulate the user adding their own custom field directly in Google
-	// Contacts, after this contact was already linked to our system.
-	sc.server.mutate(resourceName, time.Now(), func(p *googlePerson) {
-		p.UserDefined = append(p.UserDefined, googleUserDefined{Key: "anniversary", Value: "2020-01-01"})
+	local := sc.createLocal("Katherine", "Johnson")
+	updated, verrs, err := sc.people.Update(sc.ctx, local.ID, person.UpdateInput{
+		CustomFields:    map[string]any{"Shoe Size": 10.5, "Is VIP": true, "Note": "hello"},
+		CustomFieldsSet: true,
 	})
-
-	notes := "Pushing a local edit."
-	updated, verrs, err := sc.people.Update(sc.ctx, local.ID, person.UpdateInput{Notes: &notes, NotesSet: true})
 	if err != nil || verrs.HasErrors() {
-		t.Fatalf("update: verrs=%v err=%v", verrs, err)
+		t.Fatalf("seeding custom fields: verrs=%v err=%v", verrs, err)
 	}
-	job := contactsync.Job{PersonID: local.ID, Kind: contactsync.ChangeKindUpdated, Snapshot: updated.Snapshot(nil)}
+
+	job := contactsync.Job{PersonID: local.ID, Kind: contactsync.ChangeKindCreated, Snapshot: updated.Snapshot(nil)}
 	if err := sc.sync(job); err != nil {
 		t.Fatalf("sync: %v", err)
 	}
 
-	remote, ok := sc.server.get(resourceName)
-	if !ok {
-		t.Fatal("expected the Google contact to still exist")
+	all := sc.server.all()
+	if len(all) != 1 {
+		t.Fatalf("expected exactly 1 Google contact, got %d: %+v", len(all), all)
 	}
-	found := false
-	for _, ud := range remote.UserDefined {
-		if ud.Key == "anniversary" && ud.Value == "2020-01-01" {
-			found = true
+	resourceName := all[0].ResourceName
+	remoteFields := map[string]string{}
+	for _, ud := range all[0].UserDefined {
+		remoteFields[ud.Key] = ud.Value
+	}
+	if remoteFields["Shoe Size"] != "10.5" || remoteFields["Is VIP"] != "true" || remoteFields["Note"] != "hello" {
+		t.Fatalf("expected custom fields exported verbatim as plain text, got %+v", remoteFields)
+	}
+	if _, ok := remoteFields[localIDUserDefinedKey]; !ok {
+		t.Fatalf("expected our reserved tag to still be present, got %+v", remoteFields)
+	}
+
+	// Edit one field and add a brand new one directly in Google, with a
+	// later timestamp so Google's copy wins the merge.
+	sc.server.mutate(resourceName, time.Now().Add(time.Hour), func(p *googlePerson) {
+		for i := range p.UserDefined {
+			if p.UserDefined[i].Key == "Note" {
+				p.UserDefined[i].Value = "edited in google"
+			}
+		}
+		p.UserDefined = append(p.UserDefined, googleUserDefined{Key: "Nickname Pref", Value: "Kat"})
+	})
+
+	if err := sc.sync(contactsync.Job{}); err != nil {
+		t.Fatalf("second sync: %v", err)
+	}
+
+	people, _, err := sc.people.List(sc.ctx, person.ListParams{Page: 1, PageSize: 100})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	merged, ok := findPersonByName(t, people, "Katherine", "Johnson")
+	if !ok {
+		t.Fatal("expected Katherine Johnson to still exist")
+	}
+	want := map[string]any{"Shoe Size": 10.5, "Is VIP": true, "Note": "edited in google", "Nickname Pref": "Kat"}
+	for key, wantValue := range want {
+		if got := merged.CustomFields[key]; got != wantValue {
+			t.Errorf("custom_fields[%q] = %#v (%T), want %#v (%T)", key, got, got, wantValue, wantValue)
 		}
 	}
-	if !found {
-		t.Fatalf("expected the user's own Google-side custom field to survive our update, got %+v", remote.UserDefined)
+	if len(merged.CustomFields) != len(want) {
+		t.Errorf("custom_fields = %+v, want exactly %+v", merged.CustomFields, want)
 	}
 }
 

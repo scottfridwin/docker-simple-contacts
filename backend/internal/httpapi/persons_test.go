@@ -559,7 +559,7 @@ func TestPatchInvalidCustomField(t *testing.T) {
 	h, store := testRouter()
 	p, _, _ := person.NewService(store).Create(context.Background(), person.CreateInput{FirstName: "A", LastName: "B"})
 	rec := doJSON(t, h, http.MethodPatch, "/api/v1/persons/"+p.ID.String(), map[string]any{
-		"custom_fields": map[string]any{"Bad-Key": "x"},
+		"custom_fields": map[string]any{"   ": "x"},
 	})
 	if rec.Code != http.StatusUnprocessableEntity {
 		t.Errorf("status = %d, want 422", rec.Code)

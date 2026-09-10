@@ -77,12 +77,12 @@ describe('PersonForm', () => {
     await userEvent.type(screen.getByLabelText(/first name/i), 'A');
     await userEvent.type(screen.getByLabelText(/last name/i), 'B');
     await userEvent.click(screen.getByRole('button', { name: /add custom field/i }));
-    await userEvent.type(screen.getByLabelText('custom field key 0'), 'Bad-Key');
+    await userEvent.type(screen.getByLabelText('custom field key 0'), '   ');
     await userEvent.type(screen.getByLabelText('custom field value 0'), 'x');
     await userEvent.click(screen.getByRole('button', { name: /save/i }));
 
     expect(onSubmit).not.toHaveBeenCalled();
-    expect(screen.getByText(/snake_case/i)).toBeInTheDocument();
+    expect(screen.getByText(/key is required/i)).toBeInTheDocument();
   });
 
   it('submits labeled emails, phone numbers, addresses, organization, and notes', async () => {

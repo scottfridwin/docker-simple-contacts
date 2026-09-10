@@ -8,16 +8,21 @@ import {
 } from '../src/customFields';
 
 describe('validateKey', () => {
-  it('accepts snake_case keys', () => {
+  it('accepts freeform keys', () => {
     expect(validateKey('blood_type')).toBeNull();
     expect(validateKey('age')).toBeNull();
+    expect(validateKey('Blood Type')).toBeNull();
+    expect(validateKey('BloodType')).toBeNull();
+    expect(validateKey('blood-type')).toBeNull();
+    expect(validateKey('T-Shirt Size')).toBeNull();
+    expect(validateKey('Employee ID #')).toBeNull();
   });
 
   it('rejects invalid keys', () => {
     expect(validateKey('')).not.toBeNull();
-    expect(validateKey('BloodType')).not.toBeNull();
-    expect(validateKey('blood-type')).not.toBeNull();
-    expect(validateKey('_leading')).not.toBeNull();
+    expect(validateKey('   ')).not.toBeNull();
+    expect(validateKey('has\ttab')).not.toBeNull();
+    expect(validateKey('a'.repeat(65))).not.toBeNull();
   });
 });
 
@@ -60,7 +65,7 @@ describe('buildCustomFields', () => {
     const { fields, errors } = buildCustomFields([
       { key: 'blood_type', type: 'string', value: 'O+' },
       { key: 'age', type: 'number', value: '30' },
-      { key: 'Bad Key', type: 'string', value: 'x' },
+      { key: '   ', type: 'string', value: 'x' },
     ]);
     expect(fields).toEqual({ blood_type: 'O+', age: 30 });
     expect(errors[2]).toBeDefined();
