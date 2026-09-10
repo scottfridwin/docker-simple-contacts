@@ -287,14 +287,32 @@ func (a *Adapter) UpsertRecord(ctx context.Context, session contactsync.AuthSess
 	if err != nil {
 		return contactsync.ProviderRecord{}, err
 	}
-	payload := toGooglePerson(record, current.ETag)
 	values := url.Values{}
 	values.Set("updatePersonFields", googleUpdatePersonFields)
-	var updated googlePerson
-	if err := a.patchJSON(ctx, session.AccessToken, "/"+record.ExternalID+":updateContact?"+values.Encode(), payload, &updated); err != nil {
+	updated, err := a.updateContact(ctx, session.AccessToken, record, current.ETag, values)
+	if isETagConflict(err) {
+		// The contact changed on Google's side between our read of its etag
+		// above and this update - re-read the now-current etag and retry
+		// once instead of failing the whole sync run.
+		current, refetchErr := a.getContact(ctx, session.AccessToken, record.ExternalID)
+		if refetchErr == nil {
+			updated, err = a.updateContact(ctx, session.AccessToken, record, current.ETag, values)
+		}
+	}
+	if err != nil {
 		return contactsync.ProviderRecord{}, err
 	}
 	return toProviderRecord(updated), nil
+}
+
+// updateContact sends one updateContact PATCH using the given etag.
+func (a *Adapter) updateContact(ctx context.Context, accessToken string, record contactsync.Record, etag string, values url.Values) (googlePerson, error) {
+	payload := toGooglePerson(record, etag)
+	var updated googlePerson
+	if err := a.patchJSON(ctx, accessToken, "/"+record.ExternalID+":updateContact?"+values.Encode(), payload, &updated); err != nil {
+		return googlePerson{}, err
+	}
+	return updated, nil
 }
 
 // DeleteRecord deletes one remote Google contact.
@@ -1516,24 +1534,64 @@ func (a *Adapter) newRequest(ctx context.Context, method string, path string, ac
 }
 
 func (a *Adapter) do(req *http.Request, out any) error {
-	resp, err := a.http.Do(req)
-	if err != nil {
-		return fmt.Errorf("google api request failed: %w", err)
-	}
-	defer resp.Body.Close()
+	const maxAttempts = 5
+	backoff := time.Second
+	for attempt := 1; ; attempt++ {
+		if attempt > 1 && req.GetBody != nil {
+			body, err := req.GetBody()
+			if err != nil {
+				return fmt.Errorf("rewinding google api request body for retry: %w", err)
+			}
+			req.Body = body
+		}
+		resp, err := a.http.Do(req)
+		if err != nil {
+			return fmt.Errorf("google api request failed: %w", err)
+		}
+		body, readErr := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if readErr != nil {
+			return fmt.Errorf("reading google api response: %w", readErr)
+		}
 
-	body, readErr := io.ReadAll(resp.Body)
-	if readErr != nil {
-		return fmt.Errorf("reading google api response: %w", readErr)
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return &apiError{Status: resp.StatusCode, Body: strings.TrimSpace(string(body))}
-	}
-	if out == nil || len(body) == 0 {
+		if resp.StatusCode == http.StatusTooManyRequests && attempt < maxAttempts {
+			wait := retryDelay(resp.Header.Get("Retry-After"), backoff)
+			a.logger.Warn("google api rate limited, retrying", "attempt", attempt, "wait", wait.String())
+			select {
+			case <-req.Context().Done():
+				return req.Context().Err()
+			case <-time.After(wait):
+			}
+			backoff *= 2
+			continue
+		}
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			return &apiError{Status: resp.StatusCode, Body: strings.TrimSpace(string(body))}
+		}
+		if out == nil || len(body) == 0 {
+			return nil
+		}
+		if err := json.Unmarshal(body, out); err != nil {
+			return fmt.Errorf("decoding google api response: %w", err)
+		}
 		return nil
 	}
-	if err := json.Unmarshal(body, out); err != nil {
-		return fmt.Errorf("decoding google api response: %w", err)
+}
+
+// retryDelay picks how long to wait before retrying a 429, preferring the
+// server-specified Retry-After (seconds) when present over our own backoff.
+func retryDelay(retryAfter string, backoff time.Duration) time.Duration {
+	if secs, err := strconv.Atoi(strings.TrimSpace(retryAfter)); err == nil && secs >= 0 {
+		return time.Duration(secs) * time.Second
 	}
-	return nil
+	return backoff
+}
+
+// isETagConflict reports whether err is Google's "person.etag is different
+// than the current person.etag" FAILED_PRECONDITION response, which happens
+// when the contact changed remotely between our read of its etag and our
+// update using it - retryable by re-reading the etag and trying once more.
+func isETagConflict(err error) bool {
+	var apiErr *apiError
+	return errors.As(err, &apiErr) && apiErr.Status == http.StatusBadRequest && strings.Contains(apiErr.Body, "FAILED_PRECONDITION")
 }

@@ -2,8 +2,12 @@ package google
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -611,5 +615,112 @@ func TestReconcileRelationshipsDedupesSymmetricGoogleRelations(t *testing.T) {
 
 	if len(svc.replacedInputs) != 0 {
 		t.Fatalf("replacedInputs = %+v, want none (already represented from the other side)", svc.replacedInputs)
+	}
+}
+
+// TestDoRetriesOn429ThenSucceeds guards the sync-abort-on-quota-error bug:
+// a single "Quota exceeded ... RESOURCE_EXHAUSTED" response from Google must
+// not fail the whole sync run - it should be retried (honoring Retry-After
+// when Google sends one, so the test doesn't have to sleep out a full
+// backoff window).
+func TestDoRetriesOn429ThenSucceeds(t *testing.T) {
+	attempts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		if attempts == 1 {
+			w.Header().Set("Retry-After", "0")
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = w.Write([]byte(`{"error":{"code":429,"status":"RESOURCE_EXHAUSTED","message":"Quota exceeded"}}`))
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(googlePerson{ResourceName: "people/1", ETag: "etag-ok"})
+	}))
+	defer server.Close()
+
+	adapter := &Adapter{cfg: Config{PeopleBaseURL: server.URL}, http: http.DefaultClient, logger: slog.Default()}
+	got, err := adapter.getContact(context.Background(), "token", "people/1")
+	if err != nil {
+		t.Fatalf("getContact after one 429 retry: %v", err)
+	}
+	if got.ETag != "etag-ok" {
+		t.Fatalf("got = %+v", got)
+	}
+	if attempts != 2 {
+		t.Fatalf("attempts = %d, want 2 (one 429 then one success)", attempts)
+	}
+}
+
+// TestDoGivesUpAfterMaxAttemptsOn429 guards against retrying forever: a
+// persistently rate-limited request must eventually return the 429 error
+// rather than looping indefinitely.
+func TestDoGivesUpAfterMaxAttemptsOn429(t *testing.T) {
+	attempts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		w.Header().Set("Retry-After", "0")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"error":{"code":429,"status":"RESOURCE_EXHAUSTED"}}`))
+	}))
+	defer server.Close()
+
+	adapter := &Adapter{cfg: Config{PeopleBaseURL: server.URL}, http: http.DefaultClient, logger: slog.Default()}
+	_, err := adapter.getContact(context.Background(), "token", "people/1")
+	var apiErr *apiError
+	if !errors.As(err, &apiErr) || apiErr.Status != http.StatusTooManyRequests {
+		t.Fatalf("expected a final 429 apiError, got %v", err)
+	}
+	if attempts != 5 {
+		t.Fatalf("attempts = %d, want 5 (maxAttempts)", attempts)
+	}
+}
+
+// TestUpsertRecordRetriesOnceOnETagConflict guards the "Request person.etag
+// is different than the current person.etag" FAILED_PRECONDITION error: it
+// means the contact changed on Google's side between our read and our
+// update, and must be retried once with a freshly-read etag instead of
+// failing the whole sync run.
+func TestUpsertRecordRetriesOnceOnETagConflict(t *testing.T) {
+	getCalls, patchCalls := 0, 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			getCalls++
+			etag := fmt.Sprintf("etag-%d", getCalls)
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(googlePerson{ResourceName: "people/1", ETag: etag})
+		case http.MethodPatch:
+			patchCalls++
+			if patchCalls == 1 {
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = w.Write([]byte(`{"error":{"code":400,"status":"FAILED_PRECONDITION","message":"Request person.etag is different than the current person.etag. Clear local cache and get the latest person."}}`))
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(googlePerson{ResourceName: "people/1", ETag: "etag-final"})
+		default:
+			t.Fatalf("unexpected method %s", r.Method)
+		}
+	}))
+	defer server.Close()
+
+	adapter := &Adapter{cfg: Config{PeopleBaseURL: server.URL}, http: http.DefaultClient, logger: slog.Default()}
+	session := contactsync.AuthSession{AccessToken: "token"}
+	record := contactsync.Record{ExternalID: "people/1", Fields: map[string]contactsync.FieldState{
+		"first_name": {IsSet: true, Value: "Ada"},
+	}}
+
+	out, err := adapter.UpsertRecord(context.Background(), session, record)
+	if err != nil {
+		t.Fatalf("UpsertRecord: %v", err)
+	}
+	if out.Record.ExternalID != "people/1" {
+		t.Fatalf("out = %+v", out)
+	}
+	if getCalls != 2 {
+		t.Fatalf("getCalls = %d, want 2 (initial read + re-read after conflict)", getCalls)
+	}
+	if patchCalls != 2 {
+		t.Fatalf("patchCalls = %d, want 2 (failed attempt + retry)", patchCalls)
 	}
 }

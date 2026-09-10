@@ -637,5 +637,35 @@ extraction (`applyOwnership`, `scanPersonAccessible`-style) needed to close
 that gap without a substantial refactor - left as a follow-up rather than
 rushed.
 
+## Post-implementation decision log (2026-09-10, even later)
+
+### L) Google People API rate limits and etag conflicts on large real syncs
+
+Syncing a real Google account with a large contact list surfaced two
+production errors the adapter didn't handle: a `429 RESOURCE_EXHAUSTED`
+("Critical read requests ... per minute per user" quota, limit 90/min) and
+a `400 FAILED_PRECONDITION` ("Request person.etag is different than the
+current person.etag"). Both previously aborted the whole sync run on the
+first occurrence.
+
+- **429 handling**: `Adapter.do` (the single chokepoint every People API
+  call goes through) now retries up to 5 attempts with exponential backoff,
+  preferring Google's `Retry-After` header (seconds) over our own backoff
+  when present. This applies uniformly to every call (reads and writes),
+  since `UpsertRecord`'s update path issues a `getContact` read immediately
+  before every write - a large export can easily produce enough "critical
+  read" requests to trip the quota on its own.
+- **Etag conflict handling**: `UpsertRecord`'s update path now retries
+  once on a `FAILED_PRECONDITION` response by re-reading the contact's
+  now-current etag and re-issuing the update, instead of failing outright.
+  This is a genuinely transient condition - it means the contact changed on
+  Google's side in the (usually sub-second) window between our read of its
+  etag and our update using it.
+- **Not pursued**: a proactive client-side pacing limiter (vs. the current
+  reactive retry-on-429 approach) and caching etags locally to avoid the
+  extra read-before-every-write entirely (would need a schema change to
+  store an etag per `sync_record_links` row) - both would reduce quota
+  pressure further but are larger changes; the reactive retry/backoff fix
+  is sufficient to stop large syncs from aborting outright.
 
 
