@@ -269,7 +269,7 @@ func (s *Service) CreateShare(ctx context.Context, personID uuid.UUID, email str
 	}
 	share, err := s.repo.CreateShare(ctx, personID, email)
 	if errors.Is(err, ErrShareUserNotFound) {
-		return nil, ValidationErrors{{Field: "email", Message: "no account found for that email"}}, nil
+		return nil, ValidationErrors{{Field: "email", Message: "no account found for that email - ask them to log in to Contacts at least once first"}}, nil
 	}
 	if errors.Is(err, ErrShareExists) {
 		return nil, ValidationErrors{{Field: "email", Message: "already shared with this person"}}, nil
