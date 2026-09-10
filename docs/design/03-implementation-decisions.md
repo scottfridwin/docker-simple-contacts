@@ -544,4 +544,28 @@ Scoped down via clarifying questions before implementation:
   yet), and any notification to the recipient when a contact is first shared
   with them (they simply see it appear on next list load).
 
+## Post-implementation decision log (2026-09-10)
+
+### J) Cross-owner sync fan-out for shared contacts
+
+Fixes a gap found while reasoning through a multi-account sharing + sync
+scenario: a shared `Person` can independently be mirrored to more than one
+Google account - the owner's own connection(s) and, separately, a
+recipient's own connection(s) (see decision I). Before this fix, a local
+edit only fanned out to sync accounts owned by whoever made the edit
+(`Job.OwnerID`, sourced from the acting user), so an owner's edit never
+reached the recipient's mirror (and vice versa) once the initial one-time
+export had happened.
+
+`Runner.runJob` now unions the acting user's own accounts with every
+account already linked to that specific person via `sync_record_links`
+(new `Repository.ListLinkedToPerson`, deliberately unscoped like
+`ListDue`), deduplicated by account ID, and processes **each account under
+its own owner's context** (not the triggering job's owner) so owner-scoped
+lookups inside the provider adapter still resolve correctly per account.
+This keeps every mirror of a shared contact converging on every edit,
+regardless of which side made it.
+
+
+
 

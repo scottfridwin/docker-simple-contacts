@@ -9,11 +9,14 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	"github.com/scottfridlund/contacts/backend/internal/authn"
 )
 
 type fakeAccountStore struct {
 	accounts []Account
 	due      []Account
+	linked   []Account
 	err      error
 }
 
@@ -31,6 +34,13 @@ func (f *fakeAccountStore) ListDue(context.Context, time.Time) ([]Account, error
 		return nil, f.err
 	}
 	return append([]Account(nil), f.due...), nil
+}
+
+func (f *fakeAccountStore) ListLinkedToPerson(context.Context, uuid.UUID) ([]Account, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	return append([]Account(nil), f.linked...), nil
 }
 
 type fakeQueue struct {
@@ -69,13 +79,14 @@ func (f *fakeQueue) MarkFailed(_ context.Context, id uuid.UUID, reason string) e
 }
 
 type fakeProcessor struct {
-	processed []string
-	calls     int
-	err       error
-	panics    bool
+	processed     []string
+	contextOwners []uuid.UUID
+	calls         int
+	err           error
+	panics        bool
 }
 
-func (f *fakeProcessor) Process(_ context.Context, account Account, job Job) error {
+func (f *fakeProcessor) Process(ctx context.Context, account Account, job Job) error {
 	f.calls++
 	if f.panics {
 		panic("simulated processor panic")
@@ -83,6 +94,8 @@ func (f *fakeProcessor) Process(_ context.Context, account Account, job Job) err
 	if f.err != nil {
 		return f.err
 	}
+	owner, _ := authn.UserID(ctx)
+	f.contextOwners = append(f.contextOwners, owner)
 	f.processed = append(f.processed, account.Provider+":"+job.ID.String())
 	return nil
 }
@@ -106,6 +119,36 @@ func TestRunnerRunOnceProcessesJobsForAccounts(t *testing.T) {
 	q := runner.jobs.(*fakeQueue)
 	if len(q.done) != 1 || q.done[0] != job.ID {
 		t.Fatalf("expected job marked done, got %#v", q.done)
+	}
+}
+
+// TestRunnerRunJobFansOutToLinkedAccountsOfOtherOwners guards the sharing
+// scenario: a change made under one owner's account (e.g. the owner of a
+// shared contact) must still reach every other account already mirroring
+// that same person (e.g. a recipient's own separately-connected Google
+// account), each processed under its own owner's context.
+func TestRunnerRunJobFansOutToLinkedAccountsOfOtherOwners(t *testing.T) {
+	ownerA := uuid.New()
+	ownerB := uuid.New()
+	personID := uuid.New()
+	accountA := Account{ID: uuid.New(), Provider: "google", OwnerID: &ownerA}
+	accountB := Account{ID: uuid.New(), Provider: "google", OwnerID: &ownerB}
+	job := Job{ID: uuid.New(), OwnerID: &ownerA, PersonID: personID, Status: JobStatusPending}
+	proc := &fakeProcessor{}
+	runner := NewRunner(
+		&fakeAccountStore{accounts: []Account{accountA}, linked: []Account{accountA, accountB}},
+		&fakeQueue{jobs: []Job{job}},
+		proc,
+		nil,
+	)
+	if _, err := runner.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	if proc.calls != 2 {
+		t.Fatalf("processor calls = %d, want 2 (deduped across owner + linked accounts)", proc.calls)
+	}
+	if len(proc.contextOwners) != 2 || proc.contextOwners[0] != ownerA || proc.contextOwners[1] != ownerB {
+		t.Fatalf("contextOwners = %#v, want [%s, %s]", proc.contextOwners, ownerA, ownerB)
 	}
 }
 

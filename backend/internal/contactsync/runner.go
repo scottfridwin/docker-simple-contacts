@@ -15,6 +15,7 @@ import (
 type accountStore interface {
 	List(context.Context, int) ([]Account, error)
 	ListDue(context.Context, time.Time) ([]Account, error)
+	ListLinkedToPerson(context.Context, uuid.UUID) ([]Account, error)
 }
 
 type jobQueue interface {
@@ -147,32 +148,68 @@ func (r *Runner) safeProcess(ctx context.Context, account Account, job Job) (err
 }
 
 func (r *Runner) runJob(ctx context.Context, job Job) error {
-	accountCtx := ctx
+	ownerCtx := ctx
 	if job.OwnerID != nil && *job.OwnerID != uuid.Nil {
-		accountCtx = authn.WithUserID(ctx, *job.OwnerID)
+		ownerCtx = authn.WithUserID(ctx, *job.OwnerID)
 	}
-	accounts, err := r.accounts.List(accountCtx, r.batchSize)
+	accounts, err := r.accounts.List(ownerCtx, r.batchSize)
 	if err != nil {
 		return fmt.Errorf("loading sync accounts for job %s: %w", job.ID, err)
 	}
+	// Also fan out to every account already mirroring this record under a
+	// different owner (e.g. a contact shared with another account, which
+	// syncs it to its own separate Google connection), not just the
+	// accounts owned by whoever triggered this change.
+	linked, err := r.accounts.ListLinkedToPerson(ctx, job.PersonID)
+	if err != nil {
+		return fmt.Errorf("loading linked sync accounts for job %s: %w", job.ID, err)
+	}
+	accounts = mergeAccountsByID(accounts, linked)
 	if len(accounts) == 0 {
-		if err := r.jobs.MarkDone(accountCtx, job.ID); err != nil {
+		if err := r.jobs.MarkDone(ownerCtx, job.ID); err != nil {
 			return fmt.Errorf("marking job %s done: %w", job.ID, err)
 		}
 		return nil
 	}
 	for _, account := range accounts {
-		if err := r.safeProcess(accountCtx, account, job); err != nil {
-			if markErr := r.jobs.MarkFailed(accountCtx, job.ID, err.Error()); markErr != nil {
+		// Each account must be processed under its own owner's context (not
+		// necessarily the triggering job's owner), so owner-scoped lookups
+		// inside the provider adapter resolve against the right account.
+		acctCtx := ownerCtx
+		if account.OwnerID != nil && *account.OwnerID != uuid.Nil {
+			acctCtx = authn.WithUserID(ctx, *account.OwnerID)
+		}
+		if err := r.safeProcess(acctCtx, account, job); err != nil {
+			if markErr := r.jobs.MarkFailed(ownerCtx, job.ID, err.Error()); markErr != nil {
 				return fmt.Errorf("marking job %s failed: %w", job.ID, markErr)
 			}
 			return fmt.Errorf("processing job %s for provider %s: %w", job.ID, account.Provider, err)
 		}
 	}
-	if err := r.jobs.MarkDone(accountCtx, job.ID); err != nil {
+	if err := r.jobs.MarkDone(ownerCtx, job.ID); err != nil {
 		return fmt.Errorf("marking job %s done: %w", job.ID, err)
 	}
 	return nil
+}
+
+// mergeAccountsByID unions two account slices, deduplicated by ID, preserving
+// the order accounts are first seen.
+func mergeAccountsByID(primary, extra []Account) []Account {
+	out := make([]Account, 0, len(primary)+len(extra))
+	seen := make(map[uuid.UUID]bool, len(primary)+len(extra))
+	for _, a := range primary {
+		if !seen[a.ID] {
+			seen[a.ID] = true
+			out = append(out, a)
+		}
+	}
+	for _, a := range extra {
+		if !seen[a.ID] {
+			seen[a.ID] = true
+			out = append(out, a)
+		}
+	}
+	return out
 }
 
 // NoopProcessor is a placeholder processor used until provider adapters are

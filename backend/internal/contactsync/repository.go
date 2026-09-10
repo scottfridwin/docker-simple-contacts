@@ -171,6 +171,39 @@ func (r *Repository) ListDue(ctx context.Context, before time.Time) ([]Account, 
 	return accounts, nil
 }
 
+// ListLinkedToPerson returns every sync account (across every owner) that
+// already has a remote record mapped for personID, so a local change can
+// fan out to every mirror of that record - e.g. a contact shared between two
+// accounts, each syncing it to their own separate Google account. Deliberately
+// unscoped by the caller's authn context, mirroring ListDue.
+func (r *Repository) ListLinkedToPerson(ctx context.Context, personID uuid.UUID) ([]Account, error) {
+	const q = `
+		SELECT a.id, a.owner_id, a.provider, a.provider_account_id, a.display_name, a.access_token, a.refresh_token,
+		       a.expires_at, a.scope, a.sync_cursor, a.sync_frequency_minutes, a.status, a.last_synced_at, a.last_error,
+		       a.created_at, a.updated_at
+		FROM sync_accounts a
+		JOIN sync_record_links l ON l.sync_account_id = a.id
+		WHERE l.person_id = $1`
+	rows, err := r.pool.Query(ctx, q, personID)
+	if err != nil {
+		return nil, fmt.Errorf("listing sync accounts linked to person: %w", err)
+	}
+	defer rows.Close()
+
+	accounts := make([]Account, 0)
+	for rows.Next() {
+		account, scanErr := scanAccount(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		accounts = append(accounts, *account)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterating sync accounts linked to person: %w", err)
+	}
+	return accounts, nil
+}
+
 type accountScanner interface {
 	Scan(dest ...any) error
 }
