@@ -245,6 +245,11 @@ shares via `GET/POST /persons/{id}/shares`, `DELETE
   "Add Google account" action); each connected account mirrors the full
   contact list both ways. Accounts are identified by the Google account's
   stable subject id and labeled in the UI with the connected email.
+- Only the fixed built-in `Person` fields are synced with Google (name,
+  emails, phone numbers, addresses, organization, notes, nickname,
+  birthdate, relationships); `custom_fields` are local-only and are not
+  pushed to or pulled from Google. A contact's own custom fields set up
+  directly in Google Contacts are left untouched by our sync.
 - Frontend sync panel: connect Google and review sync status from the main app UI
 - Public privacy policy: `GET /privacy`
 - Public homepage purpose page: `GET /` remains readable without authentication and

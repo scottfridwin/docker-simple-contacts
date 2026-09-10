@@ -276,7 +276,7 @@ func (a *Adapter) FetchRecord(ctx context.Context, session contactsync.AuthSessi
 // UpsertRecord creates or updates one remote contact.
 func (a *Adapter) UpsertRecord(ctx context.Context, session contactsync.AuthSession, record contactsync.Record) (contactsync.ProviderRecord, error) {
 	if strings.TrimSpace(record.ExternalID) == "" {
-		payload := toGooglePerson(record, "")
+		payload := toGooglePerson(record, "", nil)
 		var created googlePerson
 		if err := a.postJSON(ctx, session.AccessToken, "/people:createContact", payload, &created); err != nil {
 			return contactsync.ProviderRecord{}, err
@@ -289,14 +289,14 @@ func (a *Adapter) UpsertRecord(ctx context.Context, session contactsync.AuthSess
 	}
 	values := url.Values{}
 	values.Set("updatePersonFields", googleUpdatePersonFields)
-	updated, err := a.updateContact(ctx, session.AccessToken, record, current.ETag, values)
+	updated, err := a.updateContact(ctx, session.AccessToken, record, current.ETag, current.UserDefined, values)
 	if isETagConflict(err) {
 		// The contact changed on Google's side between our read of its etag
 		// above and this update - re-read the now-current etag and retry
 		// once instead of failing the whole sync run.
 		current, refetchErr := a.getContact(ctx, session.AccessToken, record.ExternalID)
 		if refetchErr == nil {
-			updated, err = a.updateContact(ctx, session.AccessToken, record, current.ETag, values)
+			updated, err = a.updateContact(ctx, session.AccessToken, record, current.ETag, current.UserDefined, values)
 		}
 	}
 	if err != nil {
@@ -305,9 +305,12 @@ func (a *Adapter) UpsertRecord(ctx context.Context, session contactsync.AuthSess
 	return toProviderRecord(updated), nil
 }
 
-// updateContact sends one updateContact PATCH using the given etag.
-func (a *Adapter) updateContact(ctx context.Context, accessToken string, record contactsync.Record, etag string, values url.Values) (googlePerson, error) {
-	payload := toGooglePerson(record, etag)
+// updateContact sends one updateContact PATCH using the given etag. existing
+// is the contact's current userDefined list (from the read that produced
+// etag), preserved apart from our own reserved key so an update never wipes
+// out custom fields the user set up directly in Google Contacts.
+func (a *Adapter) updateContact(ctx context.Context, accessToken string, record contactsync.Record, etag string, existing []googleUserDefined, values url.Values) (googlePerson, error) {
+	payload := toGooglePerson(record, etag, existing)
 	var updated googlePerson
 	if err := a.patchJSON(ctx, accessToken, "/"+record.ExternalID+":updateContact?"+values.Encode(), payload, &updated); err != nil {
 		return googlePerson{}, err
@@ -350,10 +353,14 @@ func (a *Adapter) Sync(ctx context.Context, account contactsync.Account, job con
 
 	initialSync := strings.TrimSpace(account.SyncCursor) == ""
 	nextCursor, pulled, err := a.pullRemote(ctx, account.ID, session, account.SyncCursor)
+	// Persist whatever progress pullRemote made even on error, so a failed
+	// attempt doesn't force the next one to replay already-merged pages
+	// (see pullRemote's comments) - a plain assignment after an early
+	// return would silently discard that progress.
+	account.SyncCursor = nextCursor
 	if err != nil {
 		return a.markAccountFailed(ctx, &account, err)
 	}
-	account.SyncCursor = nextCursor
 
 	if initialSync {
 		if err := a.exportLocal(ctx, account.ID, session); err != nil {
@@ -525,13 +532,25 @@ func (a *Adapter) pullRemote(ctx context.Context, accountID uuid.UUID, session c
 				current = ""
 				continue
 			}
-			return cursor, seen, fmt.Errorf("listing google contact changes: %w", err)
+			// Preserve progress already made through earlier pages in this
+			// same run (current, not the original stale cursor) - returning
+			// the stale cursor here would replay already-merged records on
+			// the next attempt, which can produce duplicate local contacts
+			// (findUnlinkedMatch won't reuse a record already linked to
+			// this same account, so a replay looks like a brand new one).
+			return current, seen, fmt.Errorf("listing google contact changes: %w", err)
 		}
 		a.logger.Info("google sync fetched remote page", "account_id", accountID, "records", len(page.Records), "has_more", page.HasMore)
 		seen += len(page.Records)
 		for _, remote := range page.Records {
+			// A single record that fails to merge (a transient error that
+			// outlived a.do's own retries, a malformed payload, etc.) must
+			// not abort the rest of the page/pull - besides losing progress
+			// on every other record, restarting from an earlier cursor
+			// replays already-merged records and risks duplicating them
+			// (see the comment above).
 			if err := a.mergeRemoteRecord(ctx, accountID, session, remote, &pending); err != nil {
-				return cursor, seen, err
+				a.logger.Error("failed to merge remote record, skipping", "account_id", accountID, "external_id", remote.Record.ExternalID, "error", err)
 			}
 		}
 		current = page.NextCursor
@@ -561,7 +580,12 @@ func (a *Adapter) exportLocal(ctx context.Context, accountID uuid.UUID, session 
 			record := a.attachRelationsForExport(ctx, rows[i].ID, rows[i].UpdatedAt, personToRecord(rows[i], remoteID))
 			providerRecord, upsertErr := a.UpsertRecord(ctx, session, record)
 			if upsertErr != nil {
-				return upsertErr
+				// One contact failing to push (a transient error outliving
+				// a.do's own retries, etc.) must not abort exporting every
+				// other contact in this account - see the matching comment
+				// in pullRemote.
+				a.logger.Error("failed to export local contact, skipping", "account_id", accountID, "person_id", rows[i].ID, "error", upsertErr)
+				continue
 			}
 			a.linkRecord(ctx, accountID, rows[i].ID, providerRecord.Record.ExternalID)
 			exported++
@@ -1313,7 +1337,7 @@ func toProviderRecord(in googlePerson) contactsync.ProviderRecord {
 	}
 }
 
-func toGooglePerson(record contactsync.Record, etag string) googlePerson {
+func toGooglePerson(record contactsync.Record, etag string, existing []googleUserDefined) googlePerson {
 	firstName := fieldString(record.Fields, "first_name")
 	middleNames := fieldStrings(record.Fields, "middle_names")
 	lastName := fieldString(record.Fields, "last_name")
@@ -1366,6 +1390,11 @@ func toGooglePerson(record contactsync.Record, etag string) googlePerson {
 		birthdate = &value
 	}
 	userDefined := []googleUserDefined{}
+	for _, item := range existing {
+		if item.Key != localIDUserDefinedKey {
+			userDefined = append(userDefined, item)
+		}
+	}
 	localID := fieldString(record.Fields, "local_id")
 	if localID != "" {
 		userDefined = append(userDefined, googleUserDefined{Key: localIDUserDefinedKey, Value: localID})

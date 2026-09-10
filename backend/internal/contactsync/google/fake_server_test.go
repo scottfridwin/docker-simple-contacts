@@ -33,15 +33,27 @@ type fakeGoogleServer struct {
 	versions map[string]int
 	nextID   int
 	version  int
+	failNext map[string]int
 }
 
 func newFakeGoogleServer() *fakeGoogleServer {
 	s := &fakeGoogleServer{
 		contacts: map[string]*googlePerson{},
 		versions: map[string]int{},
+		failNext: map[string]int{},
 	}
 	s.Server = httptest.NewServer(http.HandlerFunc(s.handle))
 	return s
+}
+
+// failNextUpdate makes the next n update requests for resourceName return a
+// 500, simulating a persistent transient failure (e.g. a rate limit that
+// outlived our own retries) so tests can exercise pullRemote's handling of a
+// per-record merge failure without needing a real flaky network.
+func (s *fakeGoogleServer) failNextUpdate(resourceName string, n int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.failNext[resourceName] = n
 }
 
 // seed directly inserts a contact as if it already existed in Google before
@@ -188,6 +200,11 @@ func (s *fakeGoogleServer) handleCreate(w http.ResponseWriter, r *http.Request) 
 }
 
 func (s *fakeGoogleServer) handleUpdate(w http.ResponseWriter, r *http.Request, resourceName string) {
+	if s.failNext[resourceName] > 0 {
+		s.failNext[resourceName]--
+		http.Error(w, `{"error":{"code":500,"status":"INTERNAL"}}`, http.StatusInternalServerError)
+		return
+	}
 	existing, ok := s.contacts[resourceName]
 	if !ok || existing.Metadata.Deleted {
 		// Real Google 404s an update against an unknown or already-deleted

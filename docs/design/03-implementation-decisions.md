@@ -668,4 +668,46 @@ first occurrence.
   pressure further but are larger changes; the reactive retry/backoff fix
   is sufficient to stop large syncs from aborting outright.
 
+## Post-implementation decision log (2026-09-10, latest)
+
+### M) Custom fields are not synced with Google; a per-record failure duplicated contacts
+
+Investigating a real duplicate-contact report ("Jason Cummings" ending up
+as two local Persons after a large sync) surfaced two separate findings.
+
+**Custom fields are not part of Google sync, in either direction**, and
+there's a related data-loss risk: `personToRecord`/`remoteToLocal` (the
+field-mapping layer) only ever handle the fixed built-in fields (name
+parts, emails, phones, addresses, organization, notes, nickname,
+birthdate, relationships) - `Person.custom_fields` has no mapping at all.
+Google's `userDefined` field (its own "custom field/label" concept) was
+used *only* to carry our internal `contacts_local_id` tag; worse,
+`toGooglePerson` unconditionally replaced the *entire* `userDefined` list
+with just that one tag on every write, silently deleting any custom field
+a user had set up directly in Google Contacts. Fixed the data-loss part
+now (`toGooglePerson` takes the contact's existing `userDefined` list and
+preserves every entry except our own reserved key) since it's a pure bug
+fix; full bidirectional `custom_fields` <-> `userDefined` sync is a real
+feature with its own design questions (key/value shape mapping, collision
+handling with our reserved keys, one Person synced to multiple Google
+accounts each with their own independent `userDefined` list) - not
+implemented, would need a separate decision.
+
+**Root cause of the duplicate**: `pullRemote` aborted its *entire* pull
+and rolled the cursor back to the value from *before the run started* the
+moment any single record failed to merge (e.g. a persistent 500/429 that
+outlived `a.do`'s own retries). The next sync attempt then replayed the
+whole batch from that stale cursor - including contacts already
+successfully created *and linked* earlier in the same aborted run. Those
+replayed contacts still had no fresh `contacts_local_id` tag reflected in
+this replay, so `mergeRemoteRecord` fell through to `findUnlinkedMatch`,
+which (correctly, for its own purpose) excludes a match already linked to
+*this* account - so the replay looked like a brand-new contact and got
+created a second time. Fixed by:
+- A single record's merge failure is now logged and skipped rather than
+  aborting the rest of the page/pull (mirrored in `exportLocal` for the
+  same reason on the export side).
+- On any remaining pull-level error (only `ListChanges`/page-fetch
+  failures now), the cursor already advanced through completed pages is
+  returned and persisted, instead of the stale pre-run cursor.
 

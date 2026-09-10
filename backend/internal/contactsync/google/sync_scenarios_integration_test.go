@@ -240,6 +240,63 @@ func TestScenario_NewContactInGoogle(t *testing.T) {
 	}
 }
 
+// TestPullRemoteDoesNotDuplicateOnRetryAfterAPartialFailure guards a real
+// production incident: syncing an account with many contacts, one record's
+// write-back to Google kept failing (a persistent error outliving a.do's
+// own retries). The old pullRemote aborted the whole pull on that single
+// failure and rolled the cursor back to before the run started, so the
+// next sync attempt replayed the entire batch - including contacts that had
+// already been successfully created and linked - and duplicated them,
+// since findUnlinkedMatch won't reuse a match already linked to this same
+// account (by design, to avoid cross-linking a different resourceName onto
+// it) and so treats the replay as brand new.
+func TestPullRemoteDoesNotDuplicateOnRetryAfterAPartialFailure(t *testing.T) {
+	sc := newScenario(t)
+	sc.server.seed(googlePerson{Names: []googleName{{GivenName: "Jason", FamilyName: "Cummings"}}})
+	badName := sc.server.seed(googlePerson{Names: []googleName{{GivenName: "Bad", FamilyName: "Record"}}})
+	sc.server.failNextUpdate(badName, 20)
+
+	if err := sc.sync(contactsync.Job{}); err != nil {
+		t.Fatalf("first sync: %v", err)
+	}
+	if sc.account.SyncCursor == "" {
+		t.Fatal("expected the sync cursor to advance despite the other record's persistent failure")
+	}
+
+	people, _, err := sc.people.List(sc.ctx, person.ListParams{Page: 1, PageSize: 100, SortField: "created_at"})
+	if err != nil {
+		t.Fatalf("list after first sync: %v", err)
+	}
+	jason, ok := findPersonByName(t, people, "Jason", "Cummings")
+	if !ok {
+		t.Fatalf("expected Jason Cummings to be imported despite the other record's failure, got %+v", people)
+	}
+	t.Cleanup(func() { _, _ = sc.pool.Exec(context.Background(), "DELETE FROM persons WHERE id = $1", jason.ID) })
+	if bad, ok := findPersonByName(t, people, "Bad", "Record"); ok {
+		t.Cleanup(func() { _, _ = sc.pool.Exec(context.Background(), "DELETE FROM persons WHERE id = $1", bad.ID) })
+	}
+
+	// A second sync attempt (still failing the same record) must not
+	// re-create Jason Cummings.
+	sc.server.failNextUpdate(badName, 20)
+	if err := sc.sync(contactsync.Job{}); err != nil {
+		t.Fatalf("second sync: %v", err)
+	}
+	people, _, err = sc.people.List(sc.ctx, person.ListParams{Page: 1, PageSize: 100, SortField: "created_at"})
+	if err != nil {
+		t.Fatalf("list after second sync: %v", err)
+	}
+	count := 0
+	for _, p := range people {
+		if p.FirstName == "Jason" && p.LastName == "Cummings" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("expected exactly 1 Jason Cummings after a second sync, got %d: %+v", count, people)
+	}
+}
+
 // --- Scenario 2: new contact added in Contacts ---
 
 func TestScenario_NewContactInContacts(t *testing.T) {
@@ -310,6 +367,47 @@ func TestScenario_ModifyInContacts(t *testing.T) {
 	}
 	if len(remote.Biographies) != 1 || remote.Biographies[0].Value != notes {
 		t.Errorf("expected the local note to be pushed to Google, got %+v", remote.Biographies)
+	}
+}
+
+// TestUpsertRecordPreservesExistingUserDefinedFields guards a real data-loss
+// bug: pushing a local edit to Google used to always overwrite the entire
+// userDefined field with just our own reserved contacts_local_id entry,
+// silently wiping out any custom field the user had set up directly in
+// Google Contacts (our own app-level custom_fields are a separate, still
+// unsynced concept - see docs/design/03-implementation-decisions.md).
+func TestUpsertRecordPreservesExistingUserDefinedFields(t *testing.T) {
+	sc := newScenario(t)
+	local, resourceName := sc.linked("Katherine", "Johnson")
+
+	// Simulate the user adding their own custom field directly in Google
+	// Contacts, after this contact was already linked to our system.
+	sc.server.mutate(resourceName, time.Now(), func(p *googlePerson) {
+		p.UserDefined = append(p.UserDefined, googleUserDefined{Key: "anniversary", Value: "2020-01-01"})
+	})
+
+	notes := "Pushing a local edit."
+	updated, verrs, err := sc.people.Update(sc.ctx, local.ID, person.UpdateInput{Notes: &notes, NotesSet: true})
+	if err != nil || verrs.HasErrors() {
+		t.Fatalf("update: verrs=%v err=%v", verrs, err)
+	}
+	job := contactsync.Job{PersonID: local.ID, Kind: contactsync.ChangeKindUpdated, Snapshot: updated.Snapshot(nil)}
+	if err := sc.sync(job); err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+
+	remote, ok := sc.server.get(resourceName)
+	if !ok {
+		t.Fatal("expected the Google contact to still exist")
+	}
+	found := false
+	for _, ud := range remote.UserDefined {
+		if ud.Key == "anniversary" && ud.Value == "2020-01-01" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected the user's own Google-side custom field to survive our update, got %+v", remote.UserDefined)
 	}
 }
 

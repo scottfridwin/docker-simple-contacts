@@ -123,7 +123,17 @@ docs/design/            authoritative design documents
   (legacy), `_google_updated_at`, `contacts_local_id`) reserved for system
   use; do not expose them as generic editable custom fields in list/detail
   UI. New Google syncs track remote record ids per account via the
-  `sync_record_links` table, not `Person.custom_fields`.
+  `sync_record_links` table, not `Person.custom_fields`. `Person.custom_fields`
+  itself is **not synced with Google** in either direction - only the fixed
+  built-in fields are mapped. A contact's own Google-side `userDefined`
+  entries (Google's native custom-field concept) are preserved on every
+  write apart from our reserved key, never overwritten wholesale.
+- **Sync robustness**: a single record failing to merge/export is logged
+  and skipped, not treated as fatal for the whole pull/export - and the
+  cursor returned reflects whatever progress was actually made, never a
+  stale pre-run value, since replaying already-linked records can
+  duplicate them (`findUnlinkedMatch` won't reuse a match already linked
+  to the current account).
 - **Sync matching/merge**: a Google contact with no `contacts_local_id` tag
   matches an existing local contact only on an exact, unambiguous
   first+last name match (`person.FindByExactName`), otherwise it's created
