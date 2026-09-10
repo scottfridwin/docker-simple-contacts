@@ -609,26 +609,33 @@ func (a *Adapter) exportLocal(ctx context.Context, accountID uuid.UUID, session 
 func (a *Adapter) findUnlinkedMatch(ctx context.Context, accountID uuid.UUID, remoteModel person.CreateInput) (*person.Person, bool) {
 	matches, err := a.people.FindByExactName(ctx, remoteModel.FirstName, remoteModel.LastName)
 	if err != nil || len(matches) == 0 {
+		a.logger.Info("google sync findUnlinkedMatch: no name matches", "account_id", accountID, "match_count", len(matches), "err", err)
 		return nil, false
 	}
 	var candidate *person.Person
+	excludedAlreadyLinked := 0
 	for i := range matches {
 		if a.remoteIDFor(ctx, accountID, matches[i].ID) != "" {
+			excludedAlreadyLinked++
 			continue
 		}
 		if candidate != nil {
+			a.logger.Info("google sync findUnlinkedMatch: ambiguous, multiple unlinked candidates", "account_id", accountID, "match_count", len(matches), "excluded_already_linked", excludedAlreadyLinked)
 			return nil, false
 		}
 		candidate = &matches[i]
 	}
 	if candidate == nil {
+		a.logger.Info("google sync findUnlinkedMatch: all name matches already linked to this account", "account_id", accountID, "match_count", len(matches), "excluded_already_linked", excludedAlreadyLinked)
 		return nil, false
 	}
+	a.logger.Info("google sync findUnlinkedMatch: matched", "account_id", accountID, "person_id", candidate.ID, "match_count", len(matches), "excluded_already_linked", excludedAlreadyLinked)
 	return candidate, true
 }
 
 func (a *Adapter) mergeRemoteRecord(ctx context.Context, accountID uuid.UUID, session contactsync.AuthSession, remote contactsync.ProviderRecord, pending *[]pendingRelationship) error {
 	remoteModel, localID := remoteToLocal(remote)
+	a.logger.Info("google sync mergeRemoteRecord", "account_id", accountID, "external_id", remote.Record.ExternalID, "has_local_id_tag", localID != nil, "tombstone", remote.Record.Tombstone.Deleted)
 	if localID == nil {
 		if remote.Record.Tombstone.Deleted {
 			// A tombstone for a contact we never linked (e.g. deleted before
@@ -640,6 +647,7 @@ func (a *Adapter) mergeRemoteRecord(ctx context.Context, accountID uuid.UUID, se
 			return nil
 		}
 		if match, ok := a.findUnlinkedMatch(ctx, accountID, remoteModel); ok {
+			a.logger.Info("google sync mergeRemoteRecord: reconciling against unlinked name match", "account_id", accountID, "external_id", remote.Record.ExternalID, "person_id", match.ID)
 			return a.reconcileExisting(ctx, accountID, session, match, remoteModel, remote, pending)
 		}
 		created, verrs, err := a.people.Create(contactsync.WithSyncOrigin(ctx), remoteModel)
@@ -649,9 +657,11 @@ func (a *Adapter) mergeRemoteRecord(ctx context.Context, accountID uuid.UUID, se
 		if verrs.HasErrors() {
 			return fmt.Errorf("creating local person from google record %s: %s", remote.Record.ExternalID, verrs.Error())
 		}
+		a.logger.Info("google sync mergeRemoteRecord: created new local person (no tag, no unlinked name match)", "account_id", accountID, "external_id", remote.Record.ExternalID, "person_id", created.ID)
 		*pending = append(*pending, pendingRelationship{PersonID: created.ID, Fields: remote.Record.Fields})
 		out, upsertErr := a.UpsertRecord(ctx, session, a.attachRelationsForExport(ctx, created.ID, created.UpdatedAt, personToRecord(*created, remote.Record.ExternalID)))
 		if upsertErr != nil {
+			a.logger.Error("google sync mergeRemoteRecord: failed to push newly-created person back to google, it will remain unlinked", "account_id", accountID, "external_id", remote.Record.ExternalID, "person_id", created.ID, "error", upsertErr)
 			return upsertErr
 		}
 		a.linkRecord(ctx, accountID, created.ID, out.Record.ExternalID)
@@ -675,6 +685,7 @@ func (a *Adapter) mergeRemoteRecord(ctx context.Context, accountID uuid.UUID, se
 		if verrs.HasErrors() {
 			return fmt.Errorf("creating local person for missing mapping: %s", verrs.Error())
 		}
+		a.logger.Info("google sync mergeRemoteRecord: tagged local_id not found locally, recreated", "account_id", accountID, "external_id", remote.Record.ExternalID, "missing_local_id", localID.String(), "person_id", created.ID)
 		*pending = append(*pending, pendingRelationship{PersonID: created.ID, Fields: remote.Record.Fields})
 		out, upsertErr := a.UpsertRecord(ctx, session, a.attachRelationsForExport(ctx, created.ID, created.UpdatedAt, personToRecord(*created, remote.Record.ExternalID)))
 		if upsertErr != nil {
@@ -684,6 +695,7 @@ func (a *Adapter) mergeRemoteRecord(ctx context.Context, accountID uuid.UUID, se
 		return nil
 	}
 
+	a.logger.Info("google sync mergeRemoteRecord: matched existing local person by contacts_local_id tag", "account_id", accountID, "external_id", remote.Record.ExternalID, "person_id", local.ID)
 	return a.reconcileExisting(ctx, accountID, session, local, remoteModel, remote, pending)
 }
 

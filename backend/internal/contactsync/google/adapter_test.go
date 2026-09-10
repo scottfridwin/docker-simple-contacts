@@ -314,7 +314,7 @@ func (s *stubPersonService) FindByExactName(context.Context, string, string) ([]
 // run for the account (observed live: account flipped to
 // status=reconnect_required after every periodic sync).
 func TestMergeRemoteRecordSkipsUnknownTombstone(t *testing.T) {
-	adapter := &Adapter{people: &stubPersonService{t: t}}
+	adapter := &Adapter{people: &stubPersonService{t: t}, logger: slog.Default()}
 	remote := contactsync.ProviderRecord{
 		Record: contactsync.Record{
 			ExternalID: "people/c6126766398320782690",
