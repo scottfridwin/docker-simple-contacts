@@ -185,6 +185,10 @@ A `Person` has:
 - `is_favorite` (boolean, default false) - starred contacts are shown in an
   always-visible Favorites section in the UI, separate from the main list's
   page/sort/search
+- `is_owner` (read-only boolean) - `false` when the Person is shared with you
+  by another account rather than owned by you
+- `owner_display_name` (read-only, optional) - set only when `is_owner` is
+  `false`, showing who shared the contact
 - `created_at`, `updated_at`, `deleted_at` (soft delete)
 
 **Custom fields policy:** lowercase `snake_case` keys; scalar values of type
@@ -211,6 +215,15 @@ name-only so the information isn't lost.
 excluded from reads and permanently purged after `PURGE_AFTER_DAYS` (default 30)
 by a background job.
 
+**Sharing:** an owner can share an individual contact with another account by
+exact email match (the recipient must have logged in at least once). The
+recipient gets view and edit access to the same record (not a copy) - it
+appears merged into their own list with a "Shared by ..." badge, and is
+included in their own Google sync export. Deleting, restoring, managing
+relationships, and managing shares on that Person remain owner-only actions.
+Manage shares via `GET/POST /persons/{id}/shares` and
+`DELETE /persons/{id}/shares/{shareId}`.
+
 ## API
 
 - Base path: `/api/v1`
@@ -218,6 +231,8 @@ by a background job.
   `POST /persons/{id}/restore`, and `DELETE /persons/{id}/permanent`
 - Relationships: `GET/POST /persons/{id}/relationships`, `DELETE
   /persons/{id}/relationships/{relationshipId}`
+- Sharing: `GET/POST /persons/{id}/shares`, `DELETE /persons/{id}/shares/{shareId}`
+  (owner-only)
 - Sync account management: `GET/POST /sync-accounts`, `GET/PATCH/DELETE /sync-accounts/{id}`
 - Google sync OAuth: `GET /sync/google/begin`, `GET /sync/google/callback`
 - Multiple Google accounts can be connected at once (via the sync drawer's

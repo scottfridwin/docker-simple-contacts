@@ -43,6 +43,8 @@ func (s scanStub) Scan(dest ...any) error {
 			*d = value.(time.Time)
 		case **time.Time:
 			*d = value.(*time.Time)
+		case **uuid.UUID:
+			*d = value.(*uuid.UUID)
 		}
 	}
 	return nil
@@ -89,6 +91,63 @@ func TestScanPersonPreservesValues(t *testing.T) {
 	}
 	if len(p.MiddleNames) != 1 || len(p.PhoneNumbers) != 1 || p.CustomFields["x"] != "y" || p.DeletedAt == nil || !p.IsFavorite {
 		t.Fatalf("values were not preserved: %+v", p)
+	}
+}
+
+func TestScanPersonAccessible(t *testing.T) {
+	now := time.Now()
+	ownerID := uuid.New()
+	ownerName := "Bob"
+	p, err := scanPersonAccessible(scanStub{values: []any{
+		uuid.New(), "First", []string(nil), "Last", "First Last",
+		(*string)(nil), (*string)(nil), (*string)(nil),
+		[]contactsync.LabeledValue(nil), []contactsync.LabeledValue(nil), []contactsync.Address(nil),
+		(*contactsync.Organization)(nil), (*string)(nil), map[string]any(nil), false,
+		now, now, (*time.Time)(nil),
+		&ownerID, &ownerName,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.OwnerID == nil || *p.OwnerID != ownerID {
+		t.Errorf("OwnerID = %v, want %v", p.OwnerID, ownerID)
+	}
+	if p.OwnerDisplayName == nil || *p.OwnerDisplayName != ownerName {
+		t.Errorf("OwnerDisplayName = %v, want %v", p.OwnerDisplayName, ownerName)
+	}
+}
+
+func TestScanPersonAccessibleReturnsScanError(t *testing.T) {
+	want := errors.New("scan failed")
+	if _, err := scanPersonAccessible(scanStub{err: want}); !errors.Is(err, want) {
+		t.Fatalf("error = %v, want %v", err, want)
+	}
+}
+
+// TestApplyOwnership guards the three branches: the current viewer owns the
+// Person, the current viewer only has shared access, and there's no
+// authenticated viewer at all (single-tenant/legacy mode).
+func TestApplyOwnership(t *testing.T) {
+	ownerID := uuid.New()
+	otherID := uuid.New()
+	name := "Bob"
+
+	owned := &Person{OwnerID: &ownerID, OwnerDisplayName: &name}
+	applyOwnership(owned, ownerID, true)
+	if !owned.IsOwner || owned.OwnerDisplayName != nil {
+		t.Errorf("owner case: IsOwner=%v OwnerDisplayName=%v", owned.IsOwner, owned.OwnerDisplayName)
+	}
+
+	shared := &Person{OwnerID: &otherID, OwnerDisplayName: &name}
+	applyOwnership(shared, ownerID, true)
+	if shared.IsOwner || shared.OwnerDisplayName == nil {
+		t.Errorf("shared case: IsOwner=%v OwnerDisplayName=%v", shared.IsOwner, shared.OwnerDisplayName)
+	}
+
+	noViewer := &Person{OwnerID: &otherID, OwnerDisplayName: &name}
+	applyOwnership(noViewer, uuid.Nil, false)
+	if !noViewer.IsOwner || noViewer.OwnerDisplayName != nil {
+		t.Errorf("no-viewer case: IsOwner=%v OwnerDisplayName=%v", noViewer.IsOwner, noViewer.OwnerDisplayName)
 	}
 }
 

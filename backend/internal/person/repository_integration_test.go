@@ -258,3 +258,135 @@ func TestRepositoryRelationships(t *testing.T) {
 		t.Fatalf("expected relationship to cascade-delete with the related person, got %+v", aViews)
 	}
 }
+
+// TestRepositorySharing is the security-critical guard for cross-account
+// contact sharing: a share grants exactly the recipient view+edit access to
+// the base Person record, an unrelated third account must never see it, and
+// deletion/relationship-management/re-sharing stay owner-only even for the
+// recipient. Run against a real Postgres instance since access control bugs
+// here would be a real data-exposure vulnerability the in-memory unit-test
+// fakes can't catch.
+func TestRepositorySharing(t *testing.T) {
+	pool := newTestPool(t)
+	repo := NewRepository(pool)
+	ctx := context.Background()
+
+	owner := createTestUser(t, ctx, pool, "share-owner")
+	recipient := createTestUser(t, ctx, pool, "share-recipient")
+	stranger := createTestUser(t, ctx, pool, "share-stranger")
+	ownerCtx := authn.WithUserID(ctx, owner)
+	recipientCtx := authn.WithUserID(ctx, recipient)
+	strangerCtx := authn.WithUserID(ctx, stranger)
+
+	created, err := repo.Create(ownerCtx, &Person{FirstName: "Shared", LastName: "Contact", DisplayName: "Shared Contact", CustomFields: map[string]any{}})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	t.Cleanup(func() { _, _ = pool.Exec(ctx, "DELETE FROM persons WHERE id = $1", created.ID) })
+
+	// Sharing with yourself, a nonexistent email, or the same recipient
+	// twice must all be rejected.
+	if _, err := repo.CreateShare(ownerCtx, created.ID, "share-owner@example.com"); !errors.Is(err, ErrCannotShareWithSelf) {
+		t.Fatalf("self-share = %v, want ErrCannotShareWithSelf", err)
+	}
+	if _, err := repo.CreateShare(ownerCtx, created.ID, "nobody@example.com"); !errors.Is(err, ErrShareUserNotFound) {
+		t.Fatalf("unknown-email share = %v, want ErrShareUserNotFound", err)
+	}
+	share, err := repo.CreateShare(ownerCtx, created.ID, "SHARE-RECIPIENT@example.com")
+	if err != nil {
+		t.Fatalf("CreateShare: %v", err)
+	}
+	if share.SharedWithUserID != recipient {
+		t.Fatalf("share resolved to %v, want recipient %v", share.SharedWithUserID, recipient)
+	}
+	if _, err := repo.CreateShare(ownerCtx, created.ID, "share-recipient@example.com"); !errors.Is(err, ErrShareExists) {
+		t.Fatalf("duplicate share = %v, want ErrShareExists", err)
+	}
+
+	// Recipient can view and edit the shared Person via the accessible path.
+	viaRecipient, err := repo.GetAccessible(recipientCtx, created.ID)
+	if err != nil {
+		t.Fatalf("recipient GetAccessible: %v", err)
+	}
+	if viaRecipient.IsOwner {
+		t.Error("expected IsOwner=false for the recipient")
+	}
+	if viaRecipient.OwnerDisplayName == nil || *viaRecipient.OwnerDisplayName != "share-owner" {
+		t.Errorf("OwnerDisplayName = %v, want share-owner", viaRecipient.OwnerDisplayName)
+	}
+	viaRecipient.Notes = func() *string { s := "edited by recipient"; return &s }()
+	updated, err := repo.Update(recipientCtx, created.ID, viaRecipient)
+	if err != nil {
+		t.Fatalf("recipient Update: %v", err)
+	}
+	if updated.Notes == nil || *updated.Notes != "edited by recipient" {
+		t.Fatalf("expected recipient's edit to persist, got %+v", updated.Notes)
+	}
+
+	// The recipient's edit shows up for the owner too (single shared record).
+	viaOwner, err := repo.GetAccessible(ownerCtx, created.ID)
+	if err != nil {
+		t.Fatalf("owner GetAccessible: %v", err)
+	}
+	if !viaOwner.IsOwner {
+		t.Error("expected IsOwner=true for the owner")
+	}
+	if viaOwner.Notes == nil || *viaOwner.Notes != "edited by recipient" {
+		t.Fatalf("owner should see the recipient's edit, got %+v", viaOwner.Notes)
+	}
+
+	// The recipient sees it merged into their own list.
+	recipientList, _, err := repo.List(recipientCtx, ListParams{Page: 1, PageSize: 25})
+	if err != nil {
+		t.Fatalf("recipient List: %v", err)
+	}
+	found := false
+	for _, p := range recipientList {
+		if p.ID == created.ID {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("expected the shared Person to appear in the recipient's list")
+	}
+
+	// An unrelated third account must never see it via either path.
+	if _, err := repo.GetAccessible(strangerCtx, created.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("stranger GetAccessible = %v, want ErrNotFound", err)
+	}
+	strangerList, _, err := repo.List(strangerCtx, ListParams{Page: 1, PageSize: 25})
+	if err != nil {
+		t.Fatalf("stranger List: %v", err)
+	}
+	for _, p := range strangerList {
+		if p.ID == created.ID {
+			t.Fatal("stranger can see a Person shared with someone else")
+		}
+	}
+
+	// Deletion, relationship management, and re-sharing remain owner-only
+	// even for the recipient - GetByID (the strict path those use) must
+	// reject the recipient.
+	if _, err := repo.GetByID(recipientCtx, created.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("recipient strict GetByID = %v, want ErrNotFound (shared access must not extend to relationships/delete)", err)
+	}
+	if err := repo.SoftDelete(recipientCtx, created.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("recipient SoftDelete = %v, want ErrNotFound", err)
+	}
+	// repo.CreateShare itself has no owner check (that's enforced one layer
+	// up, by Service.CreateShare's GetByID pre-check) - exercise the real
+	// Service on top of this same repo to confirm the recipient is
+	// rejected end-to-end.
+	svc := NewService(repo)
+	if _, _, err := svc.CreateShare(recipientCtx, created.ID, "share-stranger@example.com"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("recipient re-share via Service = %v, want ErrNotFound", err)
+	}
+
+	// Revoking the share removes access again.
+	if err := repo.DeleteShare(ownerCtx, created.ID, share.ID); err != nil {
+		t.Fatalf("DeleteShare: %v", err)
+	}
+	if _, err := repo.GetAccessible(recipientCtx, created.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("recipient GetAccessible after revoke = %v, want ErrNotFound", err)
+	}
+}

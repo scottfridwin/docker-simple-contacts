@@ -54,4 +54,22 @@ describe('PersonList', () => {
     star.click();
     expect(onToggleFavorite).toHaveBeenCalledWith(person);
   });
+
+  it('shows a shared-by badge and hides delete for a non-owned contact', () => {
+    const person = makePerson({ is_owner: false, owner_display_name: 'Alice' });
+
+    render(<PersonList persons={[person]} onEdit={vi.fn()} onDelete={vi.fn()} />);
+
+    expect(screen.getByText(/shared by alice/i)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^delete$/i })).not.toBeInTheDocument();
+  });
+
+  it('shows the delete button for an owned contact', () => {
+    const person = makePerson({ is_owner: true });
+
+    render(<PersonList persons={[person]} onEdit={vi.fn()} onDelete={vi.fn()} />);
+
+    expect(screen.queryByText(/shared by/i)).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^delete$/i })).toBeInTheDocument();
+  });
 });

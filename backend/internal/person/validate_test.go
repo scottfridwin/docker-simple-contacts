@@ -91,6 +91,10 @@ func TestCustomFieldLimits(t *testing.T) {
 	if errs := ValidateCustomFields(map[string]any{"big": longString}); !errs.HasErrors() {
 		t.Error("expected error for oversized string value")
 	}
+	longKey := strings.Repeat("k", MaxKeyLength+1)
+	if errs := ValidateCustomFields(map[string]any{longKey: "v"}); !errs.HasErrors() {
+		t.Error("expected error for oversized key")
+	}
 }
 
 func TestValidateNewFields(t *testing.T) {
@@ -99,6 +103,9 @@ func TestValidateNewFields(t *testing.T) {
 
 	if errs := ValidateCreate(CreateInput{FirstName: "A", LastName: "B", Nickname: &longPtr}); !errs.HasErrors() {
 		t.Error("expected error for oversized nickname")
+	}
+	if errs := ValidateCreate(CreateInput{FirstName: "A", LastName: "B", Pronouns: &longPtr}); !errs.HasErrors() {
+		t.Error("expected error for oversized pronouns")
 	}
 
 	bad := "not-a-date"
@@ -203,6 +210,10 @@ func TestValidateMiddleNames(t *testing.T) {
 	}
 	if errs := ValidateCreate(CreateInput{FirstName: "A", LastName: "B", MiddleNames: []string{""}}); !errs.HasErrors() {
 		t.Error("expected error for empty middle name")
+	}
+	longMiddle := strings.Repeat("x", MaxNameLength+1)
+	if errs := ValidateCreate(CreateInput{FirstName: "A", LastName: "B", MiddleNames: []string{longMiddle}}); !errs.HasErrors() {
+		t.Error("expected error for oversized middle name")
 	}
 }
 

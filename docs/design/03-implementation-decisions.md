@@ -489,4 +489,59 @@ Default sort: changed from `display_name desc` to `last_name, first_name asc`
 (a compound sort - ties on last name break by first name) per explicit user
 request that the previous default was wrong for a contacts list.
 
+## Post-implementation decision log (2026-09-09, later still)
+
+### I) Sharing contacts between accounts
+
+Reverses the v1/v2 "sharing contacts between accounts" out-of-scope
+decision (see [02-development-guide.md](02-development-guide.md)) - the user
+explicitly asked for this as the last feature needed before a v2.0 release.
+Scoped down via clarifying questions before implementation:
+
+- **Granularity**: individual contacts only, chosen one at a time by the
+  owner - no "share my whole address book" toggle.
+- **Access level**: view **and edit** the shared Person record itself
+  (name, contact info, notes, custom fields, favorite flag) - edits are
+  visible to the owner too, since it's the same underlying row, not a copy.
+  Deliberately **not** extended to: deleting/restoring/hard-deleting the
+  Person, managing its relationships, or managing its own shares (only the
+  owner can share, re-share, or revoke) - avoids a real bug class where
+  `person_relationships.owner_id` is stamped from whoever's currently acting,
+  which would silently hide a recipient-created relationship from the actual
+  owner.
+- **Recipient lookup**: by exact (case-insensitive) email match against the
+  `users` table - the recipient must already have logged in at least once
+  via Authentik for a `users` row to exist. No invite-by-email-before-they-
+  exist flow, and no user search/directory endpoint (avoids letting any user
+  enumerate other accounts' emails).
+- **Google sync**: shared contacts sync like owned ones - `person.List`
+  (used by `exportLocal`) includes both owned and shared-with-me Persons for
+  the current account context, so a recipient's own connected Google
+  account(s) will also mirror contacts shared with them. No adapter-level
+  change was needed for this; it falls out of the repository-level access
+  change automatically.
+- **Storage**: new `person_shares` table (`person_id`, `shared_with_user_id`,
+  unique per pair) - a grant, not a copy. `Repository.GetAccessible`/`List`/
+  `Update` were extended to allow `owner_id = viewer OR EXISTS (... a
+  person_shares row for viewer)`; the existing strict, owner-only `GetByID`
+  is untouched and still used by relationship management, delete/restore/
+  hard-delete, and share management themselves, which is what keeps those
+  operations owner-only.
+- **API surface**: `Person` responses gained `is_owner` (bool) and
+  `owner_display_name` (set only when `is_owner` is false), so the UI can
+  show a "Shared by X" indicator without a separate lookup. New endpoints:
+  `GET/POST /persons/{id}/shares`, `DELETE /persons/{id}/shares/{shareId}`
+  (all owner-only).
+- **UI**: shared contacts are merged into the main list (not a separate
+  section) with a small badge; the owner manages sharing from a "Sharing"
+  panel on the edit form (alongside Relationships), which - along with the
+  Relationships panel - is hidden entirely when viewing a contact you don't
+  own, since those operations 404 for a non-owner by design.
+- **Not implemented** (explicitly out of scope for this pass, candidates for
+  a later follow-up): per-recipient favorite state (favoriting a shared
+  contact currently flips the single shared `is_favorite` column, visible to
+  the owner too - there's no separate "my favorite of your contact" concept
+  yet), and any notification to the recipient when a contact is first shared
+  with them (they simply see it appear on next list load).
+
 

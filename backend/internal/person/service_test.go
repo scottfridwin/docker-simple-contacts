@@ -3,6 +3,7 @@ package person
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -16,7 +17,15 @@ import (
 type memStore struct {
 	items          map[uuid.UUID]*Person
 	relationships  []storedRelationship
+	shares         []storedShare
 	forceDeleteErr error
+}
+
+type storedShare struct {
+	id          uuid.UUID
+	personID    uuid.UUID
+	email       string
+	displayName string
 }
 
 type storedRelationship struct {
@@ -52,6 +61,48 @@ func (m *memStore) GetByID(_ context.Context, id uuid.UUID) (*Person, error) {
 	}
 	out := *p
 	return &out, nil
+}
+
+func (m *memStore) GetAccessible(ctx context.Context, id uuid.UUID) (*Person, error) {
+	return m.GetByID(ctx, id)
+}
+
+func (m *memStore) CreateShare(_ context.Context, personID uuid.UUID, email string) (*Share, error) {
+	email = strings.ToLower(strings.TrimSpace(email))
+	if email == "notfound@example.com" {
+		return nil, ErrShareUserNotFound
+	}
+	if email == "self@example.com" {
+		return nil, ErrCannotShareWithSelf
+	}
+	for _, s := range m.shares {
+		if s.personID == personID && s.email == email {
+			return nil, ErrShareExists
+		}
+	}
+	id := uuid.New()
+	m.shares = append(m.shares, storedShare{id: id, personID: personID, email: email, displayName: email})
+	return &Share{ID: id, PersonID: personID, SharedWithUserID: uuid.New(), SharedWithEmail: email, SharedWithDisplayName: email, CreatedAt: time.Now()}, nil
+}
+
+func (m *memStore) ListShares(_ context.Context, personID uuid.UUID) ([]Share, error) {
+	var out []Share
+	for _, s := range m.shares {
+		if s.personID == personID {
+			out = append(out, Share{ID: s.id, PersonID: s.personID, SharedWithEmail: s.email, SharedWithDisplayName: s.displayName})
+		}
+	}
+	return out, nil
+}
+
+func (m *memStore) DeleteShare(_ context.Context, personID, shareID uuid.UUID) error {
+	for i, s := range m.shares {
+		if s.id == shareID && s.personID == personID {
+			m.shares = append(m.shares[:i], m.shares[i+1:]...)
+			return nil
+		}
+	}
+	return ErrNotFound
 }
 
 func (m *memStore) GetDeletedByID(_ context.Context, id uuid.UUID) (*Person, error) {
@@ -541,6 +592,22 @@ func TestServiceUpdateClearsSetFieldsWithNilValue(t *testing.T) {
 	}
 }
 
+// TestServiceUpdateSetsFavorite guards applyUpdate's IsFavoriteSet branch
+// when an actual value is provided (as opposed to the nil/no-op case above).
+func TestServiceUpdateSetsFavorite(t *testing.T) {
+	svc := NewService(newMemStore())
+	created, _, _ := svc.Create(context.Background(), CreateInput{FirstName: "A", LastName: "B"})
+
+	fav := true
+	updated, _, err := svc.Update(context.Background(), created.ID, UpdateInput{IsFavorite: &fav, IsFavoriteSet: true})
+	if err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	if !updated.IsFavorite {
+		t.Error("expected IsFavorite to be set to true")
+	}
+}
+
 // TestServiceListRelationshipsNotFound guards the early-return branch: a
 // nonexistent personID should surface the lookup error without ever
 // reaching the relationships query.
@@ -812,6 +879,67 @@ func TestServiceListIncomingRelationships(t *testing.T) {
 
 	if none, err := svc.ListIncomingRelationships(ctx, a.ID); err != nil || len(none) != 0 {
 		t.Fatalf("ListIncomingRelationships(a) = %+v, err=%v, want none (a owns the row, doesn't receive it)", none, err)
+	}
+}
+
+func TestServiceCreateShare(t *testing.T) {
+	svc := NewService(newMemStore())
+	ctx := context.Background()
+	a, _, _ := svc.Create(ctx, CreateInput{FirstName: "A", LastName: "One"})
+
+	share, verrs, err := svc.CreateShare(ctx, a.ID, "Friend@Example.com")
+	if err != nil || verrs.HasErrors() {
+		t.Fatalf("CreateShare: verrs=%v err=%v", verrs, err)
+	}
+	if share.SharedWithEmail != "friend@example.com" {
+		t.Errorf("expected email normalized to lowercase, got %q", share.SharedWithEmail)
+	}
+
+	shares, err := svc.ListShares(ctx, a.ID)
+	if err != nil || len(shares) != 1 || shares[0].ID != share.ID {
+		t.Fatalf("ListShares = %+v, err=%v", shares, err)
+	}
+
+	if err := svc.DeleteShare(ctx, a.ID, share.ID); err != nil {
+		t.Fatalf("DeleteShare: %v", err)
+	}
+	if shares, err := svc.ListShares(ctx, a.ID); err != nil || len(shares) != 0 {
+		t.Fatalf("ListShares after delete = %+v, err=%v", shares, err)
+	}
+}
+
+func TestServiceCreateShareValidationMapping(t *testing.T) {
+	svc := NewService(newMemStore())
+	ctx := context.Background()
+	a, _, _ := svc.Create(ctx, CreateInput{FirstName: "A", LastName: "One"})
+
+	if _, verrs, err := svc.CreateShare(ctx, a.ID, "  "); err != nil || !verrs.HasErrors() {
+		t.Errorf("expected validation error for empty email, got verrs=%v err=%v", verrs, err)
+	}
+	if _, verrs, err := svc.CreateShare(ctx, a.ID, "notfound@example.com"); err != nil || !verrs.HasErrors() {
+		t.Errorf("expected validation error for unknown email, got verrs=%v err=%v", verrs, err)
+	}
+	if _, verrs, err := svc.CreateShare(ctx, a.ID, "friend@example.com"); err != nil || verrs.HasErrors() {
+		t.Fatalf("first share: verrs=%v err=%v", verrs, err)
+	}
+	if _, verrs, err := svc.CreateShare(ctx, a.ID, "friend@example.com"); err != nil || !verrs.HasErrors() {
+		t.Errorf("expected validation error for duplicate share, got verrs=%v err=%v", verrs, err)
+	}
+	if _, verrs, err := svc.CreateShare(ctx, a.ID, "self@example.com"); err != nil || !verrs.HasErrors() {
+		t.Errorf("expected validation error for self-share, got verrs=%v err=%v", verrs, err)
+	}
+}
+
+func TestServiceCreateShareNotFound(t *testing.T) {
+	svc := NewService(newMemStore())
+	if _, _, err := svc.CreateShare(context.Background(), uuid.New(), "friend@example.com"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("CreateShare for unknown person = %v, want ErrNotFound", err)
+	}
+	if _, err := svc.ListShares(context.Background(), uuid.New()); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("ListShares for unknown person = %v, want ErrNotFound", err)
+	}
+	if err := svc.DeleteShare(context.Background(), uuid.New(), uuid.New()); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("DeleteShare for unknown person = %v, want ErrNotFound", err)
 	}
 }
 

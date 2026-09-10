@@ -16,7 +16,8 @@ conflict.
 - Stay within current scope. Authentication is Authentik OIDC only. Google
   Contacts sync is supported through the existing sync framework and adapter,
   including multiple connected Google accounts (each mirrors the full contact
-  list both ways; no per-contact routing); do not add passwords, local
+  list both ways; no per-contact routing). Sharing individual contacts
+  between accounts is supported (see below); do not add passwords, local
   accounts, alternate SSO providers, new sync providers without design
   approval, background queues, file attachments, or offline PWA support.
 - Keep dependencies **minimal** (Renovate-friendly).
@@ -78,6 +79,15 @@ conflict.
   edits to the same field still resolve by whichever timestamp is newer.
 - Keep public verification pages available without login: home page with app
   purpose and privacy policy at `/privacy`.
+- Sharing: an owner can share an individual Person with another account
+  (exact email match; recipient must have logged in at least once) via
+  `person_shares`, granting view+edit access to the same record. Delete,
+  restore/hard-delete, relationship management, and share management stay
+  owner-only. Shared contacts merge into the recipient's list (`is_owner`/
+  `owner_display_name` on the API response) and are included in the
+  recipient's own Google sync export. Managed via
+  `GET/POST /persons/{id}/shares` and
+  `DELETE /persons/{id}/shares/{shareId}`.
 
 ## Validate before finishing
 

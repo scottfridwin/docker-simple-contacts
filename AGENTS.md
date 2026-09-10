@@ -107,12 +107,13 @@ docs/design/            authoritative design documents
   rebuild. See the README release section.
 - **Coverage**: CI enforces ≥ 70% on `config`, `httpapi`, `person`.
 - **Scope**: authentication is limited to Authentik OIDC SSO and account-owned
-  Person records. Google Contacts sync is supported through the existing sync
-  framework and Google adapter only, including **multiple Google accounts**
-  connected at once (each mirrors the full contact list both ways; no
-  per-contact routing). Do NOT add passwords, local accounts, SSO providers
-  other than Authentik, new sync *providers* without a design decision,
-  background queues, file attachments, or offline PWA support.
+  or account-shared Person records (see **Sharing** below). Google Contacts
+  sync is supported through the existing sync framework and Google adapter
+  only, including **multiple Google accounts** connected at once (each
+  mirrors the full contact list both ways; no per-contact routing). Do NOT
+  add passwords, local accounts, SSO providers other than Authentik, new sync
+  *providers* without a design decision, background queues, file attachments,
+  or offline PWA support.
 - **Multi-account identity**: Google sync accounts are identified by the
   verified OAuth ID token subject (`sync_accounts.provider_account_id`), not
   by provider alone — never match/overwrite an existing account by provider
@@ -136,6 +137,16 @@ docs/design/            authoritative design documents
 - **OAuth verification pages**: unauthenticated users must be able to view a
   public home page describing app purpose, and a public privacy policy page at
   `/privacy`.
+- **Sharing**: an owner can share an individual Person with another account
+  (looked up by exact email match; the recipient must have logged in at
+  least once) via `person_shares`, granting that account view+edit access to
+  the same record (not a copy). Deletion, restore/hard-delete, relationship
+  management, and share management on that Person remain **owner-only** -
+  sharing only extends to `GET`/`PATCH` on the base Person. Shared contacts
+  are merged into the recipient's own list (`is_owner`/`owner_display_name`
+  on the API response drive a "Shared by X" badge) and are included in the
+  recipient's own Google sync export, since `person.List`/`GetAccessible`
+  include both owned and shared-with-me rows for the current account.
 
 ## Conventions
 

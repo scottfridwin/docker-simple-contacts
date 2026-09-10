@@ -34,6 +34,13 @@ export interface Relationship {
   related_person_deleted: boolean;
 }
 
+export interface Share {
+  id: string;
+  email: string;
+  display_name: string;
+  created_at: string;
+}
+
 export interface Person {
   id: string;
   first_name: string;
@@ -50,6 +57,8 @@ export interface Person {
   notes?: string | null;
   custom_fields: Record<string, CustomFieldValue>;
   is_favorite: boolean;
+  is_owner?: boolean;
+  owner_display_name?: string | null;
   created_at: string;
   updated_at: string;
   deleted_at?: string | null;

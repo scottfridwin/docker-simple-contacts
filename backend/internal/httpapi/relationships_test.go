@@ -1,10 +1,16 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"log/slog"
 	"net/http"
+	"net/http/httptest"
 	"testing"
+
+	"github.com/google/uuid"
 
 	"github.com/scottfridlund/contacts/backend/internal/person"
 )
@@ -105,4 +111,108 @@ func TestRelationshipEndpoint404sForUnknownPerson(t *testing.T) {
 
 func uuidNil() string {
 	return "00000000-0000-0000-0000-000000000000"
+}
+
+func TestRelationshipEndpointsInvalidIDs(t *testing.T) {
+	h, store := testRouter()
+	a, _, _ := person.NewService(store).Create(context.Background(), person.CreateInput{FirstName: "A", LastName: "One"})
+
+	for _, tc := range []struct{ method, path string }{
+		{http.MethodGet, "/api/v1/persons/not-a-uuid/relationships"},
+		{http.MethodPost, "/api/v1/persons/not-a-uuid/relationships"},
+		{http.MethodDelete, "/api/v1/persons/not-a-uuid/relationships/" + uuidNil()},
+		{http.MethodDelete, "/api/v1/persons/" + a.ID.String() + "/relationships/not-a-uuid"},
+	} {
+		rec := doJSON(t, h, tc.method, tc.path, map[string]any{"type": "sibling", "related_person_name": "X"})
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("%s %s = %d, want 400", tc.method, tc.path, rec.Code)
+		}
+	}
+}
+
+func TestRelationshipEndpointCreateMalformedJSON(t *testing.T) {
+	h, store := testRouter()
+	a, _, _ := person.NewService(store).Create(context.Background(), person.CreateInput{FirstName: "A", LastName: "One"})
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/persons/"+a.ID.String()+"/relationships", bytes.NewBufferString("{not json"))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", rec.Code)
+	}
+}
+
+func TestRelationshipEndpointCreateInvalidRelatedPersonID(t *testing.T) {
+	h, store := testRouter()
+	a, _, _ := person.NewService(store).Create(context.Background(), person.CreateInput{FirstName: "A", LastName: "One"})
+
+	rec := doJSON(t, h, http.MethodPost, "/api/v1/persons/"+a.ID.String()+"/relationships", map[string]any{
+		"type": "sibling", "related_person_id": "not-a-uuid",
+	})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400, body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestRelationshipEndpointCreate404sForUnknownPerson(t *testing.T) {
+	h, _ := testRouter()
+	rec := doJSON(t, h, http.MethodPost, "/api/v1/persons/"+uuidNil()+"/relationships", map[string]any{
+		"type": "sibling", "related_person_name": "X",
+	})
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404, body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestRelationshipEndpointDelete404s(t *testing.T) {
+	h, store := testRouter()
+	a, _, _ := person.NewService(store).Create(context.Background(), person.CreateInput{FirstName: "A", LastName: "One"})
+
+	rec := doJSON(t, h, http.MethodDelete, "/api/v1/persons/"+uuidNil()+"/relationships/"+uuidNil(), nil)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("delete for unknown person status = %d, want 404", rec.Code)
+	}
+	rec = doJSON(t, h, http.MethodDelete, "/api/v1/persons/"+a.ID.String()+"/relationships/"+uuidNil(), nil)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("delete for unknown relationship status = %d, want 404", rec.Code)
+	}
+}
+
+// relationshipErrorStore lets the person exist (GetByID succeeds) but forces
+// every relationship-specific store call to fail with a generic error, to
+// exercise the internal_error branches.
+type relationshipErrorStore struct {
+	*fakeStore
+	err error
+}
+
+func (s *relationshipErrorStore) CreateRelationship(context.Context, uuid.UUID, person.RelationshipInput) (*person.RelationshipView, error) {
+	return nil, s.err
+}
+func (s *relationshipErrorStore) ListRelationships(context.Context, uuid.UUID) ([]person.RelationshipView, error) {
+	return nil, s.err
+}
+func (s *relationshipErrorStore) DeleteRelationship(context.Context, uuid.UUID, uuid.UUID) error {
+	return s.err
+}
+
+func TestRelationshipEndpointsReturnInternalErrors(t *testing.T) {
+	store := &relationshipErrorStore{fakeStore: newFakeStore(), err: errors.New("database unavailable")}
+	svc := person.NewService(store)
+	h := NewRouter(slog.Default(), svc, store, nil, nil, nil)
+	created, _, _ := svc.Create(context.Background(), person.CreateInput{FirstName: "A", LastName: "One"})
+
+	rec := doJSON(t, h, http.MethodGet, "/api/v1/persons/"+created.ID.String()+"/relationships", nil)
+	if rec.Code != http.StatusInternalServerError {
+		t.Errorf("list status = %d, want 500", rec.Code)
+	}
+	rec = doJSON(t, h, http.MethodPost, "/api/v1/persons/"+created.ID.String()+"/relationships", map[string]any{"type": "sibling", "related_person_name": "X"})
+	if rec.Code != http.StatusInternalServerError {
+		t.Errorf("create status = %d, want 500", rec.Code)
+	}
+	rec = doJSON(t, h, http.MethodDelete, "/api/v1/persons/"+created.ID.String()+"/relationships/"+uuid.NewString(), nil)
+	if rec.Code != http.StatusInternalServerError {
+		t.Errorf("delete status = %d, want 500", rec.Code)
+	}
 }

@@ -5,6 +5,7 @@ import type {
   PersonListResponse,
   Relationship,
   RelationType,
+  Share,
   SyncAccount,
   SyncAccountListResponse,
   UpdatePersonInput,
@@ -149,6 +150,21 @@ export function deleteRelationship(personId: string, relationshipId: string): Pr
   return request<void>(`/persons/${personId}/relationships/${relationshipId}`, {
     method: 'DELETE',
   });
+}
+
+export function listShares(personId: string): Promise<{ data: Share[] }> {
+  return request<{ data: Share[] }>(`/persons/${personId}/shares`);
+}
+
+export function createShare(personId: string, email: string): Promise<Share> {
+  return request<Share>(`/persons/${personId}/shares`, {
+    method: 'POST',
+    body: JSON.stringify({ email }),
+  });
+}
+
+export function deleteShare(personId: string, shareId: string): Promise<void> {
+  return request<void>(`/persons/${personId}/shares/${shareId}`, { method: 'DELETE' });
 }
 
 export function listSyncAccounts(): Promise<SyncAccountListResponse> {

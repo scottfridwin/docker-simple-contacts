@@ -3,6 +3,7 @@ package person
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -15,6 +16,7 @@ import (
 type store interface {
 	Create(ctx context.Context, p *Person) (*Person, error)
 	GetByID(ctx context.Context, id uuid.UUID) (*Person, error)
+	GetAccessible(ctx context.Context, id uuid.UUID) (*Person, error)
 	GetDeletedByID(ctx context.Context, id uuid.UUID) (*Person, error)
 	List(ctx context.Context, params ListParams) ([]Person, int, error)
 	ListDeleted(ctx context.Context, params ListParams) ([]Person, int, error)
@@ -30,6 +32,9 @@ type store interface {
 	ReplaceRelationships(ctx context.Context, personID uuid.UUID, desired []RelationshipInput) error
 	FindByDisplayName(ctx context.Context, name string) ([]Person, error)
 	FindByExactName(ctx context.Context, firstName, lastName string) ([]Person, error)
+	CreateShare(ctx context.Context, personID uuid.UUID, email string) (*Share, error)
+	ListShares(ctx context.Context, personID uuid.UUID) ([]Share, error)
+	DeleteShare(ctx context.Context, personID, shareID uuid.UUID) error
 }
 
 // syncNotifier is implemented by the sync engine to enqueue follow-up work.
@@ -103,9 +108,10 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (*Person, Validati
 	return created, nil, err
 }
 
-// Get returns a single Person by ID.
+// Get returns a single Person by ID, whether owned or shared with the
+// current account.
 func (s *Service) Get(ctx context.Context, id uuid.UUID) (*Person, error) {
-	return s.repo.GetByID(ctx, id)
+	return s.repo.GetAccessible(ctx, id)
 }
 
 // List returns a page of Persons and the total count.
@@ -118,13 +124,14 @@ func (s *Service) ListDeleted(ctx context.Context, params ListParams) ([]Person,
 	return s.repo.ListDeleted(ctx, params)
 }
 
-// Update validates and applies a patch to an existing Person.
+// Update validates and applies a patch to an existing Person. Allowed for
+// the owner or anyone the Person has been shared with (view+edit access).
 func (s *Service) Update(ctx context.Context, id uuid.UUID, in UpdateInput) (*Person, ValidationErrors, error) {
 	if errs := ValidateUpdate(in); errs.HasErrors() {
 		return nil, errs, nil
 	}
 
-	current, err := s.repo.GetByID(ctx, id)
+	current, err := s.repo.GetAccessible(ctx, id)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -132,6 +139,10 @@ func (s *Service) Update(ctx context.Context, id uuid.UUID, in UpdateInput) (*Pe
 	applyUpdate(current, in)
 	updated, err := s.repo.Update(ctx, id, current)
 	if err == nil {
+		// Ownership doesn't change from an edit; carry it over rather than
+		// re-querying it.
+		updated.IsOwner = current.IsOwner
+		updated.OwnerDisplayName = current.OwnerDisplayName
 		s.notify(ctx, contactsync.ChangeKindUpdated, updated)
 	}
 	return updated, nil, err
@@ -244,6 +255,45 @@ func (s *Service) FindByDisplayName(ctx context.Context, name string) ([]Person,
 // duplicate.
 func (s *Service) FindByExactName(ctx context.Context, firstName, lastName string) ([]Person, error) {
 	return s.repo.FindByExactName(ctx, firstName, lastName)
+}
+
+// CreateShare grants another account (looked up by exact email match)
+// view+edit access to personID. Only the owner may share a Person -
+// re-sharing a Person already shared with you is not permitted.
+func (s *Service) CreateShare(ctx context.Context, personID uuid.UUID, email string) (*Share, ValidationErrors, error) {
+	if _, err := s.repo.GetByID(ctx, personID); err != nil {
+		return nil, nil, err
+	}
+	if strings.TrimSpace(email) == "" {
+		return nil, ValidationErrors{{Field: "email", Message: "email is required"}}, nil
+	}
+	share, err := s.repo.CreateShare(ctx, personID, email)
+	if errors.Is(err, ErrShareUserNotFound) {
+		return nil, ValidationErrors{{Field: "email", Message: "no account found for that email"}}, nil
+	}
+	if errors.Is(err, ErrShareExists) {
+		return nil, ValidationErrors{{Field: "email", Message: "already shared with this person"}}, nil
+	}
+	if errors.Is(err, ErrCannotShareWithSelf) {
+		return nil, ValidationErrors{{Field: "email", Message: "cannot share a person with yourself"}}, nil
+	}
+	return share, nil, err
+}
+
+// ListShares returns everyone personID is currently shared with. Owner-only.
+func (s *Service) ListShares(ctx context.Context, personID uuid.UUID) ([]Share, error) {
+	if _, err := s.repo.GetByID(ctx, personID); err != nil {
+		return nil, err
+	}
+	return s.repo.ListShares(ctx, personID)
+}
+
+// DeleteShare revokes a share. Owner-only.
+func (s *Service) DeleteShare(ctx context.Context, personID, shareID uuid.UUID) error {
+	if _, err := s.repo.GetByID(ctx, personID); err != nil {
+		return err
+	}
+	return s.repo.DeleteShare(ctx, personID, shareID)
 }
 
 func applyUpdate(current *Person, in UpdateInput) {

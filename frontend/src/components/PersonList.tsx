@@ -39,6 +39,14 @@ export function PersonList({
         <li key={person.id} className="person-item">
           <div className="person-summary">
             <span className="person-name">{person.display_name}</span>
+            {person.is_owner === false && (
+              <span
+                className="shared-badge"
+                title={`Shared by ${person.owner_display_name ?? 'another account'}`}
+              >
+                shared by {person.owner_display_name ?? 'another account'}
+              </span>
+            )}
             {(person.phone_numbers ?? []).length > 0 && (
               <span className="person-meta">
                 {person.phone_numbers.map((p) => p.value).join(' · ')}
@@ -87,9 +95,11 @@ export function PersonList({
                 <button type="button" onClick={() => onEdit(person)}>
                   Edit
                 </button>
-                <button type="button" className="danger" onClick={() => onDelete(person)}>
-                  Delete
-                </button>
+                {person.is_owner !== false && (
+                  <button type="button" className="danger" onClick={() => onDelete(person)}>
+                    Delete
+                  </button>
+                )}
               </>
             )}
           </div>

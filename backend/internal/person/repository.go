@@ -79,7 +79,13 @@ func (r *Repository) Create(ctx context.Context, p *Person) (*Person, error) {
 	} else {
 		row = r.pool.QueryRow(ctx, qLegacy, p.FirstName, p.MiddleNames, p.LastName, p.DisplayName, p.Nickname, p.Pronouns, p.Birthdate, p.Emails, p.PhoneNumbers, p.Addresses, p.Organization, p.Notes, p.CustomFields, p.IsFavorite)
 	}
-	return scanPerson(row)
+	created, err := scanPerson(row)
+	if err != nil {
+		return nil, err
+	}
+	// A freshly created Person is always owned by its creator.
+	created.IsOwner = true
+	return created, nil
 }
 
 // GetByID returns a single non-deleted Person by ID.
@@ -99,6 +105,34 @@ func (r *Repository) GetByID(ctx context.Context, id uuid.UUID) (*Person, error)
 		return nil, ErrNotFound
 	}
 	return person, err
+}
+
+// GetAccessible returns a single non-deleted Person the current account
+// either owns or has been granted a share for. When accessed via a share,
+// IsOwner is false and OwnerDisplayName is populated so the UI can show
+// "Shared by <name>". With no authenticated account (single-tenant/legacy
+// mode), it behaves exactly like GetByID.
+func (r *Repository) GetAccessible(ctx context.Context, id uuid.UUID) (*Person, error) {
+	viewerID, ok := authn.UserID(ctx)
+	if !ok {
+		return r.GetByID(ctx, id)
+	}
+	const q = `
+		SELECT id, first_name, middle_names, last_name, display_name, nickname, pronouns, birthdate, emails, phone_numbers, addresses, organization, notes, custom_fields, is_favorite,
+		       created_at, updated_at, deleted_at, owner_id,
+		       (SELECT display_name FROM users WHERE id = persons.owner_id) AS owner_display_name
+		FROM persons
+		WHERE id = $1 AND deleted_at IS NULL
+		  AND (owner_id = $2 OR EXISTS (SELECT 1 FROM person_shares ps WHERE ps.person_id = persons.id AND ps.shared_with_user_id = $2))`
+	person, err := scanPersonAccessible(r.pool.QueryRow(ctx, q, id, viewerID))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	applyOwnership(person, viewerID, true)
+	return person, nil
 }
 
 // GetDeletedByID returns a soft-deleted Person by ID.
@@ -125,9 +159,10 @@ func (r *Repository) List(ctx context.Context, params ListParams) ([]Person, int
 	where := []string{"deleted_at IS NULL"}
 	args := []any{}
 	idx := 1
-	if ownerID, ok := authn.UserID(ctx); ok {
-		where = append(where, fmt.Sprintf("owner_id = $%d", idx))
-		args = append(args, ownerID)
+	viewerID, viewerOK := authn.UserID(ctx)
+	if viewerOK {
+		where = append(where, fmt.Sprintf("(owner_id = $%d OR EXISTS (SELECT 1 FROM person_shares ps WHERE ps.person_id = persons.id AND ps.shared_with_user_id = $%d))", idx, idx))
+		args = append(args, viewerID)
 		idx++
 	}
 
@@ -164,7 +199,8 @@ func (r *Repository) List(ctx context.Context, params ListParams) ([]Person, int
 	// Secondary sort on id keeps ordering deterministic across pages.
 	listQ := fmt.Sprintf(`
 		SELECT id, first_name, middle_names, last_name, display_name, nickname, pronouns, birthdate, emails, phone_numbers, addresses, organization, notes, custom_fields, is_favorite,
-		       created_at, updated_at, deleted_at
+		       created_at, updated_at, deleted_at, owner_id,
+		       (SELECT display_name FROM users WHERE id = persons.owner_id) AS owner_display_name
 		FROM persons
 		WHERE %s
 		ORDER BY %s
@@ -179,10 +215,11 @@ func (r *Repository) List(ctx context.Context, params ListParams) ([]Person, int
 
 	persons := make([]Person, 0, limit)
 	for rows.Next() {
-		p, scanErr := scanPerson(rows)
+		p, scanErr := scanPersonAccessible(rows)
 		if scanErr != nil {
 			return nil, 0, scanErr
 		}
+		applyOwnership(p, viewerID, viewerOK)
 		persons = append(persons, *p)
 	}
 	if err := rows.Err(); err != nil {
@@ -242,6 +279,8 @@ func (r *Repository) ListDeleted(ctx context.Context, params ListParams) ([]Pers
 }
 
 // Update applies a patch to an existing Person and returns the updated record.
+// The WHERE clause allows either the owner or a share recipient (view+edit
+// access) to persist changes.
 func (r *Repository) Update(ctx context.Context, id uuid.UUID, p *Person) (*Person, error) {
 	normalizePersonSlices(p)
 	q := `
@@ -254,7 +293,7 @@ func (r *Repository) Update(ctx context.Context, id uuid.UUID, p *Person) (*Pers
 		          created_at, updated_at, deleted_at`
 	args := []any{id, p.FirstName, p.MiddleNames, p.LastName, p.DisplayName, p.Nickname, p.Pronouns, p.Birthdate, p.Emails, p.PhoneNumbers, p.Addresses, p.Organization, p.Notes, p.CustomFields, p.IsFavorite}
 	if ownerID, ok := authn.UserID(ctx); ok {
-		q = strings.Replace(q, "WHERE id = $1", "WHERE id = $1 AND owner_id = $16", 1)
+		q = strings.Replace(q, "WHERE id = $1", "WHERE id = $1 AND (owner_id = $16 OR EXISTS (SELECT 1 FROM person_shares ps WHERE ps.person_id = persons.id AND ps.shared_with_user_id = $16))", 1)
 		args = append(args, ownerID)
 	}
 	person, err := scanPerson(r.pool.QueryRow(ctx, q, args...))
@@ -355,6 +394,42 @@ func scanPerson(s scanner) (*Person, error) {
 		p.CustomFields = map[string]any{}
 	}
 	return &p, nil
+}
+
+// scanPersonAccessible scans a row that additionally carries owner_id and a
+// computed owner_display_name column (see GetAccessible/List).
+func scanPersonAccessible(s scanner) (*Person, error) {
+	var p Person
+	var ownerDisplayName *string
+	if err := s.Scan(
+		&p.ID, &p.FirstName, &p.MiddleNames, &p.LastName, &p.DisplayName,
+		&p.Nickname, &p.Pronouns, &p.Birthdate, &p.Emails, &p.PhoneNumbers, &p.Addresses, &p.Organization, &p.Notes,
+		&p.CustomFields, &p.IsFavorite, &p.CreatedAt, &p.UpdatedAt, &p.DeletedAt,
+		&p.OwnerID, &ownerDisplayName,
+	); err != nil {
+		return nil, err
+	}
+	normalizePersonSlices(&p)
+	if p.CustomFields == nil {
+		p.CustomFields = map[string]any{}
+	}
+	p.OwnerDisplayName = ownerDisplayName
+	return &p, nil
+}
+
+// applyOwnership sets IsOwner based on the current viewer, clearing
+// OwnerDisplayName when the viewer is the owner (it's only meaningful for
+// shared access).
+func applyOwnership(p *Person, viewerID uuid.UUID, viewerOK bool) {
+	if !viewerOK {
+		p.IsOwner = true
+		p.OwnerDisplayName = nil
+		return
+	}
+	p.IsOwner = p.OwnerID == nil || *p.OwnerID == viewerID
+	if p.IsOwner {
+		p.OwnerDisplayName = nil
+	}
 }
 
 // normalizePersonSlices ensures nil slices become empty slices, since the

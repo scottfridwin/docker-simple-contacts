@@ -30,6 +30,16 @@ type Person struct {
 	CreatedAt    time.Time                  `json:"created_at"`
 	UpdatedAt    time.Time                  `json:"updated_at"`
 	DeletedAt    *time.Time                 `json:"deleted_at,omitempty"`
+
+	// OwnerID is never serialized; it's only used internally to compute
+	// IsOwner/OwnerDisplayName for the current viewer.
+	OwnerID *uuid.UUID `json:"-"`
+	// IsOwner is false when this Person was returned because it's shared
+	// with (not owned by) the current account.
+	IsOwner bool `json:"is_owner"`
+	// OwnerDisplayName is set only when IsOwner is false, so the UI can
+	// show "Shared by <name>".
+	OwnerDisplayName *string `json:"owner_display_name,omitempty"`
 }
 
 // CreateInput is the payload accepted when creating a Person.

@@ -7,6 +7,7 @@ import {
   type DraftCustomField,
 } from '../customFields';
 import { RelationshipsEditor } from './RelationshipsEditor';
+import { SharesEditor } from './SharesEditor';
 
 export interface PersonFormValues {
   first_name: string;
@@ -352,6 +353,12 @@ export function PersonForm({
 
   return (
     <form onSubmit={handleSubmit} className="person-form" aria-label="person form">
+      {initial && initial.is_owner === false && (
+        <p className="shared-by-banner">
+          Shared by {initial.owner_display_name ?? 'another account'}
+        </p>
+      )}
+
       <div className="field">
         <label htmlFor="first_name">First name *</label>
         <input
@@ -413,8 +420,11 @@ export function PersonForm({
 
       <AddressListField values={addresses} onChange={setAddresses} maxItems={10} />
 
-      {initial && (
-        <RelationshipsEditor personId={initial.id} onNavigateToPerson={onNavigateToPerson} />
+      {initial && initial.is_owner !== false && (
+        <>
+          <RelationshipsEditor personId={initial.id} onNavigateToPerson={onNavigateToPerson} />
+          <SharesEditor personId={initial.id} />
+        </>
       )}
 
       <fieldset className="organization-field">

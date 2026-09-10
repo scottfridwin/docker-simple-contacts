@@ -47,6 +47,7 @@ func NewRouter(logger *slog.Logger, svc *person.Service, ready pinger, syncRepo 
 
 	h := &personHandler{svc: svc}
 	relHandler := &relationshipHandler{svc: svc}
+	sharesHandler := &shareHandler{svc: svc}
 	syncHandler := &syncAccountHandler{repo: syncRepo}
 	googleAuth := &googleOAuthHandler{repo: syncRepo, adapter: googleAdapter, logger: logger}
 	r.Route("/api/v1", func(api chi.Router) {
@@ -62,6 +63,9 @@ func NewRouter(logger *slog.Logger, svc *person.Service, ready pinger, syncRepo 
 			p.Get("/{id}/relationships", relHandler.list)
 			p.Post("/{id}/relationships", relHandler.create)
 			p.Delete("/{id}/relationships/{relationshipId}", relHandler.delete)
+			p.Get("/{id}/shares", sharesHandler.list)
+			p.Post("/{id}/shares", sharesHandler.create)
+			p.Delete("/{id}/shares/{shareId}", sharesHandler.delete)
 		})
 		api.Route("/sync-accounts", func(s chi.Router) {
 			s.Get("/", syncHandler.list)
