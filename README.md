@@ -182,6 +182,10 @@ A `Person` has:
 - `organization` (optional single object: `{name, title, department}`)
 - `notes` (optional free-text string, max 4096 chars)
 - `custom_fields` (JSONB map)
+- `labels` (optional array of freeform tag strings, max 25, 64 chars each -
+  a CATEGORIES/tag-style feature, not a shared/renameable entity) - syncs
+  bidirectionally with Google Contacts as contact group ("Label")
+  membership (see the Google sync section below)
 - `is_favorite` (boolean, default false) - starred contacts are shown in an
   always-visible Favorites section in the UI, separate from the main list's
   page/sort/search
@@ -252,6 +256,15 @@ shares via `GET/POST /persons/{id}/shares`, `DELETE
   added directly in Google Contacts - both are treated the same, and a
   field added in any one connected Google account propagates to every
   other Google account (and the local record) that Person is linked to.
+- `labels` sync bidirectionally with Google's own "Labels" (the
+  `contactGroups` resource): a local label creates/reuses a same-named
+  Google contact group and adds the contact to it; a group a contact
+  belongs to in Google (other than system groups like `myContacts`)
+  becomes a label locally. Starring a contact in Google Contacts (the
+  `starred` system group) maps to `is_favorite`, and vice versa - no other
+  system group is ever imported as a label. Removing a label only removes
+  the group membership; the underlying Google group itself is never
+  deleted.
 - Frontend sync panel: connect Google and review sync status from the main app UI
 - Public privacy policy: `GET /privacy`
 - Public homepage purpose page: `GET /` remains readable without authentication and

@@ -64,20 +64,20 @@ func (r *Repository) Create(ctx context.Context, p *Person) (*Person, error) {
 	normalizePersonSlices(p)
 	ownerID, owned := authn.UserID(ctx)
 	const qOwned = `
-		INSERT INTO persons (owner_id, first_name, middle_names, last_name, display_name, nickname, pronouns, birthdate, emails, phone_numbers, addresses, organization, notes, custom_fields, is_favorite)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
-		RETURNING id, first_name, middle_names, last_name, display_name, nickname, pronouns, birthdate, emails, phone_numbers, addresses, organization, notes, custom_fields, is_favorite,
+		INSERT INTO persons (owner_id, first_name, middle_names, last_name, display_name, nickname, pronouns, birthdate, emails, phone_numbers, addresses, organization, notes, custom_fields, is_favorite, labels)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+		RETURNING id, first_name, middle_names, last_name, display_name, nickname, pronouns, birthdate, emails, phone_numbers, addresses, organization, notes, custom_fields, is_favorite, labels,
 		          created_at, updated_at, deleted_at`
 	const qLegacy = `
-		INSERT INTO persons (first_name, middle_names, last_name, display_name, nickname, pronouns, birthdate, emails, phone_numbers, addresses, organization, notes, custom_fields, is_favorite)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
-		RETURNING id, first_name, middle_names, last_name, display_name, nickname, pronouns, birthdate, emails, phone_numbers, addresses, organization, notes, custom_fields, is_favorite,
+		INSERT INTO persons (first_name, middle_names, last_name, display_name, nickname, pronouns, birthdate, emails, phone_numbers, addresses, organization, notes, custom_fields, is_favorite, labels)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+		RETURNING id, first_name, middle_names, last_name, display_name, nickname, pronouns, birthdate, emails, phone_numbers, addresses, organization, notes, custom_fields, is_favorite, labels,
 		          created_at, updated_at, deleted_at`
 	var row pgx.Row
 	if owned {
-		row = r.pool.QueryRow(ctx, qOwned, ownerID, p.FirstName, p.MiddleNames, p.LastName, p.DisplayName, p.Nickname, p.Pronouns, p.Birthdate, p.Emails, p.PhoneNumbers, p.Addresses, p.Organization, p.Notes, p.CustomFields, p.IsFavorite)
+		row = r.pool.QueryRow(ctx, qOwned, ownerID, p.FirstName, p.MiddleNames, p.LastName, p.DisplayName, p.Nickname, p.Pronouns, p.Birthdate, p.Emails, p.PhoneNumbers, p.Addresses, p.Organization, p.Notes, p.CustomFields, p.IsFavorite, p.Labels)
 	} else {
-		row = r.pool.QueryRow(ctx, qLegacy, p.FirstName, p.MiddleNames, p.LastName, p.DisplayName, p.Nickname, p.Pronouns, p.Birthdate, p.Emails, p.PhoneNumbers, p.Addresses, p.Organization, p.Notes, p.CustomFields, p.IsFavorite)
+		row = r.pool.QueryRow(ctx, qLegacy, p.FirstName, p.MiddleNames, p.LastName, p.DisplayName, p.Nickname, p.Pronouns, p.Birthdate, p.Emails, p.PhoneNumbers, p.Addresses, p.Organization, p.Notes, p.CustomFields, p.IsFavorite, p.Labels)
 	}
 	created, err := scanPerson(row)
 	if err != nil {
@@ -91,7 +91,7 @@ func (r *Repository) Create(ctx context.Context, p *Person) (*Person, error) {
 // GetByID returns a single non-deleted Person by ID.
 func (r *Repository) GetByID(ctx context.Context, id uuid.UUID) (*Person, error) {
 	q := `
-		SELECT id, first_name, middle_names, last_name, display_name, nickname, pronouns, birthdate, emails, phone_numbers, addresses, organization, notes, custom_fields, is_favorite,
+		SELECT id, first_name, middle_names, last_name, display_name, nickname, pronouns, birthdate, emails, phone_numbers, addresses, organization, notes, custom_fields, is_favorite, labels,
 		       created_at, updated_at, deleted_at
 		FROM persons
 		WHERE id = $1 AND deleted_at IS NULL`
@@ -118,7 +118,7 @@ func (r *Repository) GetAccessible(ctx context.Context, id uuid.UUID) (*Person, 
 		return r.GetByID(ctx, id)
 	}
 	const q = `
-		SELECT id, first_name, middle_names, last_name, display_name, nickname, pronouns, birthdate, emails, phone_numbers, addresses, organization, notes, custom_fields, is_favorite,
+		SELECT id, first_name, middle_names, last_name, display_name, nickname, pronouns, birthdate, emails, phone_numbers, addresses, organization, notes, custom_fields, is_favorite, labels,
 		       created_at, updated_at, deleted_at, owner_id,
 		       (SELECT display_name FROM users WHERE id = persons.owner_id) AS owner_display_name
 		FROM persons
@@ -138,7 +138,7 @@ func (r *Repository) GetAccessible(ctx context.Context, id uuid.UUID) (*Person, 
 // GetDeletedByID returns a soft-deleted Person by ID.
 func (r *Repository) GetDeletedByID(ctx context.Context, id uuid.UUID) (*Person, error) {
 	q := `
-		SELECT id, first_name, middle_names, last_name, display_name, nickname, pronouns, birthdate, emails, phone_numbers, addresses, organization, notes, custom_fields, is_favorite,
+		SELECT id, first_name, middle_names, last_name, display_name, nickname, pronouns, birthdate, emails, phone_numbers, addresses, organization, notes, custom_fields, is_favorite, labels,
 		       created_at, updated_at, deleted_at
 		FROM persons
 		WHERE id = $1 AND deleted_at IS NOT NULL`
@@ -198,7 +198,7 @@ func (r *Repository) List(ctx context.Context, params ListParams) ([]Person, int
 
 	// Secondary sort on id keeps ordering deterministic across pages.
 	listQ := fmt.Sprintf(`
-		SELECT id, first_name, middle_names, last_name, display_name, nickname, pronouns, birthdate, emails, phone_numbers, addresses, organization, notes, custom_fields, is_favorite,
+		SELECT id, first_name, middle_names, last_name, display_name, nickname, pronouns, birthdate, emails, phone_numbers, addresses, organization, notes, custom_fields, is_favorite, labels,
 		       created_at, updated_at, deleted_at, owner_id,
 		       (SELECT display_name FROM users WHERE id = persons.owner_id) AS owner_display_name
 		FROM persons
@@ -254,7 +254,7 @@ func (r *Repository) ListDeleted(ctx context.Context, params ListParams) ([]Pers
 		pageSize = 100
 	}
 	q := fmt.Sprintf(`
-		SELECT id, first_name, middle_names, last_name, display_name, nickname, pronouns, birthdate, emails, phone_numbers, addresses, organization, notes, custom_fields, is_favorite,
+		SELECT id, first_name, middle_names, last_name, display_name, nickname, pronouns, birthdate, emails, phone_numbers, addresses, organization, notes, custom_fields, is_favorite, labels,
 		       created_at, updated_at, deleted_at
 		FROM persons WHERE %s
 		ORDER BY %s LIMIT $%d OFFSET $%d`, whereClause, orderBy, idx, idx+1)
@@ -287,13 +287,13 @@ func (r *Repository) Update(ctx context.Context, id uuid.UUID, p *Person) (*Pers
 		UPDATE persons
 		SET first_name = $2, middle_names = $3, last_name = $4,
 		    display_name = $5, nickname = $6, pronouns = $7, birthdate = $8,
-		    emails = $9, phone_numbers = $10, addresses = $11, organization = $12, notes = $13, custom_fields = $14, is_favorite = $15, updated_at = now()
+		    emails = $9, phone_numbers = $10, addresses = $11, organization = $12, notes = $13, custom_fields = $14, is_favorite = $15, labels = $16, updated_at = now()
 		WHERE id = $1 AND deleted_at IS NULL
-		RETURNING id, first_name, middle_names, last_name, display_name, nickname, pronouns, birthdate, emails, phone_numbers, addresses, organization, notes, custom_fields, is_favorite,
+		RETURNING id, first_name, middle_names, last_name, display_name, nickname, pronouns, birthdate, emails, phone_numbers, addresses, organization, notes, custom_fields, is_favorite, labels,
 		          created_at, updated_at, deleted_at`
-	args := []any{id, p.FirstName, p.MiddleNames, p.LastName, p.DisplayName, p.Nickname, p.Pronouns, p.Birthdate, p.Emails, p.PhoneNumbers, p.Addresses, p.Organization, p.Notes, p.CustomFields, p.IsFavorite}
+	args := []any{id, p.FirstName, p.MiddleNames, p.LastName, p.DisplayName, p.Nickname, p.Pronouns, p.Birthdate, p.Emails, p.PhoneNumbers, p.Addresses, p.Organization, p.Notes, p.CustomFields, p.IsFavorite, p.Labels}
 	if ownerID, ok := authn.UserID(ctx); ok {
-		q = strings.Replace(q, "WHERE id = $1", "WHERE id = $1 AND (owner_id = $16 OR EXISTS (SELECT 1 FROM person_shares ps WHERE ps.person_id = persons.id AND ps.shared_with_user_id = $16))", 1)
+		q = strings.Replace(q, "WHERE id = $1", "WHERE id = $1 AND (owner_id = $17 OR EXISTS (SELECT 1 FROM person_shares ps WHERE ps.person_id = persons.id AND ps.shared_with_user_id = $17))", 1)
 		args = append(args, ownerID)
 	}
 	person, err := scanPerson(r.pool.QueryRow(ctx, q, args...))
@@ -385,7 +385,7 @@ func scanPerson(s scanner) (*Person, error) {
 	if err := s.Scan(
 		&p.ID, &p.FirstName, &p.MiddleNames, &p.LastName, &p.DisplayName,
 		&p.Nickname, &p.Pronouns, &p.Birthdate, &p.Emails, &p.PhoneNumbers, &p.Addresses, &p.Organization, &p.Notes,
-		&p.CustomFields, &p.IsFavorite, &p.CreatedAt, &p.UpdatedAt, &p.DeletedAt,
+		&p.CustomFields, &p.IsFavorite, &p.Labels, &p.CreatedAt, &p.UpdatedAt, &p.DeletedAt,
 	); err != nil {
 		return nil, err
 	}
@@ -404,7 +404,7 @@ func scanPersonAccessible(s scanner) (*Person, error) {
 	if err := s.Scan(
 		&p.ID, &p.FirstName, &p.MiddleNames, &p.LastName, &p.DisplayName,
 		&p.Nickname, &p.Pronouns, &p.Birthdate, &p.Emails, &p.PhoneNumbers, &p.Addresses, &p.Organization, &p.Notes,
-		&p.CustomFields, &p.IsFavorite, &p.CreatedAt, &p.UpdatedAt, &p.DeletedAt,
+		&p.CustomFields, &p.IsFavorite, &p.Labels, &p.CreatedAt, &p.UpdatedAt, &p.DeletedAt,
 		&p.OwnerID, &ownerDisplayName,
 	); err != nil {
 		return nil, err
@@ -446,5 +446,8 @@ func normalizePersonSlices(p *Person) {
 	}
 	if p.Addresses == nil {
 		p.Addresses = []contactsync.Address{}
+	}
+	if p.Labels == nil {
+		p.Labels = []string{}
 	}
 }

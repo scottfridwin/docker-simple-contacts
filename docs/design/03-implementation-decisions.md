@@ -826,4 +826,65 @@ overlap - not an error to surface/retry). The map entry is cleared via
   account ID) instead. Not implemented since the current deployment is
   single-replica; call out explicitly if that changes.
 
+## Post-implementation decision log (2026-09-10)
+
+### P) Labels (freeform tags), synced with Google Contacts' own Labels
+
+New feature: `Person.labels` is a simple freeform string array (a
+CATEGORIES/tag-style feature, like vCard/CardDAV `CATEGORIES` or Apple/
+Nextcloud Contacts) - **not** a first-class, ID-referenced entity. There is
+no separate `Label` table, no rename-everywhere operation, and no
+dedicated `/labels` CRUD API; labels are edited directly on a Person via
+the existing `PATCH /persons/{id}` (`labels` field), the same way
+`middle_names` is. Rationale: Google's own `contactGroups` resource *is*
+a heavier, ID-referenced, per-account entity, but a portability-minded
+design (in case a non-Google, CardDAV-style provider is ever added) favors
+keeping the local model as plain tag strings and pushing all of the
+ID-mapping complexity into the Google adapter alone.
+
+- **Policy**: at most 25 labels per Person, each a non-empty, printable
+  string up to 64 characters (case-sensitive, no format requirement) -
+  same style as the custom-field key policy. `person.SanitizeLabelsForSync`
+  mirrors `SanitizeCustomFieldsForSync`'s "drop, never error on, anything
+  that doesn't fit" behavior for data coming from Google.
+- **Google mapping**: a local label maps to a same-named Google
+  `contactGroups` resource (creating one on first export if it doesn't
+  exist yet, matched by exact, case-sensitive name). A Google contact's
+  membership in a **user-created** group becomes a label on import;
+  membership in the `starred` **system** group maps to `is_favorite`
+  (bidirectionally) instead of becoming a label; every other system group
+  (`myContacts`, and the deprecated `family`/`friends`/`work`, etc.) is
+  ignored entirely in both directions - importing `myContacts` verbatim
+  would put a near-universal label on almost every contact, and `starred`
+  already has a direct local equivalent.
+- **`is_favorite` is now a synced field** for the first time (previously
+  local-only) - a natural consequence of mapping it to `starred`. It
+  follows the same whole-record last-write-wins comparison as every other
+  synced field.
+- **Never delete Google groups**: removing a label (or unfavoriting) only
+  removes group membership via `contactGroups.members.modify`; the
+  underlying Google group itself is never deleted, even if it becomes
+  empty, since it might still mean something to the user outside this app.
+- **Why membership is never set via `people.updateContact`**: the People
+  API returns a 400 if `memberships` is included in `updatePersonFields`
+  but would leave the contact with zero memberships - which is exactly
+  what happens when clearing every label. Membership changes are instead
+  always applied via the separate `contactGroups.members.modify` endpoint
+  (diffing desired vs. the contact's actual current memberships), which
+  has no such restriction and doesn't require re-sending the whole person
+  payload.
+- **Per-run group cache**: `Adapter` caches one account's full
+  `contactGroups.list` result for the duration of a single `Sync()` run
+  (keyed by `AuthSession.ProviderAccountID`, evicted via `defer` when the
+  run ends), so label <-> resourceName lookups don't re-list groups (or
+  risk creating duplicate groups) once per contact processed in that run.
+  A 409 (duplicate name) on group creation triggers one refresh-and-retry
+  rather than failing the record outright.
+- **Multi-account behavior**: since `contactGroups` are per-Google-account,
+  the same local label is resolved (and created if missing) independently
+  against each linked Google account's own group namespace - identical in
+  spirit to how `custom_fields`/`userDefined` values are independently
+  reconciled per account.
+
+
 

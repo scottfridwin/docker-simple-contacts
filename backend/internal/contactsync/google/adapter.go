@@ -78,6 +78,13 @@ type Adapter struct {
 	verifier *oidc.IDTokenVerifier
 	logger   *slog.Logger
 	syncing  sync.Map // account ID -> struct{}, accounts with a Sync in flight
+	// groupCaches holds one *groupResolver per Google account (keyed by
+	// AuthSession.ProviderAccountID) for the life of a single sync run, so
+	// label <-> contactGroups.resourceName lookups don't re-list an
+	// account's groups (or risk creating duplicate groups) on every contact
+	// processed in that run. Populated lazily and evicted at the end of
+	// Sync(); entries are never shared across different Google accounts.
+	groupCaches sync.Map
 }
 
 // NewAdapter constructs a Google adapter. It performs OIDC discovery against
@@ -240,6 +247,10 @@ func (a *Adapter) RefreshAuthorization(ctx context.Context, session contactsync.
 
 // ListChanges lists incremental remote updates since the previous sync token.
 func (a *Adapter) ListChanges(ctx context.Context, session contactsync.AuthSession, cursor string) (contactsync.ChangePage, error) {
+	resolver, err := a.groupResolverFor(ctx, session)
+	if err != nil {
+		return contactsync.ChangePage{}, err
+	}
 	values := url.Values{}
 	values.Set("personFields", googlePersonFields)
 	values.Set("requestSyncToken", "true")
@@ -252,7 +263,7 @@ func (a *Adapter) ListChanges(ctx context.Context, session contactsync.AuthSessi
 	}
 	records := make([]contactsync.ProviderRecord, 0, len(body.Connections))
 	for _, entry := range body.Connections {
-		records = append(records, toProviderRecord(entry))
+		records = append(records, toProviderRecord(entry, resolver))
 	}
 	nextCursor := strings.TrimSpace(body.NextSyncToken)
 	if nextCursor == "" {
@@ -274,18 +285,29 @@ func (a *Adapter) FetchRecord(ctx context.Context, session contactsync.AuthSessi
 	if err != nil {
 		return contactsync.ProviderRecord{}, err
 	}
-	return toProviderRecord(personBody), nil
+	resolver, err := a.groupResolverFor(ctx, session)
+	if err != nil {
+		return contactsync.ProviderRecord{}, err
+	}
+	return toProviderRecord(personBody, resolver), nil
 }
 
 // UpsertRecord creates or updates one remote contact.
 func (a *Adapter) UpsertRecord(ctx context.Context, session contactsync.AuthSession, record contactsync.Record) (contactsync.ProviderRecord, error) {
+	resolver, err := a.groupResolverFor(ctx, session)
+	if err != nil {
+		return contactsync.ProviderRecord{}, err
+	}
 	if strings.TrimSpace(record.ExternalID) == "" {
 		payload := toGooglePerson(record, "")
 		var created googlePerson
 		if err := a.postJSON(ctx, session.AccessToken, "/people:createContact", payload, &created); err != nil {
 			return contactsync.ProviderRecord{}, err
 		}
-		return toProviderRecord(created), nil
+		if err := a.reconcileMemberships(ctx, session.AccessToken, resolver, created.ResourceName, created, record); err != nil {
+			a.logger.Warn("failed to sync google group memberships for new contact", "external_id", created.ResourceName, "error", err)
+		}
+		return toProviderRecord(created, resolver), nil
 	}
 	current, err := a.getContact(ctx, session.AccessToken, record.ExternalID)
 	if err != nil {
@@ -298,15 +320,18 @@ func (a *Adapter) UpsertRecord(ctx context.Context, session contactsync.AuthSess
 		// The contact changed on Google's side between our read of its etag
 		// above and this update - re-read the now-current etag and retry
 		// once instead of failing the whole sync run.
-		current, refetchErr := a.getContact(ctx, session.AccessToken, record.ExternalID)
-		if refetchErr == nil {
+		if refetched, refetchErr := a.getContact(ctx, session.AccessToken, record.ExternalID); refetchErr == nil {
+			current = refetched
 			updated, err = a.updateContact(ctx, session.AccessToken, record, current.ETag, values)
 		}
 	}
 	if err != nil {
 		return contactsync.ProviderRecord{}, err
 	}
-	return toProviderRecord(updated), nil
+	if err := a.reconcileMemberships(ctx, session.AccessToken, resolver, record.ExternalID, current, record); err != nil {
+		a.logger.Warn("failed to sync google group memberships", "external_id", record.ExternalID, "error", err)
+	}
+	return toProviderRecord(updated, resolver), nil
 }
 
 // updateContact sends one updateContact PATCH using the given etag.
@@ -360,6 +385,10 @@ func (a *Adapter) Sync(ctx context.Context, account contactsync.Account, job con
 	if err != nil {
 		return a.markAccountFailed(ctx, &account, &reauthRequiredError{err})
 	}
+	// Evict this run's cached group list on exit, so a later run (whether
+	// the next scheduled sync or a one-off syncLocalJob push) always sees
+	// any group renamed/created/deleted directly in Google Contacts since.
+	defer a.groupCaches.Delete(session.ProviderAccountID)
 
 	if job.PersonID != uuid.Nil {
 		if err := a.syncLocalJob(ctx, account.ID, session, job); err != nil {
@@ -822,6 +851,15 @@ func fieldAwareUpdate(fields map[string]contactsync.FieldState, remoteModel pers
 		update.CustomFields = remoteModel.CustomFields
 		update.CustomFieldsSet = true
 	}
+	if fieldIsSet(fields, "labels") {
+		update.Labels = &remoteModel.Labels
+		update.LabelsSet = true
+	}
+	if fieldIsSet(fields, "is_favorite") {
+		v := remoteModel.IsFavorite
+		update.IsFavorite = &v
+		update.IsFavoriteSet = true
+	}
 	return update
 }
 
@@ -930,6 +968,8 @@ func snapshotToRecord(snapshot contactsync.PersonSnapshot) contactsync.Record {
 		record.Fields["local_id"] = contactsync.FieldState{IsSet: true, Value: snapshot.ID.String(), UpdatedAt: snapshot.UpdatedAt}
 	}
 	record.Fields["custom_fields"] = contactsync.FieldState{IsSet: true, Value: cloneCustomFields(snapshot.CustomFields), UpdatedAt: snapshot.UpdatedAt}
+	record.Fields["labels"] = contactsync.FieldState{IsSet: true, Value: append([]string(nil), snapshot.Labels...), UpdatedAt: snapshot.UpdatedAt}
+	record.Fields["is_favorite"] = contactsync.FieldState{IsSet: true, Value: snapshot.IsFavorite, UpdatedAt: snapshot.UpdatedAt}
 	return record
 }
 
@@ -963,6 +1003,8 @@ func personToRecord(p person.Person, externalID string) contactsync.Record {
 		record.Fields["birthdate"] = contactsync.FieldState{IsSet: true, Value: *p.Birthdate, UpdatedAt: p.UpdatedAt}
 	}
 	record.Fields["custom_fields"] = contactsync.FieldState{IsSet: true, Value: cloneCustomFields(p.CustomFields), UpdatedAt: p.UpdatedAt}
+	record.Fields["labels"] = contactsync.FieldState{IsSet: true, Value: append([]string(nil), p.Labels...), UpdatedAt: p.UpdatedAt}
+	record.Fields["is_favorite"] = contactsync.FieldState{IsSet: true, Value: p.IsFavorite, UpdatedAt: p.UpdatedAt}
 	return record
 }
 
@@ -988,6 +1030,8 @@ func remoteToLocal(record contactsync.ProviderRecord) (person.CreateInput, *uuid
 		Addresses:    addresses,
 		Organization: fieldOrganization(record.Record.Fields, "organization"),
 		CustomFields: person.SanitizeCustomFieldsForSync(fieldCustomFields(record.Record.Fields, "custom_fields")),
+		Labels:       person.SanitizeLabelsForSync(fieldStrings(record.Record.Fields, "labels")),
+		IsFavorite:   fieldBool(record.Record.Fields, "is_favorite"),
 	}
 	if notes := fieldString(record.Record.Fields, "notes"); notes != "" {
 		create.Notes = &notes
@@ -1030,7 +1074,12 @@ func stringPtr(v string) *string {
 // masks we read and write, respectively. Keep these in sync with the mapping
 // logic in toProviderRecord/toGooglePerson below.
 const (
-	googlePersonFields       = "names,nicknames,emailAddresses,phoneNumbers,addresses,organizations,biographies,birthdays,relations,metadata,userDefined"
+	googlePersonFields = "names,nicknames,emailAddresses,phoneNumbers,addresses,organizations,biographies,birthdays,relations,metadata,userDefined,memberships"
+	// memberships is deliberately excluded here: Google rejects an
+	// updateContact call that includes memberships in the update mask when
+	// it would leave the contact with zero memberships (e.g. clearing every
+	// label), so group membership is always managed separately via
+	// contactGroups.members.modify instead (see reconcileMemberships).
 	googleUpdatePersonFields = "names,nicknames,emailAddresses,phoneNumbers,addresses,organizations,biographies,birthdays,relations,userDefined"
 )
 
@@ -1226,6 +1275,7 @@ type googlePerson struct {
 	Birthdays      []googleBirthday     `json:"birthdays"`
 	Relations      []googleRelation     `json:"relations"`
 	UserDefined    []googleUserDefined  `json:"userDefined"`
+	Memberships    []googleMembership   `json:"memberships,omitempty"`
 }
 
 type googleMetadata struct {
@@ -1301,6 +1351,54 @@ type googleUserDefined struct {
 	Value string `json:"value"`
 }
 
+// googleMembership and googleContactGroupMembership mirror the People API's
+// Person.memberships[].contactGroupMembership shape - the read-side view of
+// which contactGroups (Google's "Labels") a contact belongs to. Membership
+// changes are never written back through this struct (see
+// googleUpdatePersonFields); they go through contactGroups.members.modify
+// instead (see reconcileMemberships).
+type googleMembership struct {
+	ContactGroupMembership *googleContactGroupMembership `json:"contactGroupMembership,omitempty"`
+}
+
+type googleContactGroupMembership struct {
+	ContactGroupResourceName string `json:"contactGroupResourceName,omitempty"`
+}
+
+// contactGroup is a minimal local view of a Google contactGroups resource.
+type contactGroup struct {
+	ResourceName string
+	Name         string
+	System       bool
+}
+
+// groupResolver caches one Google account's contact groups for the duration
+// of a single sync run (see Adapter.groupCaches), so label <->
+// contactGroups.resourceName lookups don't re-list groups - or risk
+// creating duplicate groups - on every contact processed in that run.
+// byName only ever holds user-created groups; system groups (myContacts,
+// starred, and the deprecated family/friends/work, etc.) are never exposed
+// as labels - starred is tracked separately via starredID and mapped to
+// Person.IsFavorite instead.
+type groupResolver struct {
+	byResourceName map[string]contactGroup
+	byName         map[string]contactGroup
+	starredID      string
+}
+
+// googleContactGroupsResponse and googleContactGroup mirror the People
+// API's contactGroups.list response shape.
+type googleContactGroupsResponse struct {
+	ContactGroups []googleContactGroup `json:"contactGroups"`
+	NextPageToken string               `json:"nextPageToken"`
+}
+
+type googleContactGroup struct {
+	ResourceName string `json:"resourceName"`
+	Name         string `json:"name"`
+	GroupType    string `json:"groupType"`
+}
+
 // googleRelationTypeMap maps Google's relation type strings to our fixed
 // enum. Relation types we don't support (friend, relative, manager,
 // assistant, referredBy, colleague, etc.) aren't listed here and are skipped
@@ -1358,7 +1456,40 @@ func dedupeAddresses(values []contactsync.Address) []contactsync.Address {
 	return out
 }
 
-func toProviderRecord(in googlePerson) contactsync.ProviderRecord {
+// resolveMemberships translates a Google contact's raw group memberships
+// into our provider-neutral shape: user-created group names become labels,
+// and membership in the "starred" system group becomes is_favorite. Every
+// other system group (myContacts, and the deprecated family/friends/work,
+// etc.) is ignored. A nil resolver (e.g. a pure-function unit test that
+// doesn't have a live Google account to list groups from) yields no labels
+// and is_favorite=false rather than panicking.
+func resolveMemberships(memberships []googleMembership, resolver *groupResolver) ([]string, bool) {
+	if resolver == nil {
+		return []string{}, false
+	}
+	labels := make([]string, 0, len(memberships))
+	isFavorite := false
+	for _, m := range memberships {
+		if m.ContactGroupMembership == nil {
+			continue
+		}
+		cg, ok := resolver.byResourceName[m.ContactGroupMembership.ContactGroupResourceName]
+		if !ok {
+			continue
+		}
+		if cg.System {
+			if m.ContactGroupMembership.ContactGroupResourceName == resolver.starredID {
+				isFavorite = true
+			}
+			continue
+		}
+		labels = append(labels, cg.Name)
+	}
+	sort.Strings(labels)
+	return labels, isFavorite
+}
+
+func toProviderRecord(in googlePerson, resolver *groupResolver) contactsync.ProviderRecord {
 	fields := map[string]contactsync.FieldState{}
 	updatedAt := parseRemoteUpdatedAt(in.Metadata)
 	name := selectName(in.Names)
@@ -1440,6 +1571,9 @@ func toProviderRecord(in googlePerson) contactsync.ProviderRecord {
 		}
 	}
 	fields["custom_fields"] = contactsync.FieldState{IsSet: true, Value: person.SanitizeCustomFieldsForSync(customFields), UpdatedAt: updatedAt}
+	labels, isFavorite := resolveMemberships(in.Memberships, resolver)
+	fields["labels"] = contactsync.FieldState{IsSet: true, Value: labels, UpdatedAt: updatedAt}
+	fields["is_favorite"] = contactsync.FieldState{IsSet: true, Value: isFavorite, UpdatedAt: updatedAt}
 	return contactsync.ProviderRecord{
 		Record: contactsync.Record{
 			ExternalID: in.ResourceName,
@@ -1744,4 +1878,194 @@ func retryDelay(retryAfter string, backoff time.Duration) time.Duration {
 func isETagConflict(err error) bool {
 	var apiErr *apiError
 	return errors.As(err, &apiErr) && apiErr.Status == http.StatusBadRequest && strings.Contains(apiErr.Body, "FAILED_PRECONDITION")
+}
+
+// groupResolverFor returns the cached groupResolver for session's Google
+// account, loading it (a full contactGroups.list) on first use in this sync
+// run. Cached by AuthSession.ProviderAccountID rather than our internal
+// account UUID, since every adapter method already carries a session but
+// not an account ID.
+func (a *Adapter) groupResolverFor(ctx context.Context, session contactsync.AuthSession) (*groupResolver, error) {
+	key := session.ProviderAccountID
+	if key != "" {
+		if cached, ok := a.groupCaches.Load(key); ok {
+			return cached.(*groupResolver), nil
+		}
+	}
+	resolver, err := a.loadGroupResolver(ctx, session.AccessToken)
+	if err != nil {
+		return nil, fmt.Errorf("listing google contact groups: %w", err)
+	}
+	if key != "" {
+		a.groupCaches.Store(key, resolver)
+	}
+	return resolver, nil
+}
+
+// loadGroupResolver lists every contact group on the account (paginated) and
+// indexes it for lookup by name (user-created groups only) and by
+// resourceName (all groups, so an unrecognized/unmanaged membership can
+// still be identified and left alone).
+func (a *Adapter) loadGroupResolver(ctx context.Context, accessToken string) (*groupResolver, error) {
+	resolver := &groupResolver{byResourceName: map[string]contactGroup{}, byName: map[string]contactGroup{}}
+	pageToken := ""
+	for {
+		values := url.Values{}
+		values.Set("pageSize", "1000")
+		if pageToken != "" {
+			values.Set("pageToken", pageToken)
+		}
+		var page googleContactGroupsResponse
+		if err := a.getJSON(ctx, accessToken, "/contactGroups?"+values.Encode(), &page); err != nil {
+			return nil, err
+		}
+		for _, g := range page.ContactGroups {
+			cg := contactGroup{ResourceName: g.ResourceName, Name: g.Name, System: g.GroupType == "SYSTEM_CONTACT_GROUP"}
+			resolver.byResourceName[cg.ResourceName] = cg
+			if cg.System {
+				if cg.Name == "starred" {
+					resolver.starredID = cg.ResourceName
+				}
+				continue // system groups other than starred are never exposed as labels
+			}
+			resolver.byName[cg.Name] = cg
+		}
+		if strings.TrimSpace(page.NextPageToken) == "" {
+			break
+		}
+		pageToken = page.NextPageToken
+	}
+	return resolver, nil
+}
+
+// refreshGroupResolver re-lists every group and replaces resolver's cached
+// state in place, for the rare case a create races with a group that
+// appeared since the last list (see ensureLabelGroups).
+func (a *Adapter) refreshGroupResolver(ctx context.Context, accessToken string, resolver *groupResolver) error {
+	fresh, err := a.loadGroupResolver(ctx, accessToken)
+	if err != nil {
+		return err
+	}
+	resolver.byResourceName = fresh.byResourceName
+	resolver.byName = fresh.byName
+	resolver.starredID = fresh.starredID
+	return nil
+}
+
+// ensureLabelGroups resolves each label name to its Google contactGroups
+// resourceName, creating a new user-created group for any label the
+// resolver hasn't seen before.
+func (a *Adapter) ensureLabelGroups(ctx context.Context, accessToken string, resolver *groupResolver, labels []string) ([]string, error) {
+	resourceNames := make([]string, 0, len(labels))
+	for _, name := range labels {
+		if cg, ok := resolver.byName[name]; ok {
+			resourceNames = append(resourceNames, cg.ResourceName)
+			continue
+		}
+		created, err := a.createContactGroup(ctx, accessToken, name)
+		if err != nil {
+			var apiErr *apiError
+			if errors.As(err, &apiErr) && apiErr.Status == http.StatusConflict {
+				// A group with this name already exists (created elsewhere,
+				// e.g. directly in Google Contacts, since our last list) -
+				// refresh once and use it instead of failing the record.
+				if refreshErr := a.refreshGroupResolver(ctx, accessToken, resolver); refreshErr == nil {
+					if cg, ok := resolver.byName[name]; ok {
+						resourceNames = append(resourceNames, cg.ResourceName)
+						continue
+					}
+				}
+			}
+			return nil, fmt.Errorf("creating google contact group %q: %w", name, err)
+		}
+		resolver.byName[name] = created
+		resolver.byResourceName[created.ResourceName] = created
+		resourceNames = append(resourceNames, created.ResourceName)
+	}
+	return resourceNames, nil
+}
+
+func (a *Adapter) createContactGroup(ctx context.Context, accessToken, name string) (contactGroup, error) {
+	body := map[string]any{"contactGroup": map[string]string{"name": name}}
+	var created googleContactGroup
+	if err := a.postJSON(ctx, accessToken, "/contactGroups", body, &created); err != nil {
+		return contactGroup{}, err
+	}
+	return contactGroup{ResourceName: created.ResourceName, Name: created.Name}, nil
+}
+
+// modifyGroupMembers adds and/or removes one contact from one contact group.
+func (a *Adapter) modifyGroupMembers(ctx context.Context, accessToken, groupResourceName string, toAdd, toRemove []string) error {
+	if len(toAdd) == 0 && len(toRemove) == 0 {
+		return nil
+	}
+	body := map[string]any{}
+	if len(toAdd) > 0 {
+		body["resourceNamesToAdd"] = toAdd
+	}
+	if len(toRemove) > 0 {
+		body["resourceNamesToRemove"] = toRemove
+	}
+	var out any
+	return a.postJSON(ctx, accessToken, "/"+groupResourceName+"/members:modify", body, &out)
+}
+
+// reconcileMemberships makes personResourceName's actual Google group
+// memberships match record's labels/is_favorite, by adding/removing
+// membership only in the groups that changed (see current, the contact's
+// state as last read from Google). System groups other than starred (e.g.
+// myContacts) are never touched, and a label removed locally only has its
+// membership removed - the underlying Google group itself is never deleted.
+func (a *Adapter) reconcileMemberships(ctx context.Context, accessToken string, resolver *groupResolver, personResourceName string, current googlePerson, record contactsync.Record) error {
+	labels := person.SanitizeLabelsForSync(fieldStrings(record.Fields, "labels"))
+	resourceNames, err := a.ensureLabelGroups(ctx, accessToken, resolver, labels)
+	if err != nil {
+		return err
+	}
+	desired := make(map[string]bool, len(resourceNames)+1)
+	for _, rn := range resourceNames {
+		desired[rn] = true
+	}
+	if fieldBool(record.Fields, "is_favorite") && resolver.starredID != "" {
+		desired[resolver.starredID] = true
+	}
+
+	existing := map[string]bool{}
+	for _, m := range current.Memberships {
+		if m.ContactGroupMembership == nil {
+			continue
+		}
+		rn := m.ContactGroupMembership.ContactGroupResourceName
+		cg, ok := resolver.byResourceName[rn]
+		if !ok || (cg.System && rn != resolver.starredID) {
+			continue
+		}
+		existing[rn] = true
+	}
+
+	for rn := range desired {
+		if !existing[rn] {
+			if err := a.modifyGroupMembers(ctx, accessToken, rn, []string{personResourceName}, nil); err != nil {
+				return fmt.Errorf("adding contact to google group: %w", err)
+			}
+		}
+	}
+	for rn := range existing {
+		if !desired[rn] {
+			if err := a.modifyGroupMembers(ctx, accessToken, rn, nil, []string{personResourceName}); err != nil {
+				return fmt.Errorf("removing contact from google group: %w", err)
+			}
+		}
+	}
+	return nil
+}
+
+// fieldBool returns the bool stored in a field, or false if unset/wrong type.
+func fieldBool(fields map[string]contactsync.FieldState, key string) bool {
+	field, ok := fields[key]
+	if !ok || !field.IsSet || field.Value == nil {
+		return false
+	}
+	v, _ := field.Value.(bool)
+	return v
 }

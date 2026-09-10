@@ -67,6 +67,21 @@ docs/design/            authoritative design documents
   object), `notes` (optional free-text string, max 4096 chars),
   `custom_fields` (JSONB), `is_favorite` (boolean, default false),
   `created_at`, `updated_at`, `deleted_at` optional.
+- **Labels**: `Person.labels` is a simple freeform string array (CATEGORIES/
+  tag style, like vCard/CardDAV or Apple/Nextcloud Contacts) - not a
+  first-class entity; no separate `Label` table, rename-everywhere
+  operation, or dedicated CRUD API, edited via `PATCH /persons/{id}` like
+  any other array field. Max 25 labels per Person, each a non-empty,
+  printable string up to 64 chars. Google sync maps a label to a
+  same-named `contactGroups` resource (created on first export if
+  missing); importing, only **user-created** group membership becomes a
+  label - the `starred` system group maps to `is_favorite` (now a synced
+  field) instead, and every other system group (`myContacts`, etc.) is
+  ignored. Membership changes are always applied via
+  `contactGroups.members.modify`, never via `people.updateContact`'s
+  `memberships` field (Google rejects that when it would leave zero
+  memberships, e.g. clearing every label). Removing a label never deletes
+  the underlying Google group, only the membership.
 - **Relationships**: a `Person` can be related to another `Person` (or a
   free-text name, for someone not in the account's contacts) via exactly one
   of five fixed types: `parent`, `child`, `spouse`, `sibling`, `partner` — no

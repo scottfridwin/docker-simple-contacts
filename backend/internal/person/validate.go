@@ -28,6 +28,8 @@ const (
 	MaxAddressFieldLength = 255
 	MaxOrgFieldLength     = 255
 	MaxNotesLength        = 4096
+	MaxPersonLabels       = 25
+	MaxPersonLabelLength  = 64
 )
 
 var emailPattern = regexp.MustCompile(`^[^\s@]+@[^\s@]+\.[^\s@]+$`)
@@ -77,6 +79,7 @@ func ValidateCreate(in CreateInput) ValidationErrors {
 	if in.Notes != nil {
 		errs = append(errs, validateNotes(*in.Notes)...)
 	}
+	errs = append(errs, validateLabels(in.Labels)...)
 	return errs
 }
 
@@ -118,6 +121,9 @@ func ValidateUpdate(in UpdateInput) ValidationErrors {
 	}
 	if in.CustomFieldsSet {
 		errs = append(errs, ValidateCustomFields(in.CustomFields)...)
+	}
+	if in.LabelsSet && in.Labels != nil {
+		errs = append(errs, validateLabels(*in.Labels)...)
 	}
 	return errs
 }
@@ -339,6 +345,65 @@ func SanitizeCustomFieldsForSync(raw map[string]any) map[string]any {
 			continue
 		}
 		out[key] = value
+	}
+	return out
+}
+
+// validateLabels enforces the label policy: at most MaxPersonLabels
+// non-empty, printable entries up to MaxPersonLabelLength characters each -
+// freeform strings (CATEGORIES-style tags), same case-sensitive/no-format
+// policy as custom field keys.
+func validateLabels(labels []string) ValidationErrors {
+	if len(labels) > MaxPersonLabels {
+		return ValidationErrors{{Field: "labels", Message: fmt.Sprintf("must contain at most %d entries", MaxPersonLabels)}}
+	}
+	var errs ValidationErrors
+	for i, l := range labels {
+		if strings.TrimSpace(l) == "" {
+			errs = append(errs, ValidationError{Field: fmt.Sprintf("labels[%d]", i), Message: "must not be empty"})
+			continue
+		}
+		if len(l) > MaxPersonLabelLength {
+			errs = append(errs, ValidationError{Field: fmt.Sprintf("labels[%d]", i), Message: fmt.Sprintf("must be at most %d characters", MaxPersonLabelLength)})
+		}
+		if hasControlChar(l) {
+			errs = append(errs, ValidationError{Field: fmt.Sprintf("labels[%d]", i), Message: "must not contain control characters"})
+		}
+	}
+	return errs
+}
+
+func hasControlChar(s string) bool {
+	for _, r := range s {
+		if unicode.IsControl(r) {
+			return true
+		}
+	}
+	return false
+}
+
+// SanitizeLabelsForSync coerces externally-sourced labels (e.g. Google
+// contact group names) into a set guaranteed to pass validateLabels, by
+// dropping - never erroring on - anything that doesn't fit, and removing
+// exact (case-sensitive) duplicates. Sorted for deterministic behavior when
+// truncating to MaxPersonLabels.
+func SanitizeLabelsForSync(raw []string) []string {
+	out := make([]string, 0, len(raw))
+	seen := make(map[string]struct{}, len(raw))
+	for _, l := range raw {
+		trimmed := strings.TrimSpace(l)
+		if trimmed == "" || len(trimmed) > MaxPersonLabelLength || hasControlChar(trimmed) {
+			continue
+		}
+		if _, dup := seen[trimmed]; dup {
+			continue
+		}
+		seen[trimmed] = struct{}{}
+		out = append(out, trimmed)
+	}
+	sort.Strings(out)
+	if len(out) > MaxPersonLabels {
+		out = out[:MaxPersonLabels]
 	}
 	return out
 }

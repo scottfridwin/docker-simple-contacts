@@ -287,7 +287,7 @@ func (r *Repository) FindByDisplayName(ctx context.Context, name string) ([]Pers
 		return nil, nil
 	}
 	q := `
-		SELECT id, first_name, middle_names, last_name, display_name, nickname, pronouns, birthdate, emails, phone_numbers, addresses, organization, notes, custom_fields, is_favorite,
+		SELECT id, first_name, middle_names, last_name, display_name, nickname, pronouns, birthdate, emails, phone_numbers, addresses, organization, notes, custom_fields, is_favorite, labels,
 		       created_at, updated_at, deleted_at
 		FROM persons
 		WHERE display_name = $1 AND deleted_at IS NULL`
@@ -326,7 +326,7 @@ func (r *Repository) FindByExactName(ctx context.Context, firstName, lastName st
 		return nil, nil
 	}
 	q := `
-		SELECT id, first_name, middle_names, last_name, display_name, nickname, pronouns, birthdate, emails, phone_numbers, addresses, organization, notes, custom_fields, is_favorite,
+		SELECT id, first_name, middle_names, last_name, display_name, nickname, pronouns, birthdate, emails, phone_numbers, addresses, organization, notes, custom_fields, is_favorite, labels,
 		       created_at, updated_at, deleted_at
 		FROM persons
 		WHERE first_name = $1 AND last_name = $2 AND deleted_at IS NULL`

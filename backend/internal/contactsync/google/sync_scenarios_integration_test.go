@@ -445,6 +445,78 @@ func TestScenario_CustomFieldsSyncBothWays(t *testing.T) {
 	}
 }
 
+// TestScenario_LabelsAndFavoriteSyncBothWays guards the Labels feature: a
+// local Person's labels/is_favorite export as Google contactGroups
+// membership (creating a group per new label, and using the pre-existing
+// "starred" system group for is_favorite), and group membership changes
+// made directly in Google (unstarring, leaving one group, joining another)
+// import back as Person.Labels/IsFavorite - with myContacts and other
+// system groups never leaking into Labels.
+func TestScenario_LabelsAndFavoriteSyncBothWays(t *testing.T) {
+	sc := newScenario(t)
+	local := sc.createLocal("Ada", "Lovelace")
+	isFavorite := true
+	updated, verrs, err := sc.people.Update(sc.ctx, local.ID, person.UpdateInput{
+		Labels:        &[]string{"Family", "VIP"},
+		LabelsSet:     true,
+		IsFavorite:    &isFavorite,
+		IsFavoriteSet: true,
+	})
+	if err != nil || verrs.HasErrors() {
+		t.Fatalf("seeding labels: verrs=%v err=%v", verrs, err)
+	}
+
+	job := contactsync.Job{PersonID: local.ID, Kind: contactsync.ChangeKindCreated, Snapshot: updated.Snapshot(nil)}
+	if err := sc.sync(job); err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+
+	all := sc.server.all()
+	if len(all) != 1 {
+		t.Fatalf("expected exactly 1 Google contact, got %d: %+v", len(all), all)
+	}
+	resourceName := all[0].ResourceName
+
+	got := sc.server.groupsFor(resourceName)
+	want := map[string]bool{"starred": true, "Family": true, "VIP": true}
+	if len(got) != len(want) {
+		t.Fatalf("groupsFor(%s) = %+v, want exactly %+v", resourceName, got, want)
+	}
+	for _, g := range got {
+		if !want[g] {
+			t.Errorf("unexpected group membership %q", g)
+		}
+	}
+
+	// Simulate changes made directly in Google Contacts: unstar, leave
+	// "VIP", and join a brand new group "Friends" - all with a later
+	// timestamp so Google's copy wins the merge.
+	sc.server.setStarred(resourceName, false)
+	sc.server.removeFromGroup(resourceName, "VIP")
+	sc.server.addToGroup(resourceName, "Friends")
+	sc.server.setUpdateTime(resourceName, time.Now().Add(time.Hour))
+
+	if err := sc.sync(contactsync.Job{}); err != nil {
+		t.Fatalf("second sync: %v", err)
+	}
+
+	people, _, err := sc.people.List(sc.ctx, person.ListParams{Page: 1, PageSize: 100})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	merged, ok := findPersonByName(t, people, "Ada", "Lovelace")
+	if !ok {
+		t.Fatal("expected Ada Lovelace to still exist")
+	}
+	if merged.IsFavorite {
+		t.Error("expected is_favorite to be false after unstarring directly in google")
+	}
+	wantLabels := []string{"Family", "Friends"}
+	if len(merged.Labels) != len(wantLabels) || merged.Labels[0] != wantLabels[0] || merged.Labels[1] != wantLabels[1] {
+		t.Errorf("labels = %+v, want %+v", merged.Labels, wantLabels)
+	}
+}
+
 // --- Scenario 5: delete contact in Google ---
 
 func TestScenario_DeleteInGoogle(t *testing.T) {

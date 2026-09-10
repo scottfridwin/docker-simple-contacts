@@ -22,6 +22,7 @@ export interface PersonFormValues {
   organization: { name: string; title: string; department: string };
   notes: string;
   custom_fields: Record<string, string | number | boolean>;
+  labels: string[];
   sync_metadata?: SyncMetadata;
 }
 
@@ -277,6 +278,7 @@ export function PersonForm({
   const [orgTitle, setOrgTitle] = useState(initial?.organization?.title ?? '');
   const [orgDepartment, setOrgDepartment] = useState(initial?.organization?.department ?? '');
   const [notes, setNotes] = useState(initial?.notes ?? '');
+  const [labels, setLabels] = useState<string[]>(initial?.labels ?? []);
   const [drafts, setDrafts] = useState<DraftCustomField[]>(draftsFromPerson(initial));
   const [syncMetadata] = useState<SyncMetadata>(syncMetadataFromPerson(initial));
   const [errors, setErrors] = useState<Record<string, string>>({});
@@ -338,6 +340,7 @@ export function PersonForm({
         department: orgDepartment.trim(),
       },
       notes: notes.trim(),
+      labels: labels.map((l) => l.trim()).filter(Boolean),
       custom_fields: {
         ...fields,
         ...(syncMetadata.googleResourceName
@@ -458,6 +461,8 @@ export function PersonForm({
         <label htmlFor="notes">Notes</label>
         <textarea id="notes" value={notes} onChange={(e) => setNotes(e.target.value)} rows={4} />
       </div>
+
+      <StringListField label="Labels" values={labels} onChange={setLabels} maxItems={25} />
 
       <fieldset className="custom-fields">
         <legend>Custom fields</legend>

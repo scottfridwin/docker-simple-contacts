@@ -408,6 +408,7 @@ export default function App() {
             : undefined,
         notes: values.notes || undefined,
         custom_fields: values.custom_fields,
+        labels: values.labels.length ? values.labels : undefined,
       };
       if (view.mode === 'edit') {
         await updatePerson(view.person.id, payload);

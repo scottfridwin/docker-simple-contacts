@@ -56,13 +56,13 @@ func TestScanPersonNormalizesNilCollections(t *testing.T) {
 		uuid.New(), "First", []string(nil), "Last", "First Last",
 		(*string)(nil), (*string)(nil), (*string)(nil),
 		[]contactsync.LabeledValue(nil), []contactsync.LabeledValue(nil), []contactsync.Address(nil),
-		(*contactsync.Organization)(nil), (*string)(nil), map[string]any(nil), false,
+		(*contactsync.Organization)(nil), (*string)(nil), map[string]any(nil), false, []string(nil),
 		now, now, (*time.Time)(nil),
 	}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(p.MiddleNames) != 0 || len(p.PhoneNumbers) != 0 || len(p.CustomFields) != 0 {
+	if len(p.MiddleNames) != 0 || len(p.PhoneNumbers) != 0 || len(p.CustomFields) != 0 || len(p.Labels) != 0 {
 		t.Fatalf("nil collections were not normalized: %+v", p)
 	}
 }
@@ -83,13 +83,13 @@ func TestScanPersonPreservesValues(t *testing.T) {
 		uuid.New(), "First", []string{"M"}, "Last", "First M Last",
 		&nickname, (*string)(nil), &nickname,
 		[]contactsync.LabeledValue{{Value: "a@example.com"}}, []contactsync.LabeledValue{{Value: "555"}}, []contactsync.Address{{City: "Springfield"}},
-		&contactsync.Organization{Name: "Acme"}, &nickname, map[string]any{"x": "y"}, true,
+		&contactsync.Organization{Name: "Acme"}, &nickname, map[string]any{"x": "y"}, true, []string{"Family"},
 		now, now, &deleted,
 	}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(p.MiddleNames) != 1 || len(p.PhoneNumbers) != 1 || p.CustomFields["x"] != "y" || p.DeletedAt == nil || !p.IsFavorite {
+	if len(p.MiddleNames) != 1 || len(p.PhoneNumbers) != 1 || p.CustomFields["x"] != "y" || p.DeletedAt == nil || !p.IsFavorite || len(p.Labels) != 1 {
 		t.Fatalf("values were not preserved: %+v", p)
 	}
 }
@@ -102,7 +102,7 @@ func TestScanPersonAccessible(t *testing.T) {
 		uuid.New(), "First", []string(nil), "Last", "First Last",
 		(*string)(nil), (*string)(nil), (*string)(nil),
 		[]contactsync.LabeledValue(nil), []contactsync.LabeledValue(nil), []contactsync.Address(nil),
-		(*contactsync.Organization)(nil), (*string)(nil), map[string]any(nil), false,
+		(*contactsync.Organization)(nil), (*string)(nil), map[string]any(nil), false, []string(nil),
 		now, now, (*time.Time)(nil),
 		&ownerID, &ownerName,
 	}})

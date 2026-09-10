@@ -724,6 +724,20 @@ input[type='number'] {
   padding: 0 0.35rem;
 }
 
+.person-labels {
+  display: flex;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+}
+
+.label-chip {
+  font-size: 0.7rem;
+  color: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 0.05rem 0.5rem;
+}
+
 .shared-by-banner {
   font-size: 0.85rem;
   color: var(--muted);

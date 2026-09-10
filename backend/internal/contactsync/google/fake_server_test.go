@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -36,14 +37,32 @@ type fakeGoogleServer struct {
 	failNext       map[string]int
 	blockListGate  chan struct{}
 	blockListReady chan struct{}
+
+	// groups, groupsByName, and groupMembers stand in for the separate
+	// contactGroups resource (Google's "Labels"): groupMembers tracks
+	// membership out-of-band from the contact record itself, exactly like
+	// real Google, since membership is only ever changed via
+	// contactGroups.members.modify, never via people:createContact/
+	// updateContact.
+	groups       map[string]*googleContactGroup
+	groupsByName map[string]string
+	groupMembers map[string]map[string]bool
+	nextGroupID  int
 }
 
 func newFakeGoogleServer() *fakeGoogleServer {
 	s := &fakeGoogleServer{
-		contacts: map[string]*googlePerson{},
-		versions: map[string]int{},
-		failNext: map[string]int{},
+		contacts:     map[string]*googlePerson{},
+		versions:     map[string]int{},
+		failNext:     map[string]int{},
+		groups:       map[string]*googleContactGroup{},
+		groupsByName: map[string]string{},
+		groupMembers: map[string]map[string]bool{},
 	}
+	// Every real Google account already has a "starred" system group -
+	// pre-seed it so tests can exercise the starred <-> is_favorite mapping.
+	s.groups["contactGroups/starred"] = &googleContactGroup{ResourceName: "contactGroups/starred", Name: "starred", GroupType: "SYSTEM_CONTACT_GROUP"}
+	s.groupMembers["contactGroups/starred"] = map[string]bool{}
 	s.Server = httptest.NewServer(http.HandlerFunc(s.handle))
 	return s
 }
@@ -136,6 +155,63 @@ func (s *fakeGoogleServer) all() []googlePerson {
 	return out
 }
 
+// addToGroup adds a contact to a user-created group by name (creating the
+// group first if it doesn't exist yet), as if that membership already
+// existed in Google before this sync ran.
+func (s *fakeGoogleServer) addToGroup(resourceName, groupName string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rn, ok := s.groupsByName[groupName]
+	if !ok {
+		s.nextGroupID++
+		rn = fmt.Sprintf("contactGroups/g%d", s.nextGroupID)
+		s.groups[rn] = &googleContactGroup{ResourceName: rn, Name: groupName, GroupType: "USER_CONTACT_GROUP"}
+		s.groupsByName[groupName] = rn
+		s.groupMembers[rn] = map[string]bool{}
+	}
+	s.groupMembers[rn][resourceName] = true
+}
+
+// removeFromGroup removes a contact from a named user-created group, if
+// both the group and the membership exist.
+func (s *fakeGoogleServer) removeFromGroup(resourceName, groupName string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rn, ok := s.groupsByName[groupName]
+	if !ok {
+		return
+	}
+	delete(s.groupMembers[rn], resourceName)
+}
+
+// setStarred adds or removes a contact's membership in the pre-seeded
+// "starred" system group directly, simulating a user starring/unstarring a
+// contact in Google Contacts.
+func (s *fakeGoogleServer) setStarred(resourceName string, starred bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if starred {
+		s.groupMembers["contactGroups/starred"][resourceName] = true
+	} else {
+		delete(s.groupMembers["contactGroups/starred"], resourceName)
+	}
+}
+
+// groupsFor returns the names of every group (including system groups like
+// starred) the given contact currently belongs to, for test assertions.
+func (s *fakeGoogleServer) groupsFor(resourceName string) []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var names []string
+	for rn, members := range s.groupMembers {
+		if members[resourceName] {
+			names = append(names, s.groups[rn].Name)
+		}
+	}
+	sort.Strings(names)
+	return names
+}
+
 // storeLocked assigns a resourceName/etag if new, bumps the version, and
 // stamps the contact's reported update time. Callers must hold s.mu.
 func (s *fakeGoogleServer) storeLocked(p *googlePerson, updatedAt time.Time) string {
@@ -164,6 +240,12 @@ func (s *fakeGoogleServer) handle(w http.ResponseWriter, r *http.Request) {
 		s.handleUpdate(w, r, strings.TrimSuffix(strings.TrimPrefix(path, "/"), ":updateContact"))
 	case strings.HasSuffix(path, ":deleteContact"):
 		s.handleDelete(w, strings.TrimSuffix(strings.TrimPrefix(path, "/"), ":deleteContact"))
+	case path == "/contactGroups" && r.Method == http.MethodPost:
+		s.handleCreateGroup(w, r)
+	case path == "/contactGroups":
+		s.handleListGroups(w, r)
+	case strings.HasSuffix(path, "/members:modify"):
+		s.handleModifyGroupMembers(w, r, strings.TrimSuffix(strings.TrimPrefix(path, "/"), "/members:modify"))
 	default:
 		s.handleGet(w, strings.TrimPrefix(path, "/"))
 	}
@@ -183,14 +265,14 @@ func (s *fakeGoogleServer) handleList(w http.ResponseWriter, r *http.Request) {
 	if token == "" {
 		for _, p := range s.contacts {
 			if !p.Metadata.Deleted {
-				out = append(out, *p)
+				out = append(out, s.withMemberships(p))
 			}
 		}
 	} else {
 		since, _ := strconv.Atoi(token)
 		for name, v := range s.versions {
 			if v > since {
-				out = append(out, *s.contacts[name])
+				out = append(out, s.withMemberships(s.contacts[name]))
 			}
 		}
 	}
@@ -206,7 +288,7 @@ func (s *fakeGoogleServer) handleGet(w http.ResponseWriter, resourceName string)
 		http.Error(w, "not found", http.StatusNotFound)
 		return
 	}
-	writeJSON(w, http.StatusOK, *p)
+	writeJSON(w, http.StatusOK, s.withMemberships(p))
 }
 
 func (s *fakeGoogleServer) handleCreate(w http.ResponseWriter, r *http.Request) {
@@ -217,7 +299,7 @@ func (s *fakeGoogleServer) handleCreate(w http.ResponseWriter, r *http.Request) 
 	}
 	p.ResourceName = ""
 	name := s.storeLocked(&p, time.Now().UTC())
-	writeJSON(w, http.StatusOK, *s.contacts[name])
+	writeJSON(w, http.StatusOK, s.withMemberships(s.contacts[name]))
 }
 
 func (s *fakeGoogleServer) handleUpdate(w http.ResponseWriter, r *http.Request, resourceName string) {
@@ -241,7 +323,7 @@ func (s *fakeGoogleServer) handleUpdate(w http.ResponseWriter, r *http.Request, 
 	}
 	p.ResourceName = resourceName
 	name := s.storeLocked(&p, time.Now().UTC())
-	writeJSON(w, http.StatusOK, *s.contacts[name])
+	writeJSON(w, http.StatusOK, s.withMemberships(s.contacts[name]))
 }
 
 func (s *fakeGoogleServer) handleDelete(w http.ResponseWriter, resourceName string) {
@@ -253,6 +335,80 @@ func (s *fakeGoogleServer) handleDelete(w http.ResponseWriter, resourceName stri
 	existing.Metadata.Deleted = true
 	s.storeLocked(existing, time.Now().UTC())
 	w.WriteHeader(http.StatusOK)
+}
+
+// withMemberships returns a copy of p with Memberships populated from
+// groupMembers, since (like real Google) membership is tracked separately
+// from the contact record and only ever changed via
+// contactGroups.members.modify. Callers must hold s.mu.
+func (s *fakeGoogleServer) withMemberships(p *googlePerson) googlePerson {
+	out := *p
+	memberships := make([]googleMembership, 0)
+	for groupRN, members := range s.groupMembers {
+		if members[p.ResourceName] {
+			memberships = append(memberships, googleMembership{ContactGroupMembership: &googleContactGroupMembership{ContactGroupResourceName: groupRN}})
+		}
+	}
+	out.Memberships = memberships
+	return out
+}
+
+// handleListGroups serves contactGroups.list (no pagination needed for
+// tests - everything fits on one page).
+func (s *fakeGoogleServer) handleListGroups(w http.ResponseWriter, r *http.Request) {
+	out := make([]googleContactGroup, 0, len(s.groups))
+	for _, g := range s.groups {
+		out = append(out, *g)
+	}
+	writeJSON(w, http.StatusOK, googleContactGroupsResponse{ContactGroups: out})
+}
+
+// handleCreateGroup serves contactGroups.create, including the real API's
+// 409 on a duplicate name.
+func (s *fakeGoogleServer) handleCreateGroup(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		ContactGroup googleContactGroup `json:"contactGroup"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	name := body.ContactGroup.Name
+	if _, exists := s.groupsByName[name]; exists {
+		http.Error(w, `{"error":{"code":409,"status":"ALREADY_EXISTS"}}`, http.StatusConflict)
+		return
+	}
+	s.nextGroupID++
+	rn := fmt.Sprintf("contactGroups/g%d", s.nextGroupID)
+	g := &googleContactGroup{ResourceName: rn, Name: name, GroupType: "USER_CONTACT_GROUP"}
+	s.groups[rn] = g
+	s.groupsByName[name] = rn
+	s.groupMembers[rn] = map[string]bool{}
+	writeJSON(w, http.StatusOK, *g)
+}
+
+// handleModifyGroupMembers serves contactGroups.members.modify.
+func (s *fakeGoogleServer) handleModifyGroupMembers(w http.ResponseWriter, r *http.Request, groupResourceName string) {
+	var body struct {
+		ResourceNamesToAdd    []string `json:"resourceNamesToAdd"`
+		ResourceNamesToRemove []string `json:"resourceNamesToRemove"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	members, ok := s.groupMembers[groupResourceName]
+	if !ok {
+		members = map[string]bool{}
+		s.groupMembers[groupResourceName] = members
+	}
+	for _, rn := range body.ResourceNamesToAdd {
+		members[rn] = true
+	}
+	for _, rn := range body.ResourceNamesToRemove {
+		delete(members, rn)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{})
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

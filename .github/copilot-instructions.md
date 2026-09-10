@@ -56,6 +56,16 @@ conflict.
 - Custom fields: any non-empty, printable key (case-sensitive, no format
   requirement) up to 64 chars; string/number/boolean values; max 64 fields;
   string ≤ 1024; `null` rejected.
+- Labels: `Person.labels` is a freeform string array (CATEGORIES/tag
+  style), not a first-class entity - no separate table, no rename-
+  everywhere op, no dedicated API, just another field on `PATCH
+  /persons/{id}`. Max 25 labels, 64 chars each. Google sync maps a label
+  to a same-named `contactGroups` resource; only user-created group
+  membership becomes a label on import (system groups like `myContacts`
+  are ignored), while the `starred` system group maps to `is_favorite`
+  (now synced) in both directions. Membership changes always go through
+  `contactGroups.members.modify`, never `people.updateContact`'s
+  `memberships` field. Removing a label never deletes the Google group.
 - Soft delete + 30-day purge. List defaults: page 25 / max 100, sort
   `last_name, first_name asc`, filters `first_name`/`last_name`/`favorite`.
   Favorites are shown in an always-visible UI section (separate fetch with

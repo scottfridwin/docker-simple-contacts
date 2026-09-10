@@ -56,6 +56,7 @@ export interface Person {
   organization?: Organization | null;
   notes?: string | null;
   custom_fields: Record<string, CustomFieldValue>;
+  labels: string[];
   is_favorite: boolean;
   is_owner?: boolean;
   owner_display_name?: string | null;
@@ -116,6 +117,7 @@ export interface CreatePersonInput {
   organization?: Organization | null;
   notes?: string;
   custom_fields?: Record<string, CustomFieldValue>;
+  labels?: string[];
   is_favorite?: boolean;
 }
 

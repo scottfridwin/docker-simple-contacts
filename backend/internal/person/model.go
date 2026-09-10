@@ -26,6 +26,7 @@ type Person struct {
 	Organization *contactsync.Organization  `json:"organization,omitempty"`
 	Notes        *string                    `json:"notes,omitempty"`
 	CustomFields map[string]any             `json:"custom_fields"`
+	Labels       []string                   `json:"labels"`
 	IsFavorite   bool                       `json:"is_favorite"`
 	CreatedAt    time.Time                  `json:"created_at"`
 	UpdatedAt    time.Time                  `json:"updated_at"`
@@ -56,6 +57,7 @@ type CreateInput struct {
 	Organization *contactsync.Organization  `json:"organization"`
 	Notes        *string                    `json:"notes"`
 	CustomFields map[string]any             `json:"custom_fields"`
+	Labels       []string                   `json:"labels"`
 	IsFavorite   bool                       `json:"is_favorite"`
 }
 
@@ -74,6 +76,7 @@ type UpdateInput struct {
 	Organization *contactsync.Organization
 	Notes        *string
 	CustomFields map[string]any
+	Labels       *[]string
 	IsFavorite   *bool
 
 	FirstNameSet    bool
@@ -88,6 +91,7 @@ type UpdateInput struct {
 	OrganizationSet bool
 	NotesSet        bool
 	CustomFieldsSet bool
+	LabelsSet       bool
 	IsFavoriteSet   bool
 }
 
@@ -138,6 +142,8 @@ func (p Person) Snapshot(ownerID *uuid.UUID) contactsync.PersonSnapshot {
 		Organization: p.Organization,
 		Notes:        p.Notes,
 		CustomFields: cloneMap(p.CustomFields),
+		Labels:       append([]string(nil), p.Labels...),
+		IsFavorite:   p.IsFavorite,
 		DeletedAt:    p.DeletedAt,
 		CreatedAt:    p.CreatedAt,
 		UpdatedAt:    p.UpdatedAt,

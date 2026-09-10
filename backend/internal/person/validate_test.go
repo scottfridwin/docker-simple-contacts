@@ -1,6 +1,7 @@
 package person
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -220,6 +221,44 @@ func TestValidateMiddleNames(t *testing.T) {
 	longMiddle := strings.Repeat("x", MaxNameLength+1)
 	if errs := ValidateCreate(CreateInput{FirstName: "A", LastName: "B", MiddleNames: []string{longMiddle}}); !errs.HasErrors() {
 		t.Error("expected error for oversized middle name")
+	}
+}
+
+func TestValidateLabels(t *testing.T) {
+	tooMany := make([]string, MaxPersonLabels+1)
+	for i := range tooMany {
+		tooMany[i] = fmt.Sprintf("label-%d", i)
+	}
+	if errs := ValidateCreate(CreateInput{FirstName: "A", LastName: "B", Labels: tooMany}); !errs.HasErrors() {
+		t.Error("expected error for too many labels")
+	}
+	if errs := ValidateCreate(CreateInput{FirstName: "A", LastName: "B", Labels: []string{""}}); !errs.HasErrors() {
+		t.Error("expected error for empty label")
+	}
+	longLabel := strings.Repeat("x", MaxPersonLabelLength+1)
+	if errs := ValidateCreate(CreateInput{FirstName: "A", LastName: "B", Labels: []string{longLabel}}); !errs.HasErrors() {
+		t.Error("expected error for oversized label")
+	}
+	if errs := ValidateCreate(CreateInput{FirstName: "A", LastName: "B", Labels: []string{"Family", "Book Club"}}); errs.HasErrors() {
+		t.Errorf("expected no errors for valid labels, got: %s", errs.Error())
+	}
+}
+
+func TestSanitizeLabelsForSync(t *testing.T) {
+	got := SanitizeLabelsForSync([]string{"Family", "  ", "Family", "Friends", strings.Repeat("x", MaxPersonLabelLength+1)})
+	if len(got) != 2 || got[0] != "Family" || got[1] != "Friends" {
+		t.Fatalf("SanitizeLabelsForSync = %+v, want [Family Friends]", got)
+	}
+}
+
+func TestSanitizeLabelsForSyncEnforcesMaxCount(t *testing.T) {
+	raw := make([]string, MaxPersonLabels+10)
+	for i := range raw {
+		raw[i] = fmt.Sprintf("label-%02d", i)
+	}
+	got := SanitizeLabelsForSync(raw)
+	if len(got) != MaxPersonLabels {
+		t.Fatalf("len(SanitizeLabelsForSync(...)) = %d, want %d", len(got), MaxPersonLabels)
 	}
 }
 

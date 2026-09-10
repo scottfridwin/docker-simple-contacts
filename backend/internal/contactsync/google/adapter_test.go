@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -21,6 +22,100 @@ import (
 // fix: the remote resource id must come from the caller (looked up per sync
 // account) instead of a single shared Person.custom_fields value, since one
 // Person can be linked to different remote records on different accounts.
+// TestResolveMembershipsMapsUserGroupsToLabelsAndStarredToFavorite guards the
+// mapping decision: a Google contact's memberships in user-created groups
+// become labels, membership in the "starred" system group becomes
+// is_favorite, and every other system group (myContacts, etc.) is ignored
+// entirely - a plain Google account has nearly every contact in myContacts,
+// which must never leak into Person.Labels.
+func TestResolveMembershipsMapsUserGroupsToLabelsAndStarredToFavorite(t *testing.T) {
+	resolver := &groupResolver{
+		byResourceName: map[string]contactGroup{
+			"contactGroups/g1":         {ResourceName: "contactGroups/g1", Name: "Family"},
+			"contactGroups/g2":         {ResourceName: "contactGroups/g2", Name: "Book Club"},
+			"contactGroups/myContacts": {ResourceName: "contactGroups/myContacts", Name: "myContacts", System: true},
+			"contactGroups/starred":    {ResourceName: "contactGroups/starred", Name: "starred", System: true},
+		},
+		byName:    map[string]contactGroup{"Family": {ResourceName: "contactGroups/g1", Name: "Family"}, "Book Club": {ResourceName: "contactGroups/g2", Name: "Book Club"}},
+		starredID: "contactGroups/starred",
+	}
+	memberships := []googleMembership{
+		{ContactGroupMembership: &googleContactGroupMembership{ContactGroupResourceName: "contactGroups/g1"}},
+		{ContactGroupMembership: &googleContactGroupMembership{ContactGroupResourceName: "contactGroups/myContacts"}},
+		{ContactGroupMembership: &googleContactGroupMembership{ContactGroupResourceName: "contactGroups/starred"}},
+	}
+
+	labels, isFavorite := resolveMemberships(memberships, resolver)
+
+	if len(labels) != 1 || labels[0] != "Family" {
+		t.Fatalf("labels = %+v, want [Family]", labels)
+	}
+	if !isFavorite {
+		t.Fatal("isFavorite = false, want true (starred membership present)")
+	}
+}
+
+// TestResolveMembershipsNilResolver guards a pure-function unit test caller
+// that doesn't have a live Google account to list groups from - it must not
+// panic, and should behave as if the contact has no labels/favorite.
+func TestResolveMembershipsNilResolver(t *testing.T) {
+	labels, isFavorite := resolveMemberships([]googleMembership{
+		{ContactGroupMembership: &googleContactGroupMembership{ContactGroupResourceName: "contactGroups/g1"}},
+	}, nil)
+	if len(labels) != 0 || isFavorite {
+		t.Fatalf("labels=%+v isFavorite=%v, want empty/false for a nil resolver", labels, isFavorite)
+	}
+}
+
+// TestReconcileMembershipsClearsAllLabelsWithoutTouchingUpdateContact guards
+// the core API constraint driving this whole design: Google rejects an
+// updateContact call whose updatePersonFields mask includes memberships but
+// whose payload has zero memberships (e.g. clearing every label), so
+// membership changes must always go through contactGroups.members.modify
+// instead - never through the person payload itself.
+func TestReconcileMembershipsClearsAllLabelsViaModifyNotUpdateContact(t *testing.T) {
+	var modifyPaths []string
+	var modifyBodies []map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/members:modify") {
+			modifyPaths = append(modifyPaths, r.URL.Path)
+			var body map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			modifyBodies = append(modifyBodies, body)
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(map[string]any{})
+			return
+		}
+		t.Fatalf("unexpected request to %s", r.URL.Path)
+	}))
+	defer server.Close()
+
+	adapter := &Adapter{cfg: Config{PeopleBaseURL: server.URL}, http: http.DefaultClient, logger: slog.Default()}
+	resolver := &groupResolver{
+		byResourceName: map[string]contactGroup{"contactGroups/g1": {ResourceName: "contactGroups/g1", Name: "Family"}},
+		byName:         map[string]contactGroup{"Family": {ResourceName: "contactGroups/g1", Name: "Family"}},
+	}
+	current := googlePerson{
+		ResourceName: "people/1",
+		Memberships: []googleMembership{
+			{ContactGroupMembership: &googleContactGroupMembership{ContactGroupResourceName: "contactGroups/g1"}},
+		},
+	}
+	record := contactsync.Record{Fields: map[string]contactsync.FieldState{
+		"labels": {IsSet: true, Value: []string{}},
+	}}
+
+	if err := adapter.reconcileMemberships(context.Background(), "token", resolver, "people/1", current, record); err != nil {
+		t.Fatalf("reconcileMemberships: %v", err)
+	}
+	if len(modifyPaths) != 1 || modifyPaths[0] != "/contactGroups/g1/members:modify" {
+		t.Fatalf("modifyPaths = %+v, want exactly one call to remove from contactGroups/g1", modifyPaths)
+	}
+	if toRemove, ok := modifyBodies[0]["resourceNamesToRemove"].([]any); !ok || len(toRemove) != 1 || toRemove[0] != "people/1" {
+		t.Fatalf("modify body = %+v, want resourceNamesToRemove=[people/1]", modifyBodies[0])
+	}
+}
+
 func TestPersonToRecordUsesProvidedExternalID(t *testing.T) {
 	p := person.Person{
 		ID:        uuid.New(),
@@ -184,7 +279,7 @@ func TestToProviderRecordMapsNewContactFields(t *testing.T) {
 		Birthdays:     []googleBirthday{{Date: &googleDate{Year: 1989, Month: 4, Day: 19}}},
 	}
 
-	got := toProviderRecord(in)
+	got := toProviderRecord(in, nil)
 	fields := got.Record.Fields
 
 	if v := fieldLabeledValues(fields, "emails"); len(v) != 1 || v[0].Value != "scott@example.com" || v[0].Label != "work" {
@@ -235,7 +330,7 @@ func TestToProviderRecordDedupesExactDuplicates(t *testing.T) {
 		},
 	}
 
-	fields := toProviderRecord(in).Record.Fields
+	fields := toProviderRecord(in, nil).Record.Fields
 
 	if v := fieldLabeledValues(fields, "emails"); len(v) != 2 {
 		t.Fatalf("emails = %+v, want 2 (1 deduped home + 1 work)", v)
@@ -465,7 +560,7 @@ func TestToProviderRecordMapsRelations(t *testing.T) {
 			{Person: "", Type: "sibling"},
 		},
 	}
-	fields := toProviderRecord(in).Record.Fields
+	fields := toProviderRecord(in, nil).Record.Fields
 	got := fieldLabeledValues(fields, "relations")
 	if len(got) != 1 || got[0].Label != string(person.RelationSpouse) || got[0].Value != "Jane Doe" {
 		t.Fatalf("relations = %+v, want just the spouse relation", got)
@@ -683,6 +778,11 @@ func TestDoGivesUpAfterMaxAttemptsOn429(t *testing.T) {
 func TestUpsertRecordRetriesOnceOnETagConflict(t *testing.T) {
 	getCalls, patchCalls := 0, 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/contactGroups") {
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(googleContactGroupsResponse{})
+			return
+		}
 		switch r.Method {
 		case http.MethodGet:
 			getCalls++

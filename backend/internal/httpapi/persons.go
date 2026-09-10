@@ -266,7 +266,7 @@ func decodeUpdate(w http.ResponseWriter, r *http.Request) (person.UpdateInput, e
 		"first_name": {}, "middle_names": {}, "last_name": {},
 		"nickname": {}, "pronouns": {}, "birthdate": {},
 		"emails": {}, "phone_numbers": {}, "addresses": {},
-		"organization": {}, "notes": {}, "custom_fields": {}, "is_favorite": {},
+		"organization": {}, "notes": {}, "custom_fields": {}, "labels": {}, "is_favorite": {},
 	}
 	for key := range fields {
 		if _, ok := allowed[key]; !ok {
@@ -362,6 +362,14 @@ func decodeUpdate(w http.ResponseWriter, r *http.Request) (person.UpdateInput, e
 		}
 		in.CustomFields = cf
 		in.CustomFieldsSet = true
+	}
+	if raw, ok := fields["labels"]; ok {
+		var labels []string
+		if err := json.Unmarshal(raw, &labels); err != nil {
+			return person.UpdateInput{}, errors.New("labels must be an array of strings")
+		}
+		in.Labels = &labels
+		in.LabelsSet = true
 	}
 	if raw, ok := fields["is_favorite"]; ok {
 		if err := json.Unmarshal(raw, &in.IsFavorite); err != nil {

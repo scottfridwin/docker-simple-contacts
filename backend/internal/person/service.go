@@ -85,6 +85,10 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (*Person, Validati
 	if customFields == nil {
 		customFields = map[string]any{}
 	}
+	labels := in.Labels
+	if labels == nil {
+		labels = []string{}
+	}
 
 	p := &Person{
 		FirstName:    in.FirstName,
@@ -100,6 +104,7 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (*Person, Validati
 		Organization: in.Organization,
 		Notes:        in.Notes,
 		CustomFields: customFields,
+		Labels:       labels,
 		IsFavorite:   in.IsFavorite,
 	}
 	created, err := s.repo.Create(ctx, p)
@@ -372,6 +377,13 @@ func applyUpdate(current *Person, in UpdateInput) {
 			current.CustomFields = in.CustomFields
 		} else {
 			current.CustomFields = map[string]any{}
+		}
+	}
+	if in.LabelsSet {
+		if in.Labels != nil {
+			current.Labels = *in.Labels
+		} else {
+			current.Labels = []string{}
 		}
 	}
 	if in.IsFavoriteSet && in.IsFavorite != nil {

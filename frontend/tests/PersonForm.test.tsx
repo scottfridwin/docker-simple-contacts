@@ -66,6 +66,7 @@ describe('PersonForm', () => {
       notes: '',
       middle_names: ['A', 'B'],
       custom_fields: { blood_type: 'O+' },
+      labels: [],
       sync_metadata: {},
     });
   });

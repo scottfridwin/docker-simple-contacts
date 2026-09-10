@@ -52,6 +52,15 @@ export function PersonList({
                 {person.phone_numbers.map((p) => p.value).join(' · ')}
               </span>
             )}
+            {(person.labels ?? []).length > 0 && (
+              <span className="person-meta person-labels">
+                {person.labels.map((l) => (
+                  <span key={l} className="label-chip">
+                    {l}
+                  </span>
+                ))}
+              </span>
+            )}
             {Object.entries(person.custom_fields ?? {}).some(
               ([key]) => !RESERVED_SYNC_FIELDS.has(key),
             ) && (

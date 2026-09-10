@@ -59,6 +59,8 @@ type PersonSnapshot struct {
 	Organization *Organization  `json:"organization,omitempty"`
 	Notes        *string        `json:"notes,omitempty"`
 	CustomFields map[string]any `json:"custom_fields"`
+	Labels       []string       `json:"labels"`
+	IsFavorite   bool           `json:"is_favorite"`
 	DeletedAt    *time.Time     `json:"deleted_at,omitempty"`
 	CreatedAt    time.Time      `json:"created_at"`
 	UpdatedAt    time.Time      `json:"updated_at"`

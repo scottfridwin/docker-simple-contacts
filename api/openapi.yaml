@@ -507,6 +507,10 @@ components:
         notes: { type: string, maxLength: 4096, nullable: true }
         custom_fields:
           $ref: '#/components/schemas/CustomFields'
+        labels:
+          type: array
+          maxItems: 25
+          items: { type: string, maxLength: 64 }
         is_favorite: { type: boolean }
         is_owner: { type: boolean, readOnly: true }
         owner_display_name: { type: string, nullable: true, readOnly: true }
@@ -542,6 +546,10 @@ components:
         notes: { type: string, maxLength: 4096 }
         custom_fields:
           $ref: '#/components/schemas/CustomFields'
+        labels:
+          type: array
+          maxItems: 25
+          items: { type: string, maxLength: 64 }
         is_favorite: { type: boolean, default: false }
     UpdatePersonInput:
       type: object
@@ -571,6 +579,10 @@ components:
         notes: { type: string, maxLength: 4096, nullable: true }
         custom_fields:
           $ref: '#/components/schemas/CustomFields'
+        labels:
+          type: array
+          maxItems: 25
+          items: { type: string, maxLength: 64 }
         is_favorite: { type: boolean }
     PersonListResponse:
       type: object
