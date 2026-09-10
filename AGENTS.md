@@ -158,7 +158,11 @@ docs/design/            authoritative design documents
   scheduler and the post-OAuth-connect trigger can otherwise both fire for
   the same account while a large/rate-limited pull is still in flight.
   In-process only; would need a DB advisory lock if ever scaled to
-  multiple backend replicas.
+  multiple backend replicas. A 429 retry (`Adapter.do`) prefers Google's
+  `Retry-After` header, then a `window_start_time`-derived wait for its
+  per-minute "Critical read requests" quota (which our own exponential
+  backoff alone, capped well under a minute, can't reliably outlast),
+  falling back to backoff otherwise; 6 attempts, backoff capped at 30s.
 - **Sync matching/merge**: a Google contact with no `contacts_local_id` tag
   matches an existing local contact only on an exact, unambiguous
   first+last name match (`person.FindByExactName`), otherwise it's created

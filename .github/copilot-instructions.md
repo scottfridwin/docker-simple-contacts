@@ -98,7 +98,11 @@ conflict.
   account). `Adapter.Sync` rejects a second concurrent call for the same
   account (in-process guard) so the periodic scheduler and the
   post-connect trigger can't both run a full pull for the same account at
-  once and duplicate contacts.
+  once and duplicate contacts. `Adapter.do`'s 429 retry prefers a
+  `window_start_time`-derived wait (parsed from Google's per-minute
+  "Critical read requests" quota error) over plain exponential backoff,
+  since backoff alone caps well under a minute and can retry right back
+  into the same still-exhausted window; 6 attempts, backoff capped at 30s.
 - Google sync matching/merge: a Google contact with no `contacts_local_id` tag
   matches an existing local contact only on an exact, unambiguous first+last
   name match (no fuzzy matching), otherwise it's created as a new Person. When

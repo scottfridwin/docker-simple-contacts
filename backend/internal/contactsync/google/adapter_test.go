@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -765,8 +766,54 @@ func TestDoGivesUpAfterMaxAttemptsOn429(t *testing.T) {
 	if !errors.As(err, &apiErr) || apiErr.Status != http.StatusTooManyRequests {
 		t.Fatalf("expected a final 429 apiError, got %v", err)
 	}
-	if attempts != 5 {
-		t.Fatalf("attempts = %d, want 5 (maxAttempts)", attempts)
+	if attempts != 6 {
+		t.Fatalf("attempts = %d, want 6 (maxAttempts)", attempts)
+	}
+}
+
+// TestQuotaWindowResetWait guards a real production incident: Google's
+// per-minute "Critical read requests" quota error carries no Retry-After
+// header, only a window_start_time the quota is measured from - our own
+// exponential backoff alone (capped well under a minute) could retry right
+// back into the same still-exhausted window. quotaWindowResetWait must wait
+// until that 60s window actually resets instead.
+func TestQuotaWindowResetWait(t *testing.T) {
+	windowStart := time.Now().Add(-30 * time.Second)
+	body := []byte(`{"error":{"code":429,"status":"RESOURCE_EXHAUSTED","details":[` +
+		`{"@type":"type.googleapis.com/google.rpc.ErrorInfo","metadata":{"window_start_time":"` +
+		strconv.FormatInt(windowStart.Unix(), 10) + `"}}]}}`)
+
+	wait, ok := quotaWindowResetWait(body)
+	if !ok {
+		t.Fatal("expected quotaWindowResetWait to find window_start_time")
+	}
+	// The window resets 60s after it started (~30s from now), plus 2s slack.
+	if wait < 28*time.Second || wait > 34*time.Second {
+		t.Fatalf("wait = %v, want approximately 32s", wait)
+	}
+}
+
+// TestQuotaWindowResetWaitNoMetadata guards the fallback: an error body
+// without window_start_time (any other 429/error shape) must not be treated
+// as having a quota window to wait out.
+func TestQuotaWindowResetWaitNoMetadata(t *testing.T) {
+	if _, ok := quotaWindowResetWait([]byte(`{"error":{"code":500}}`)); ok {
+		t.Fatal("expected no window wait for a body without window_start_time")
+	}
+	if _, ok := quotaWindowResetWait([]byte(`not json`)); ok {
+		t.Fatal("expected no window wait for an unparseable body")
+	}
+}
+
+// TestRetryDelayPrefersRetryAfterOverQuotaWindow guards the precedence: an
+// explicit Retry-After header from Google is more specific than our own
+// window_start_time-derived estimate and should always win when present.
+func TestRetryDelayPrefersRetryAfterOverQuotaWindow(t *testing.T) {
+	body := []byte(`{"error":{"details":[{"metadata":{"window_start_time":"` +
+		strconv.FormatInt(time.Now().Unix(), 10) + `"}}]}}`)
+	got := retryDelay("5", body, time.Second)
+	if got != 5*time.Second {
+		t.Fatalf("retryDelay = %v, want 5s (Retry-After should win)", got)
 	}
 }
 

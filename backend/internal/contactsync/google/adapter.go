@@ -1818,7 +1818,13 @@ func (a *Adapter) newRequest(ctx context.Context, method string, path string, ac
 }
 
 func (a *Adapter) do(req *http.Request, out any) error {
-	const maxAttempts = 5
+	// 6 attempts with backoff capped at 30s (1,2,4,8,16,30 ~ 61s of waiting)
+	// so a "Critical read requests" per-minute quota - which resets a full
+	// 60s after its own window started, not after our first attempt - has
+	// a real chance to clear before we give up, instead of exhausting a
+	// much shorter retry budget and failing the whole sync run.
+	const maxAttempts = 6
+	const maxBackoff = 30 * time.Second
 	backoff := time.Second
 	for attempt := 1; ; attempt++ {
 		if attempt > 1 && req.GetBody != nil {
@@ -1839,7 +1845,7 @@ func (a *Adapter) do(req *http.Request, out any) error {
 		}
 
 		if resp.StatusCode == http.StatusTooManyRequests && attempt < maxAttempts {
-			wait := retryDelay(resp.Header.Get("Retry-After"), backoff)
+			wait := retryDelay(resp.Header.Get("Retry-After"), body, backoff)
 			a.logger.Warn("google api rate limited, retrying", "attempt", attempt, "wait", wait.String())
 			select {
 			case <-req.Context().Done():
@@ -1847,6 +1853,9 @@ func (a *Adapter) do(req *http.Request, out any) error {
 			case <-time.After(wait):
 			}
 			backoff *= 2
+			if backoff > maxBackoff {
+				backoff = maxBackoff
+			}
 			continue
 		}
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
@@ -1862,13 +1871,58 @@ func (a *Adapter) do(req *http.Request, out any) error {
 	}
 }
 
-// retryDelay picks how long to wait before retrying a 429, preferring the
-// server-specified Retry-After (seconds) when present over our own backoff.
-func retryDelay(retryAfter string, backoff time.Duration) time.Duration {
+// retryDelay picks how long to wait before retrying a 429: the
+// server-specified Retry-After header wins if present, then a per-minute
+// quota window reset time parsed from the error body (see
+// quotaWindowResetWait), falling back to our own exponential backoff.
+func retryDelay(retryAfter string, body []byte, backoff time.Duration) time.Duration {
 	if secs, err := strconv.Atoi(strings.TrimSpace(retryAfter)); err == nil && secs >= 0 {
 		return time.Duration(secs) * time.Second
 	}
+	if wait, ok := quotaWindowResetWait(body); ok {
+		return wait
+	}
 	return backoff
+}
+
+// quotaWindowResetWait parses a Google RESOURCE_EXHAUSTED error body's
+// quota_location/window_start_time metadata - present on per-minute quota
+// errors like "Critical read requests ... per minute per user" - and
+// returns how long until that 60-second window resets. Our own exponential
+// backoff alone tops out well under a minute and can retry right back into
+// the same still-exhausted window; Google doesn't send a Retry-After header
+// for this error, but does tell us exactly when the window it's counting
+// against started.
+func quotaWindowResetWait(body []byte) (time.Duration, bool) {
+	var parsed struct {
+		Error struct {
+			Details []struct {
+				Metadata struct {
+					WindowStartTime string `json:"window_start_time"`
+				} `json:"metadata"`
+			} `json:"details"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return 0, false
+	}
+	for _, d := range parsed.Error.Details {
+		secs, err := strconv.ParseInt(strings.TrimSpace(d.Metadata.WindowStartTime), 10, 64)
+		if err != nil {
+			continue
+		}
+		// A couple seconds of slack for clock skew between us and Google,
+		// capped so a bogus/far-future timestamp can't stall a sync run.
+		wait := time.Until(time.Unix(secs, 0).Add(time.Minute)) + 2*time.Second
+		if wait <= 0 {
+			continue
+		}
+		if wait > 90*time.Second {
+			wait = 90 * time.Second
+		}
+		return wait, true
+	}
+	return 0, false
 }
 
 // isETagConflict reports whether err is Google's "person.etag is different
