@@ -76,6 +76,9 @@ func (m *memStore) CreateShare(_ context.Context, personID uuid.UUID, email stri
 	if email == "self@example.com" {
 		return nil, ErrCannotShareWithSelf
 	}
+	if email == "toomany@example.com" {
+		return nil, ErrTooManyShares
+	}
 	for _, s := range m.shares {
 		if s.personID == personID && s.email == email {
 			return nil, ErrShareExists
@@ -207,6 +210,9 @@ func (m *memStore) PurgeExpired(_ context.Context, _ time.Duration) (int64, erro
 }
 
 func (m *memStore) CreateRelationship(_ context.Context, personID uuid.UUID, in RelationshipInput) (*RelationshipView, error) {
+	if in.RelatedPersonName != nil && *in.RelatedPersonName == "__too_many__" {
+		return nil, ErrTooManyRelationships
+	}
 	for _, existing := range m.relationships {
 		if existing.personID == personID && in.RelatedPersonID != nil && existing.relatedPersonID != nil &&
 			*existing.relatedPersonID == *in.RelatedPersonID && existing.relType == in.Type {
@@ -879,6 +885,17 @@ func TestServiceCreateRelationshipMapsDuplicateError(t *testing.T) {
 	}
 }
 
+func TestServiceCreateRelationshipMapsTooManyError(t *testing.T) {
+	svc := NewService(newMemStore())
+	ctx := context.Background()
+	a, _, _ := svc.Create(ctx, CreateInput{FirstName: "A", LastName: "One"})
+	name := "__too_many__"
+	_, verrs, err := svc.CreateRelationship(ctx, a.ID, RelationshipInput{Type: RelationSibling, RelatedPersonName: &name})
+	if err != nil || !verrs.HasErrors() {
+		t.Fatalf("expected a validation error for too-many-relationships, got verrs=%v err=%v", verrs, err)
+	}
+}
+
 func TestServiceListIncomingRelationships(t *testing.T) {
 	svc := NewService(newMemStore())
 	ctx := context.Background()
@@ -947,6 +964,9 @@ func TestServiceCreateShareValidationMapping(t *testing.T) {
 	if _, verrs, err := svc.CreateShare(ctx, a.ID, "self@example.com"); err != nil || !verrs.HasErrors() {
 		t.Errorf("expected validation error for self-share, got verrs=%v err=%v", verrs, err)
 	}
+	if _, verrs, err := svc.CreateShare(ctx, a.ID, "toomany@example.com"); err != nil || !verrs.HasErrors() {
+		t.Errorf("expected validation error for too-many-shares, got verrs=%v err=%v", verrs, err)
+	}
 }
 
 func TestServiceCreateShareNotFound(t *testing.T) {
@@ -996,6 +1016,13 @@ func TestServiceLeaveShare(t *testing.T) {
 	// Leaving again (no longer shared) is a no-op error, not a crash.
 	if err := svc.LeaveShare(recipientCtx, a.ID); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("LeaveShare when already left = %v, want ErrNotFound", err)
+	}
+}
+
+func TestServiceLeaveShareNotFound(t *testing.T) {
+	svc := NewService(newMemStore())
+	if err := svc.LeaveShare(context.Background(), uuid.New()); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("LeaveShare for unknown person = %v, want ErrNotFound", err)
 	}
 }
 

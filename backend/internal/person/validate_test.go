@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/google/uuid"
+
 	"github.com/scottfridlund/contacts/backend/internal/contactsync"
 )
 
@@ -321,6 +323,14 @@ func TestIsDateString(t *testing.T) {
 func TestCustomDateFieldValidation(t *testing.T) {
 	if errs := ValidateCustomFields(map[string]any{"anniversary_date": "not-a-date"}); !errs.HasErrors() {
 		t.Error("expected invalid custom date to be rejected")
+	}
+}
+
+func TestValidateRelationshipInputRejectsOversizedName(t *testing.T) {
+	long := strings.Repeat("x", MaxNameLength+1)
+	errs := ValidateRelationshipInput(uuid.New(), RelationshipInput{Type: RelationSibling, RelatedPersonName: &long})
+	if !errs.HasErrors() {
+		t.Error("expected error for oversized related_person_name")
 	}
 }
 

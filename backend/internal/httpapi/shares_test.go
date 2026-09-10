@@ -198,3 +198,21 @@ func TestShareEndpointLeave(t *testing.T) {
 		t.Fatalf("repeat leave status = %d, want 404", rec.Code)
 	}
 }
+
+// TestShareCreateIsRateLimited guards the abuse-prevention limiter on share
+// creation: once a client IP exceeds the allowance, further attempts get 429
+// instead of reaching the handler.
+func TestShareCreateIsRateLimited(t *testing.T) {
+	h, store := testRouter()
+	a, _, _ := person.NewService(store).Create(context.Background(), person.CreateInput{FirstName: "A", LastName: "Owner"})
+
+	var last *httptest.ResponseRecorder
+	for i := 0; i < 21; i++ {
+		last = doJSON(t, h, http.MethodPost, "/api/v1/persons/"+a.ID.String()+"/shares", map[string]any{
+			"email": "friend@example.com",
+		})
+	}
+	if last.Code != http.StatusTooManyRequests {
+		t.Fatalf("21st share attempt status = %d, want 429, body=%s", last.Code, last.Body.String())
+	}
+}
