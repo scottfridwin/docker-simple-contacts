@@ -28,12 +28,14 @@ import (
 type fakeGoogleServer struct {
 	*httptest.Server
 
-	mu       sync.Mutex
-	contacts map[string]*googlePerson
-	versions map[string]int
-	nextID   int
-	version  int
-	failNext map[string]int
+	mu             sync.Mutex
+	contacts       map[string]*googlePerson
+	versions       map[string]int
+	nextID         int
+	version        int
+	failNext       map[string]int
+	blockListGate  chan struct{}
+	blockListReady chan struct{}
 }
 
 func newFakeGoogleServer() *fakeGoogleServer {
@@ -54,6 +56,17 @@ func (s *fakeGoogleServer) failNextUpdate(resourceName string, n int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.failNext[resourceName] = n
+}
+
+// blockNextList makes the very next list-changes request block until release
+// is closed, closing ready once the request starts waiting - lets a test
+// deterministically start a second Sync() call while the first is still
+// mid-flight, without relying on real timing.
+func (s *fakeGoogleServer) blockNextList(ready, release chan struct{}) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.blockListGate = release
+	s.blockListReady = ready
 }
 
 // seed directly inserts a contact as if it already existed in Google before
@@ -157,6 +170,14 @@ func (s *fakeGoogleServer) handle(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *fakeGoogleServer) handleList(w http.ResponseWriter, r *http.Request) {
+	if s.blockListGate != nil {
+		gate, ready := s.blockListGate, s.blockListReady
+		s.blockListGate, s.blockListReady = nil, nil
+		if ready != nil {
+			close(ready)
+		}
+		<-gate
+	}
 	token := strings.TrimSpace(r.URL.Query().Get("syncToken"))
 	out := []googlePerson{}
 	if token == "" {

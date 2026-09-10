@@ -15,6 +15,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
@@ -76,6 +77,7 @@ type Adapter struct {
 	links    recordLinkStore
 	verifier *oidc.IDTokenVerifier
 	logger   *slog.Logger
+	syncing  sync.Map // account ID -> struct{}, accounts with a Sync in flight
 }
 
 // NewAdapter constructs a Google adapter. It performs OIDC discovery against
@@ -333,6 +335,21 @@ func (a *Adapter) Sync(ctx context.Context, account contactsync.Account, job con
 	if a.accounts == nil || a.people == nil || a.links == nil {
 		return errors.New("google sync adapter dependencies are not configured")
 	}
+	// A large contact list under heavy rate-limiting can take far longer
+	// than the scheduler's tick interval, so the periodic due-account scan
+	// and the "sync immediately after connecting" background trigger can
+	// both try to run this same account concurrently before either one
+	// finishes and persists LastSyncedAt/SyncCursor. Two overlapping full
+	// pulls each see the other's not-yet-committed local_id tags as absent,
+	// so findUnlinkedMatch (which excludes a match already linked to this
+	// account) falls through to creating a second Person for almost every
+	// contact - reject the second call outright instead.
+	if _, alreadyRunning := a.syncing.LoadOrStore(account.ID, struct{}{}); alreadyRunning {
+		a.logger.Info("google sync already in progress for this account, skipping", "account_id", account.ID)
+		return nil
+	}
+	defer a.syncing.Delete(account.ID)
+
 	a.logger.Info("google sync starting", "account_id", account.ID, "provider_account_id", account.ProviderAccountID, "has_job", job.PersonID != uuid.Nil)
 
 	session, err := sessionFromAccount(account)

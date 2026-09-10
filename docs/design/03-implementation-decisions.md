@@ -781,3 +781,49 @@ snake_case") - superseded by this entry, per explicit user request.
   same as any other per-record sync error (logged and skipped, per
   decision M).
 
+## Post-implementation decision log (2026-09-11)
+
+### O) Concurrent Sync() calls for the same account duplicated contacts
+
+A production sync of a large, real Google account produced 115+ duplicate
+contact pairs (e.g. "Dan Anderson" appearing twice) starting from an
+empty database. Logs showed two `"google sync starting"` entries for the
+same `account_id` 17 seconds apart, with no `"google sync finished"`
+between them.
+
+**Root cause**: nothing prevented two independent trigger paths from
+calling `Adapter.Sync()` for the same account at the same time -
+`runBackgroundSync` (fired immediately after a Google OAuth connect) and
+`Runner.runDueAccounts` (the periodic scheduler, which only considers an
+account "due" based on `LastSyncedAt`, itself only written once a `Sync()`
+call *finishes*). A large contact list under heavy 429 throttling can take
+much longer to pull than the scheduler's tick interval, so every tick kept
+re-triggering another full, overlapping pull before the first one
+finished. Two simultaneous pulls each see the other's not-yet-committed
+`contacts_local_id` tags as absent, and `findUnlinkedMatch` deliberately
+excludes a match already linked to the current account, so the second
+pull's `mergeRemoteRecord` falls through to creating a brand-new Person
+for almost every contact instead of finding a match.
+
+**Fix**: `Adapter` gained a `syncing sync.Map` keyed by account ID.
+`Sync()` calls `LoadOrStore` at its very start; if a sync for that account
+is already in flight, the call logs and returns `nil` immediately instead
+of running (this is a normal, expected outcome under the scheduler's
+overlap - not an error to surface/retry). The map entry is cleared via
+`defer` when the running sync finishes.
+
+- Covered by `TestSyncRejectsConcurrentRunsForSameAccount`
+  (`sync_scenarios_integration_test.go`), using a new
+  `fakeGoogleServer.blockNextList` test hook that deterministically blocks
+  one in-flight list-changes request so a second `Sync()` call can be
+  started while the first is still running, without relying on real
+  timing/sleeps.
+- **Known limitation, accepted for now**: this guard is in-process only
+  (a Go `sync.Map`), so it only prevents overlap within a single backend
+  replica. It does not protect against overlap if the backend is ever
+  horizontally scaled to multiple replicas - that would need a
+  database-level advisory lock (e.g. Postgres `pg_advisory_lock` keyed on
+  account ID) instead. Not implemented since the current deployment is
+  single-replica; call out explicitly if that changes.
+
+

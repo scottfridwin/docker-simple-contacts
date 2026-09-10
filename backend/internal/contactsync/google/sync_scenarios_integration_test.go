@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"sync"
 	"testing"
 	"time"
 
@@ -734,5 +735,66 @@ func TestMergeRemoteRecordRecreatesAfterTombstonedResourceNameConflict(t *testin
 	}
 	if _, ok := server.get(link.RemoteID); !ok {
 		t.Errorf("expected the new resourceName %q to exist", link.RemoteID)
+	}
+}
+
+// TestSyncRejectsConcurrentRunsForSameAccount guards a real production
+// incident: a large contact list under heavy rate-limiting can take far
+// longer than the scheduler's tick interval, so the periodic due-account
+// scan and the "sync immediately after connecting" background trigger could
+// both invoke Sync() for the same account before either finished and
+// persisted LastSyncedAt/SyncCursor. Two overlapping full pulls each treat
+// the other's not-yet-committed contacts_local_id tags as absent, and
+// findUnlinkedMatch excludes a match already linked to this account, so the
+// second pass ended up creating a duplicate Person for nearly every
+// contact. Sync() must reject a second concurrent call for the same account
+// outright rather than let two pulls race.
+func TestSyncRejectsConcurrentRunsForSameAccount(t *testing.T) {
+	sc := newScenario(t)
+	sc.server.seed(googlePerson{Names: []googleName{{GivenName: "Con", FamilyName: "Current"}}})
+
+	ready := make(chan struct{})
+	release := make(chan struct{})
+	sc.server.blockNextList(ready, release)
+
+	var wg1, wg2 sync.WaitGroup
+	results := make([]error, 2)
+	wg1.Add(1)
+	go func() {
+		defer wg1.Done()
+		results[0] = sc.adapter.Sync(sc.ctx, sc.account, contactsync.Job{})
+	}()
+
+	<-ready // the first Sync() call is now blocked inside its list request
+
+	wg2.Add(1)
+	go func() {
+		defer wg2.Done()
+		results[1] = sc.adapter.Sync(sc.ctx, sc.account, contactsync.Job{})
+	}()
+	wg2.Wait() // the second call must return immediately without blocking
+
+	close(release)
+	wg1.Wait() // let the (unblocked) first call finish normally
+
+	if results[0] != nil {
+		t.Fatalf("first Sync() = %v, want nil", results[0])
+	}
+	if results[1] != nil {
+		t.Fatalf("second (concurrent) Sync() = %v, want nil (skipped, not an error)", results[1])
+	}
+
+	people, _, err := sc.people.List(sc.ctx, person.ListParams{Page: 1, PageSize: 100})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	count := 0
+	for _, p := range people {
+		if p.FirstName == "Con" && p.LastName == "Current" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("expected exactly 1 Con Current, got %d: %+v", count, people)
 	}
 }

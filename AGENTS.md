@@ -137,7 +137,13 @@ docs/design/            authoritative design documents
   cursor returned reflects whatever progress was actually made, never a
   stale pre-run value, since replaying already-linked records can
   duplicate them (`findUnlinkedMatch` won't reuse a match already linked
-  to the current account).
+  to the current account). `Adapter.Sync` also rejects a second concurrent
+  call for the same account (in-process `sync.Map` guard) instead of
+  letting two overlapping pulls race and duplicate contacts - the periodic
+  scheduler and the post-OAuth-connect trigger can otherwise both fire for
+  the same account while a large/rate-limited pull is still in flight.
+  In-process only; would need a DB advisory lock if ever scaled to
+  multiple backend replicas.
 - **Sync matching/merge**: a Google contact with no `contacts_local_id` tag
   matches an existing local contact only on an exact, unambiguous
   first+last name match (`person.FindByExactName`), otherwise it's created

@@ -85,7 +85,10 @@ conflict.
   returned reflects whatever progress was actually made, never a stale
   pre-run value, since replaying already-linked records can duplicate them
   (`findUnlinkedMatch` won't reuse a match already linked to the current
-  account).
+  account). `Adapter.Sync` rejects a second concurrent call for the same
+  account (in-process guard) so the periodic scheduler and the
+  post-connect trigger can't both run a full pull for the same account at
+  once and duplicate contacts.
 - Google sync matching/merge: a Google contact with no `contacts_local_id` tag
   matches an existing local contact only on an exact, unambiguous first+last
   name match (no fuzzy matching), otherwise it's created as a new Person. When
