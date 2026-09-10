@@ -113,3 +113,21 @@ func (h *shareHandler) delete(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
+
+// leave lets the currently authenticated recipient remove their own access
+// to a Person shared with them, without needing the owner to act.
+func (h *shareHandler) leave(w http.ResponseWriter, r *http.Request) {
+	id, ok := parseID(w, r)
+	if !ok {
+		return
+	}
+	if err := h.svc.LeaveShare(r.Context(), id); err != nil {
+		if errors.Is(err, person.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "not_found", "share not found", nil)
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "internal_error", "failed to leave share", nil)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}

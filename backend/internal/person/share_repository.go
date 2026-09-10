@@ -25,6 +25,14 @@ var ErrShareUserNotFound = errors.New("no account found for that email")
 // Person with their own account.
 var ErrCannotShareWithSelf = errors.New("cannot share a person with yourself")
 
+// ErrTooManyShares is returned when a Person is already shared with the
+// maximum number of accounts.
+var ErrTooManyShares = errors.New("this contact has reached the maximum number of shares")
+
+// MaxSharesPerPerson caps how many accounts a single Person can be shared
+// with, preventing unbounded growth of the person_shares table.
+const MaxSharesPerPerson = 50
+
 // Share grants another account view+edit access to a Person the
 // current account owns. Deletion, re-sharing, and relationship management
 // remain owner-only - sharing only extends to the base Person record.
@@ -58,6 +66,14 @@ func (r *Repository) CreateShare(ctx context.Context, personID uuid.UUID, email 
 	}
 	if ownerID, ok := authn.UserID(ctx); ok && recipientID == ownerID {
 		return nil, ErrCannotShareWithSelf
+	}
+
+	var shareCount int
+	if err := r.pool.QueryRow(ctx, `SELECT count(*) FROM person_shares WHERE person_id = $1`, personID).Scan(&shareCount); err != nil {
+		return nil, fmt.Errorf("counting existing shares: %w", err)
+	}
+	if shareCount >= MaxSharesPerPerson {
+		return nil, ErrTooManyShares
 	}
 
 	const q = `
@@ -110,6 +126,25 @@ func (r *Repository) ListShares(ctx context.Context, personID uuid.UUID) ([]Shar
 // DeleteShare revokes a previously granted share.
 func (r *Repository) DeleteShare(ctx context.Context, personID, shareID uuid.UUID) error {
 	tag, err := r.pool.Exec(ctx, `DELETE FROM person_shares WHERE id = $1 AND person_id = $2`, shareID, personID)
+	if err != nil {
+		return fmt.Errorf("deleting share: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// DeleteShareByRecipient lets the currently authenticated account remove its
+// own access to a Person shared with it, without needing the owner to act.
+// Requires an authenticated context; returns ErrNotFound if there's no such
+// share (including when there's no authenticated user at all).
+func (r *Repository) DeleteShareByRecipient(ctx context.Context, personID uuid.UUID) error {
+	recipientID, ok := authn.UserID(ctx)
+	if !ok {
+		return ErrNotFound
+	}
+	tag, err := r.pool.Exec(ctx, `DELETE FROM person_shares WHERE person_id = $1 AND shared_with_user_id = $2`, personID, recipientID)
 	if err != nil {
 		return fmt.Errorf("deleting share: %w", err)
 	}

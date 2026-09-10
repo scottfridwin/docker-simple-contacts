@@ -85,7 +85,11 @@ func (r *JobRepository) ListByOwner(ctx context.Context, limit int) ([]Job, erro
 	return jobs, nil
 }
 
-// ListPending returns pending jobs in descending creation order.
+// ListPending returns jobs ready to (re)process: every pending job, plus any
+// failed job that hasn't exhausted MaxJobAttempts and whose exponential
+// backoff window (2^attempts minutes since its last attempt) has elapsed.
+// Without this, a single transient failure (a network blip, a brief Google
+// API error) would permanently strand that job in "failed" with no retry.
 func (r *JobRepository) ListPending(ctx context.Context, limit int) ([]Job, error) {
 	if limit <= 0 {
 		limit = 50
@@ -93,10 +97,10 @@ func (r *JobRepository) ListPending(ctx context.Context, limit int) ([]Job, erro
 	q := `
 		SELECT id, owner_id, person_id, kind, snapshot, status, attempts, last_error, processed_at, created_at, updated_at
 		FROM sync_jobs
-		WHERE status = $1`
-	args := []any{JobStatusPending}
+		WHERE (status = $1 OR (status = $2 AND attempts < $3 AND updated_at <= now() - (power(2, attempts) * interval '1 minute')))`
+	args := []any{JobStatusPending, JobStatusFailed, MaxJobAttempts}
 	if ownerID, ok := authn.UserID(ctx); ok {
-		q += ` AND owner_id = $2`
+		q += ` AND owner_id = $4`
 		args = append(args, ownerID)
 	}
 	q += ` ORDER BY created_at ASC, id ASC LIMIT ` + strconv.Itoa(limit)

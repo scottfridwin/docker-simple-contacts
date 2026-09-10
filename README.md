@@ -221,8 +221,12 @@ recipient gets view and edit access to the same record (not a copy) - it
 appears merged into their own list with a "Shared by ..." badge, and is
 included in their own Google sync export. Deleting, restoring, managing
 relationships, and managing shares on that Person remain owner-only actions.
-Manage shares via `GET/POST /persons/{id}/shares` and
-`DELETE /persons/{id}/shares/{shareId}`.
+A recipient can remove their own access at any time without the owner's
+involvement. A single contact can be shared with at most 50 accounts, and can
+have at most 50 relationships recorded from its own perspective. Manage
+shares via `GET/POST /persons/{id}/shares`, `DELETE
+/persons/{id}/shares/{shareId}` (owner-only), and
+`DELETE /persons/{id}/shares/mine` (recipient self-removal).
 
 ## API
 
@@ -232,7 +236,9 @@ Manage shares via `GET/POST /persons/{id}/shares` and
 - Relationships: `GET/POST /persons/{id}/relationships`, `DELETE
   /persons/{id}/relationships/{relationshipId}`
 - Sharing: `GET/POST /persons/{id}/shares`, `DELETE /persons/{id}/shares/{shareId}`
-  (owner-only)
+  (owner-only), `DELETE /persons/{id}/shares/mine` (recipient self-removal)
+- Rate limiting: share creation and login are limited per client IP (20/minute
+  each) to slow down abuse; over the limit returns `429`.
 - Sync account management: `GET/POST /sync-accounts`, `GET/PATCH/DELETE /sync-accounts/{id}`
 - Google sync OAuth: `GET /sync/google/begin`, `GET /sync/google/callback`
 - Multiple Google accounts can be connected at once (via the sync drawer's

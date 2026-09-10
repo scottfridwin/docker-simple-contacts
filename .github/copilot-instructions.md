@@ -83,11 +83,17 @@ conflict.
   (exact email match; recipient must have logged in at least once) via
   `person_shares`, granting view+edit access to the same record. Delete,
   restore/hard-delete, relationship management, and share management stay
-  owner-only. Shared contacts merge into the recipient's list (`is_owner`/
-  `owner_display_name` on the API response) and are included in the
-  recipient's own Google sync export. Managed via
-  `GET/POST /persons/{id}/shares` and
-  `DELETE /persons/{id}/shares/{shareId}`.
+  owner-only. A recipient can remove their own access via
+  `DELETE /persons/{id}/shares/mine`. Shared contacts merge into the
+  recipient's list (`is_owner`/`owner_display_name` on the API response) and
+  are included in the recipient's own Google sync export. Shares and
+  relationships are capped at 50 per Person. Managed via
+  `GET/POST /persons/{id}/shares`, `DELETE /persons/{id}/shares/{shareId}`,
+  and `DELETE /persons/{id}/shares/mine`.
+- Failed sync jobs retry with exponential backoff up to `MaxJobAttempts`
+  (5), then stay `failed` (dead letter) - see `contactsync.JobRepository`.
+- Login and share creation are rate-limited per client IP (20/minute) via
+  `internal/ratelimit`.
 
 ## Validate before finishing
 

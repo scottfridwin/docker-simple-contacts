@@ -306,6 +306,18 @@ paths:
       responses:
         '204': { description: Deleted }
         '404': { $ref: '#/components/responses/NotFound' }
+  /persons/{id}/shares/mine:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    delete:
+      summary: Remove the caller's own access to a contact shared with them (recipient-only)
+      operationId: leaveShare
+      responses:
+        '204': { description: Left }
+        '404': { $ref: '#/components/responses/NotFound' }
   /sync-accounts:
     get:
       summary: List sync accounts

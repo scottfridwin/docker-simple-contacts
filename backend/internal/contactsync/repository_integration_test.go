@@ -112,3 +112,67 @@ func TestRepositoryListLinkedToPerson(t *testing.T) {
 		t.Fatalf("unrelated account leaked into results: %+v", got)
 	}
 }
+
+// TestJobRepositoryListPendingRetriesFailedJobsWithBackoff guards the retry
+// mechanism: a failed job must not be retried immediately (respecting its
+// exponential backoff window), must be retried once that window elapses, and
+// must stop being retried once MaxJobAttempts is reached (a dead letter).
+func TestJobRepositoryListPendingRetriesFailedJobsWithBackoff(t *testing.T) {
+	pool := newTestPool(t)
+	jobs := NewJobRepository(pool)
+	ctx := context.Background()
+	owner := createSyncTestUser(t, ctx, pool, "job-backoff-owner")
+	personID := createSyncTestPerson(t, ctx, pool, owner)
+
+	job, err := jobs.Create(ctx, &Job{PersonID: personID, Kind: ChangeKindUpdated})
+	if err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+	t.Cleanup(func() { _, _ = pool.Exec(ctx, "DELETE FROM sync_jobs WHERE id = $1", job.ID) })
+
+	if err := jobs.MarkFailed(ctx, job.ID, "boom"); err != nil {
+		t.Fatalf("mark failed: %v", err)
+	}
+
+	pending, err := jobs.ListPending(ctx, 50)
+	if err != nil {
+		t.Fatalf("list pending (fresh failure): %v", err)
+	}
+	for _, p := range pending {
+		if p.ID == job.ID {
+			t.Fatalf("job retried before its backoff window elapsed: %+v", p)
+		}
+	}
+
+	// Backdate updated_at past the 1-attempt (2 minute) backoff window.
+	if _, err := pool.Exec(ctx, "UPDATE sync_jobs SET updated_at = now() - interval '10 minutes' WHERE id = $1", job.ID); err != nil {
+		t.Fatalf("backdating job: %v", err)
+	}
+	pending, err = jobs.ListPending(ctx, 50)
+	if err != nil {
+		t.Fatalf("list pending (after backoff): %v", err)
+	}
+	found := false
+	for _, p := range pending {
+		if p.ID == job.ID {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected job to be retried after its backoff window elapsed, got %+v", pending)
+	}
+
+	// Exhaust attempts: once at MaxJobAttempts, it must never be retried again.
+	if _, err := pool.Exec(ctx, "UPDATE sync_jobs SET attempts = $2, updated_at = now() - interval '1000 minutes' WHERE id = $1", job.ID, MaxJobAttempts); err != nil {
+		t.Fatalf("exhausting attempts: %v", err)
+	}
+	pending, err = jobs.ListPending(ctx, 50)
+	if err != nil {
+		t.Fatalf("list pending (exhausted): %v", err)
+	}
+	for _, p := range pending {
+		if p.ID == job.ID {
+			t.Fatalf("dead-lettered job was retried past MaxJobAttempts: %+v", p)
+		}
+	}
+}

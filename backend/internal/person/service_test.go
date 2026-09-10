@@ -26,6 +26,7 @@ type storedShare struct {
 	personID    uuid.UUID
 	email       string
 	displayName string
+	recipientID uuid.UUID
 }
 
 type storedRelationship struct {
@@ -81,8 +82,9 @@ func (m *memStore) CreateShare(_ context.Context, personID uuid.UUID, email stri
 		}
 	}
 	id := uuid.New()
-	m.shares = append(m.shares, storedShare{id: id, personID: personID, email: email, displayName: email})
-	return &Share{ID: id, PersonID: personID, SharedWithUserID: uuid.New(), SharedWithEmail: email, SharedWithDisplayName: email, CreatedAt: time.Now()}, nil
+	recipientID := uuid.NewSHA1(uuid.NameSpaceOID, []byte(email))
+	m.shares = append(m.shares, storedShare{id: id, personID: personID, email: email, displayName: email, recipientID: recipientID})
+	return &Share{ID: id, PersonID: personID, SharedWithUserID: recipientID, SharedWithEmail: email, SharedWithDisplayName: email, CreatedAt: time.Now()}, nil
 }
 
 func (m *memStore) ListShares(_ context.Context, personID uuid.UUID) ([]Share, error) {
@@ -98,6 +100,20 @@ func (m *memStore) ListShares(_ context.Context, personID uuid.UUID) ([]Share, e
 func (m *memStore) DeleteShare(_ context.Context, personID, shareID uuid.UUID) error {
 	for i, s := range m.shares {
 		if s.id == shareID && s.personID == personID {
+			m.shares = append(m.shares[:i], m.shares[i+1:]...)
+			return nil
+		}
+	}
+	return ErrNotFound
+}
+
+func (m *memStore) DeleteShareByRecipient(ctx context.Context, personID uuid.UUID) error {
+	recipientID, ok := authn.UserID(ctx)
+	if !ok {
+		return ErrNotFound
+	}
+	for i, s := range m.shares {
+		if s.personID == personID && s.recipientID == recipientID {
 			m.shares = append(m.shares[:i], m.shares[i+1:]...)
 			return nil
 		}
@@ -916,6 +932,9 @@ func TestServiceCreateShareValidationMapping(t *testing.T) {
 	if _, verrs, err := svc.CreateShare(ctx, a.ID, "  "); err != nil || !verrs.HasErrors() {
 		t.Errorf("expected validation error for empty email, got verrs=%v err=%v", verrs, err)
 	}
+	if _, verrs, err := svc.CreateShare(ctx, a.ID, "not-an-email"); err != nil || !verrs.HasErrors() {
+		t.Errorf("expected validation error for malformed email, got verrs=%v err=%v", verrs, err)
+	}
 	if _, verrs, err := svc.CreateShare(ctx, a.ID, "notfound@example.com"); err != nil || !verrs.HasErrors() {
 		t.Errorf("expected validation error for unknown email, got verrs=%v err=%v", verrs, err)
 	}
@@ -940,6 +959,43 @@ func TestServiceCreateShareNotFound(t *testing.T) {
 	}
 	if err := svc.DeleteShare(context.Background(), uuid.New(), uuid.New()); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("DeleteShare for unknown person = %v, want ErrNotFound", err)
+	}
+}
+
+// TestServiceLeaveShare guards the recipient-initiated self-unshare path: a
+// recipient can remove their own access without the owner's involvement,
+// but only their own share, not one belonging to someone else.
+func TestServiceLeaveShare(t *testing.T) {
+	svc := NewService(newMemStore())
+	ctx := context.Background()
+	owner := uuid.New()
+	other := uuid.New()
+	ownerCtx := authn.WithUserID(ctx, owner)
+	a, _, _ := svc.Create(ownerCtx, CreateInput{FirstName: "A", LastName: "One"})
+
+	share, verrs, err := svc.CreateShare(ownerCtx, a.ID, "friend@example.com")
+	if err != nil || verrs.HasErrors() {
+		t.Fatalf("CreateShare: verrs=%v err=%v", verrs, err)
+	}
+	recipientCtx := authn.WithUserID(ctx, share.SharedWithUserID)
+
+	// A third party (not the recipient) must not be able to leave someone
+	// else's share.
+	otherCtx := authn.WithUserID(ctx, other)
+	if err := svc.LeaveShare(otherCtx, a.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("LeaveShare by unrelated account = %v, want ErrNotFound", err)
+	}
+
+	if err := svc.LeaveShare(recipientCtx, a.ID); err != nil {
+		t.Fatalf("LeaveShare: %v", err)
+	}
+	if shares, err := svc.ListShares(ownerCtx, a.ID); err != nil || len(shares) != 0 {
+		t.Fatalf("ListShares after leave = %+v, err=%v", shares, err)
+	}
+
+	// Leaving again (no longer shared) is a no-op error, not a crash.
+	if err := svc.LeaveShare(recipientCtx, a.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("LeaveShare when already left = %v, want ErrNotFound", err)
 	}
 }
 

@@ -146,7 +146,11 @@ docs/design/            authoritative design documents
   are merged into the recipient's own list (`is_owner`/`owner_display_name`
   on the API response drive a "Shared by X" badge) and are included in the
   recipient's own Google sync export, since `person.List`/`GetAccessible`
-  include both owned and shared-with-me rows for the current account.
+  include both owned and shared-with-me rows for the current account. A
+  recipient can remove their own access via `DELETE /persons/{id}/shares/mine`
+  without the owner's involvement. Shares and relationships are each capped
+  at 50 per Person. Share creation and login are rate-limited per IP
+  (20/minute) via `internal/ratelimit`.
 
 ## Conventions
 

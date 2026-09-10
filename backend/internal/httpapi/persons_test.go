@@ -15,6 +15,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/scottfridlund/contacts/backend/internal/authn"
 	"github.com/scottfridlund/contacts/backend/internal/person"
 )
 
@@ -30,6 +31,7 @@ type fakeShare struct {
 	personID    uuid.UUID
 	email       string
 	displayName string
+	recipientID uuid.UUID
 }
 
 type fakeRelationship struct {
@@ -108,8 +110,9 @@ func (f *fakeStore) CreateShare(_ context.Context, personID uuid.UUID, email str
 		}
 	}
 	id := uuid.New()
-	f.shares = append(f.shares, fakeShare{id: id, personID: personID, email: email, displayName: email})
-	return &person.Share{ID: id, PersonID: personID, SharedWithUserID: uuid.New(), SharedWithEmail: email, SharedWithDisplayName: email, CreatedAt: time.Now()}, nil
+	recipientID := uuid.NewSHA1(uuid.NameSpaceOID, []byte(email))
+	f.shares = append(f.shares, fakeShare{id: id, personID: personID, email: email, displayName: email, recipientID: recipientID})
+	return &person.Share{ID: id, PersonID: personID, SharedWithUserID: recipientID, SharedWithEmail: email, SharedWithDisplayName: email, CreatedAt: time.Now()}, nil
 }
 
 func (f *fakeStore) ListShares(_ context.Context, personID uuid.UUID) ([]person.Share, error) {
@@ -125,6 +128,20 @@ func (f *fakeStore) ListShares(_ context.Context, personID uuid.UUID) ([]person.
 func (f *fakeStore) DeleteShare(_ context.Context, personID, shareID uuid.UUID) error {
 	for i, s := range f.shares {
 		if s.id == shareID && s.personID == personID {
+			f.shares = append(f.shares[:i], f.shares[i+1:]...)
+			return nil
+		}
+	}
+	return person.ErrNotFound
+}
+
+func (f *fakeStore) DeleteShareByRecipient(ctx context.Context, personID uuid.UUID) error {
+	recipientID, ok := authn.UserID(ctx)
+	if !ok {
+		return person.ErrNotFound
+	}
+	for i, s := range f.shares {
+		if s.personID == personID && s.recipientID == recipientID {
 			f.shares = append(f.shares[:i], f.shares[i+1:]...)
 			return nil
 		}

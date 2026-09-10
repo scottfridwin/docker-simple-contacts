@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useState } from 'react';
 import {
   ApiRequestError,
+  apiErrorMessage,
   beginGoogleSync,
   createPerson,
   deletePerson,
   deleteSyncAccount,
   getPerson,
+  leaveShare,
   listDeletedPersons,
   listSyncAccounts,
   listPersons,
@@ -444,6 +446,25 @@ export default function App() {
     }
   };
 
+  const handleLeaveShare = async (person: Person) => {
+    if (
+      !window.confirm(
+        `Remove ${person.display_name} from your contacts? You can ask the owner to re-share it later.`,
+      )
+    ) {
+      return;
+    }
+    setError(null);
+    try {
+      await leaveShare(person.id);
+      setView({ mode: 'list' });
+      await refresh();
+      await refreshFavorites();
+    } catch (err) {
+      setError(apiErrorMessage(err, 'Failed to remove this shared contact'));
+    }
+  };
+
   const handleRestore = async (person: Person) => {
     setError(null);
     try {
@@ -802,6 +823,7 @@ export default function App() {
             onSubmit={handleSubmit}
             onCancel={() => setView({ mode: 'list' })}
             onNavigateToPerson={handleNavigateToPerson}
+            onLeaveShare={handleLeaveShare}
           />
         </section>
       )}

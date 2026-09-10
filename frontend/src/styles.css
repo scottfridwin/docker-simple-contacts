@@ -731,6 +731,11 @@ input[type='number'] {
   margin: 0 0 0.75rem;
 }
 
+.shared-by-banner .link-button {
+  margin-left: 0.5rem;
+  font-style: normal;
+}
+
 .contact-combobox {
   position: relative;
   flex: 1 1 12rem;

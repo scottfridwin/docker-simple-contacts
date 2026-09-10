@@ -2,6 +2,25 @@ import { describe, expect, it, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { PersonForm } from '../src/components/PersonForm';
+import type { Person } from '../src/types';
+
+function makePerson(overrides: Partial<Person> = {}): Person {
+  return {
+    id: 'p1',
+    first_name: 'Ada',
+    middle_names: [],
+    last_name: 'Lovelace',
+    display_name: 'Ada Lovelace',
+    emails: [],
+    phone_numbers: [],
+    addresses: [],
+    custom_fields: {},
+    is_favorite: false,
+    created_at: '2026-01-01T00:00:00Z',
+    updated_at: '2026-01-01T00:00:00Z',
+    ...overrides,
+  };
+}
 
 describe('PersonForm', () => {
   it('requires first and last name', async () => {
@@ -99,5 +118,26 @@ describe('PersonForm', () => {
     ]);
     expect(submitted.organization).toEqual({ name: 'Acme', title: 'Engineer', department: '' });
     expect(submitted.notes).toBe('Met at a conference.');
+  });
+
+  it('shows a leave-share action for a non-owned contact and hides Relationships/Sharing', async () => {
+    const onLeaveShare = vi.fn();
+    const person = makePerson({ is_owner: false, owner_display_name: 'Alice' });
+
+    render(
+      <PersonForm
+        initial={person}
+        onSubmit={vi.fn()}
+        onCancel={() => {}}
+        onLeaveShare={onLeaveShare}
+      />,
+    );
+
+    expect(screen.getByText(/shared by alice/i)).toBeInTheDocument();
+    expect(screen.queryByRole('group', { name: /relationships/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('group', { name: /sharing/i })).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole('button', { name: /remove from my contacts/i }));
+    expect(onLeaveShare).toHaveBeenCalledWith(person);
   });
 });

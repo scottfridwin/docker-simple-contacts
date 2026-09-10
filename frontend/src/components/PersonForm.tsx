@@ -32,6 +32,7 @@ interface PersonFormProps {
   onSubmit: (values: PersonFormValues) => void;
   onCancel: () => void;
   onNavigateToPerson?: (personId: string) => void;
+  onLeaveShare?: (person: Person) => void;
 }
 
 const RESERVED_SYNC_FIELDS = new Set([
@@ -261,6 +262,7 @@ export function PersonForm({
   onSubmit,
   onCancel,
   onNavigateToPerson,
+  onLeaveShare,
 }: PersonFormProps) {
   const [firstName, setFirstName] = useState(initial?.first_name ?? '');
   const [lastName, setLastName] = useState(initial?.last_name ?? '');
@@ -356,6 +358,11 @@ export function PersonForm({
       {initial && initial.is_owner === false && (
         <p className="shared-by-banner">
           Shared by {initial.owner_display_name ?? 'another account'}
+          {onLeaveShare && (
+            <button type="button" className="link-button" onClick={() => onLeaveShare(initial)}>
+              Remove from my contacts
+            </button>
+          )}
         </p>
       )}
 

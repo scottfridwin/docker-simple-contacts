@@ -20,6 +20,14 @@ var ErrRelationshipExists = errors.New("relationship already exists")
 // resolve to an existing, owner-scoped Person.
 var ErrRelatedPersonNotFound = errors.New("related person not found")
 
+// ErrTooManyRelationships is returned when a Person already has the maximum
+// number of relationships recorded from its own perspective.
+var ErrTooManyRelationships = errors.New("this contact has reached the maximum number of relationships")
+
+// MaxRelationshipsPerPerson caps how many relationships can be recorded from
+// a single Person's perspective, preventing unbounded growth.
+const MaxRelationshipsPerPerson = 50
+
 // CreateRelationship stores a new relationship from personID's perspective.
 func (r *Repository) CreateRelationship(ctx context.Context, personID uuid.UUID, in RelationshipInput) (*RelationshipView, error) {
 	if in.RelatedPersonID != nil {
@@ -29,6 +37,14 @@ func (r *Repository) CreateRelationship(ctx context.Context, personID uuid.UUID,
 			}
 			return nil, fmt.Errorf("looking up related person: %w", err)
 		}
+	}
+
+	var relCount int
+	if err := r.pool.QueryRow(ctx, `SELECT count(*) FROM person_relationships WHERE person_id = $1`, personID).Scan(&relCount); err != nil {
+		return nil, fmt.Errorf("counting existing relationships: %w", err)
+	}
+	if relCount >= MaxRelationshipsPerPerson {
+		return nil, ErrTooManyRelationships
 	}
 
 	ownerID, owned := authn.UserID(ctx)

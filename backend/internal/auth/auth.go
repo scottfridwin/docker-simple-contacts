@@ -21,6 +21,7 @@ import (
 	"golang.org/x/oauth2"
 
 	"github.com/scottfridlund/contacts/backend/internal/authn"
+	"github.com/scottfridlund/contacts/backend/internal/ratelimit"
 	"github.com/scottfridlund/contacts/backend/internal/user"
 )
 
@@ -38,10 +39,11 @@ type Config struct {
 }
 
 type Provider struct {
-	oauth    oauth2.Config
-	verifier *oidc.IDTokenVerifier
-	users    userStore
-	key      []byte
+	oauth          oauth2.Config
+	verifier       *oidc.IDTokenVerifier
+	users          userStore
+	key            []byte
+	loginRateLimit *ratelimit.Limiter
 }
 
 type userStore interface {
@@ -67,9 +69,10 @@ func New(ctx context.Context, cfg Config, users userStore, logger *slog.Logger) 
 			RedirectURL:  cfg.RedirectURL,
 			Scopes:       []string{oidc.ScopeOpenID, "profile", "email"},
 		},
-		verifier: provider.Verifier(&oidc.Config{ClientID: cfg.ClientID}),
-		users:    users,
-		key:      cfg.SessionKey,
+		verifier:       provider.Verifier(&oidc.Config{ClientID: cfg.ClientID}),
+		users:          users,
+		key:            cfg.SessionKey,
+		loginRateLimit: ratelimit.NewLimiter(20, time.Minute),
 	}, nil
 }
 
@@ -141,6 +144,10 @@ func (p *Provider) Middleware(next http.Handler) http.Handler {
 }
 
 func (p *Provider) login(w http.ResponseWriter, r *http.Request) {
+	if p.loginRateLimit != nil && !p.loginRateLimit.Allow(ratelimit.ClientIP(r)) {
+		http.Error(w, "too many login attempts, please slow down", http.StatusTooManyRequests)
+		return
+	}
 	state, err := randomToken()
 	if err != nil {
 		http.Error(w, "failed to create login state", http.StatusInternalServerError)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/cors"
@@ -12,6 +13,7 @@ import (
 	"github.com/scottfridlund/contacts/backend/internal/auth"
 	"github.com/scottfridlund/contacts/backend/internal/contactsync"
 	"github.com/scottfridlund/contacts/backend/internal/person"
+	"github.com/scottfridlund/contacts/backend/internal/ratelimit"
 )
 
 type syncAccountStore interface {
@@ -50,6 +52,7 @@ func NewRouter(logger *slog.Logger, svc *person.Service, ready pinger, syncRepo 
 	sharesHandler := &shareHandler{svc: svc}
 	syncHandler := &syncAccountHandler{repo: syncRepo}
 	googleAuth := &googleOAuthHandler{repo: syncRepo, adapter: googleAdapter, logger: logger}
+	shareCreateLimit := rateLimit(ratelimit.NewLimiter(20, time.Minute))
 	r.Route("/api/v1", func(api chi.Router) {
 		api.Route("/persons", func(p chi.Router) {
 			p.Post("/", h.create)
@@ -64,7 +67,8 @@ func NewRouter(logger *slog.Logger, svc *person.Service, ready pinger, syncRepo 
 			p.Post("/{id}/relationships", relHandler.create)
 			p.Delete("/{id}/relationships/{relationshipId}", relHandler.delete)
 			p.Get("/{id}/shares", sharesHandler.list)
-			p.Post("/{id}/shares", sharesHandler.create)
+			p.With(shareCreateLimit).Post("/{id}/shares", sharesHandler.create)
+			p.Delete("/{id}/shares/mine", sharesHandler.leave)
 			p.Delete("/{id}/shares/{shareId}", sharesHandler.delete)
 		})
 		api.Route("/sync-accounts", func(s chi.Router) {

@@ -566,6 +566,76 @@ lookups inside the provider adapter still resolve correctly per account.
 This keeps every mirror of a shared contact converging on every edit,
 regardless of which side made it.
 
+## Post-implementation decision log (2026-09-10, later)
+
+### K) Sharing/sync robustness follow-ups
+
+A round of gap-analysis found several robustness issues in the sharing and
+sync features; all were fixed except three that were explicitly deferred
+(see the end of this section) because they're either large, cross-cutting
+changes or genuine product/UX tradeoffs rather than pure bug fixes.
+
+- **Failed sync jobs now retry with backoff.** Previously a job that failed
+  once (`MarkFailed`) was never retried by anything - the only way it could
+  ever sync again was if that same Person was edited a second time.
+  `JobRepository.ListPending` now also selects failed jobs whose exponential
+  backoff window (`2^attempts` minutes since the last attempt) has elapsed,
+  up to a new `MaxJobAttempts` (5) cap; beyond that a job is left "failed"
+  permanently (a dead letter, visible via `last_error`) rather than retried
+  forever.
+- **Recipients can now leave a share themselves.** New
+  `DELETE /persons/{id}/shares/mine`, backed by
+  `Repository.DeleteShareByRecipient` (matches on the caller's own
+  `authn.UserID`, not a share ID) and `Service.LeaveShare` (uses the
+  permissive `GetAccessible`, not the owner-only `GetByID`, since the caller
+  here is expected to be the recipient). Previously only the owner could
+  revoke a share; a recipient who no longer wanted a contact shared with
+  them had no self-service way to remove it.
+- **Shares and relationships are now capped** at `MaxSharesPerPerson` and
+  `MaxRelationshipsPerPerson` (50 each), mirroring the existing caps on
+  `custom_fields`/`emails`/`phone_numbers`/`addresses`, to prevent unbounded
+  growth of either table for a single Person.
+- **Share-target email is now format-validated** (reusing the same
+  `emailPattern` regex already used for `Person.emails`) before it ever
+  reaches a database lookup, instead of only checking for non-empty.
+- **Basic per-IP rate limiting** was added via a new, dependency-free
+  `internal/ratelimit` package (in-memory fixed-window limiter): login
+  (`/auth/login`, 20/minute) and share creation (`POST
+  /persons/{id}/shares`, 20/minute) are limited per client IP (via the
+  nginx-set `X-Real-IP` header, which the client can't spoof since nginx
+  always overwrites it with its own view of the TCP peer), returning `429`
+  over the limit.
+
+**Explicitly deferred** (raised with the user rather than unilaterally
+decided, since each is either a large cross-cutting change or a real
+product/UX tradeoff):
+- **Optimistic concurrency on `Person.Update`** - it's currently a blind
+  last-write-wins overwrite with no version/timestamp check. Sharing makes
+  genuinely concurrent edits from two different people to the same record a
+  normal occurrence now, not just a single-owner edge case. Fixing this
+  properly requires a real API contract change (409 on conflict) and,
+  more importantly, a UX decision for what the conflict experience should
+  look like (block and reload? overwrite anyway with a warning? merge?).
+- **Enumeration via `CreateShare`'s differentiated error messages** - an
+  owner can learn whether an arbitrary email has ever logged into this
+  instance from the error returned. Fixing this by hiding the reason would
+  directly undo the just-shipped fix that surfaces the *specific* validation
+  reason to the user (see the "request validation failed" fix earlier this
+  session) - a real UX-vs-privacy tradeoff to weigh, not a pure bug.
+- **CSRF tokens** - currently relying solely on `SameSite=Lax` cookies.
+  Reasonable in modern browsers, but adding a dedicated CSRF token would be
+  a cross-cutting change touching every mutating frontend call; deferred
+  pending a decision on whether the added complexity is worth the
+  defense-in-depth given `SameSite` already covers the common case.
+
+Also considered but not pursued: adding `internal/contactsync` to the
+backend coverage gate (`COVERAGE_PKGS`) - its three repository files
+(`job_repository.go`, `record_link.go`, `repository.go`) are 0%-covered at
+the unit level (pure DB code, like `person`'s repository layer), and
+unlike `person`, `contactsync` doesn't yet have the pure-helper-function
+extraction (`applyOwnership`, `scanPersonAccessible`-style) needed to close
+that gap without a substantial refactor - left as a follow-up rather than
+rushed.
 
 
 

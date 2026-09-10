@@ -5,6 +5,7 @@ package person
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"testing"
 	"time"
@@ -259,6 +260,32 @@ func TestRepositoryRelationships(t *testing.T) {
 	}
 }
 
+// TestRepositoryRelationshipCap guards the unbounded-growth fix: once a
+// Person has MaxRelationshipsPerPerson relationships recorded from its own
+// perspective, one more must be rejected.
+func TestRepositoryRelationshipCap(t *testing.T) {
+	pool := newTestPool(t)
+	repo := NewRepository(pool)
+	ctx := context.Background()
+
+	a, err := repo.Create(ctx, &Person{FirstName: "Cap", LastName: "Owner", DisplayName: "Cap Owner", CustomFields: map[string]any{}})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	t.Cleanup(func() { _, _ = pool.Exec(ctx, "DELETE FROM persons WHERE id = $1", a.ID) })
+
+	for i := 0; i < MaxRelationshipsPerPerson; i++ {
+		name := fmt.Sprintf("Friend %d", i)
+		if _, err := repo.CreateRelationship(ctx, a.ID, RelationshipInput{Type: RelationSibling, RelatedPersonName: &name}); err != nil {
+			t.Fatalf("CreateRelationship #%d: %v", i, err)
+		}
+	}
+	overflow := "One Too Many"
+	if _, err := repo.CreateRelationship(ctx, a.ID, RelationshipInput{Type: RelationSibling, RelatedPersonName: &overflow}); !errors.Is(err, ErrTooManyRelationships) {
+		t.Fatalf("relationship past the cap = %v, want ErrTooManyRelationships", err)
+	}
+}
+
 // TestRepositorySharing is the security-critical guard for cross-account
 // contact sharing: a share grants exactly the recipient view+edit access to
 // the base Person record, an unrelated third account must never see it, and
@@ -388,5 +415,77 @@ func TestRepositorySharing(t *testing.T) {
 	}
 	if _, err := repo.GetAccessible(recipientCtx, created.ID); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("recipient GetAccessible after revoke = %v, want ErrNotFound", err)
+	}
+}
+
+// TestRepositoryLeaveShare guards the recipient-initiated self-unshare path
+// against a real database: the recipient can remove their own access
+// without the owner acting, an unrelated account cannot remove someone
+// else's share, and the owner's own strict access is untouched.
+func TestRepositoryLeaveShare(t *testing.T) {
+	pool := newTestPool(t)
+	repo := NewRepository(pool)
+	ctx := context.Background()
+
+	owner := createTestUser(t, ctx, pool, "leave-owner")
+	recipient := createTestUser(t, ctx, pool, "leave-recipient")
+	stranger := createTestUser(t, ctx, pool, "leave-stranger")
+	ownerCtx := authn.WithUserID(ctx, owner)
+	recipientCtx := authn.WithUserID(ctx, recipient)
+	strangerCtx := authn.WithUserID(ctx, stranger)
+
+	created, err := repo.Create(ownerCtx, &Person{FirstName: "Leave", LastName: "Test", DisplayName: "Leave Test", CustomFields: map[string]any{}})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	t.Cleanup(func() { _, _ = pool.Exec(ctx, "DELETE FROM persons WHERE id = $1", created.ID) })
+
+	if _, err := repo.CreateShare(ownerCtx, created.ID, "leave-recipient@example.com"); err != nil {
+		t.Fatalf("CreateShare: %v", err)
+	}
+
+	if err := repo.DeleteShareByRecipient(strangerCtx, created.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("unrelated account DeleteShareByRecipient = %v, want ErrNotFound", err)
+	}
+	if _, err := repo.GetAccessible(recipientCtx, created.ID); err != nil {
+		t.Fatalf("recipient should still have access: %v", err)
+	}
+
+	if err := repo.DeleteShareByRecipient(recipientCtx, created.ID); err != nil {
+		t.Fatalf("DeleteShareByRecipient: %v", err)
+	}
+	if _, err := repo.GetAccessible(recipientCtx, created.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("recipient GetAccessible after leaving = %v, want ErrNotFound", err)
+	}
+	if _, err := repo.GetAccessible(ownerCtx, created.ID); err != nil {
+		t.Fatalf("owner should be unaffected: %v", err)
+	}
+}
+
+// TestRepositoryShareCap guards the unbounded-growth fix: once a Person is
+// shared with MaxSharesPerPerson accounts, one more must be rejected.
+func TestRepositoryShareCap(t *testing.T) {
+	pool := newTestPool(t)
+	repo := NewRepository(pool)
+	ctx := context.Background()
+
+	owner := createTestUser(t, ctx, pool, "cap-owner")
+	ownerCtx := authn.WithUserID(ctx, owner)
+	created, err := repo.Create(ownerCtx, &Person{FirstName: "Cap", LastName: "Test", DisplayName: "Cap Test", CustomFields: map[string]any{}})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	t.Cleanup(func() { _, _ = pool.Exec(ctx, "DELETE FROM persons WHERE id = $1", created.ID) })
+
+	for i := 0; i < MaxSharesPerPerson; i++ {
+		subject := fmt.Sprintf("cap-recipient-%d", i)
+		createTestUser(t, ctx, pool, subject)
+		if _, err := repo.CreateShare(ownerCtx, created.ID, subject+"@example.com"); err != nil {
+			t.Fatalf("CreateShare #%d: %v", i, err)
+		}
+	}
+	createTestUser(t, ctx, pool, "cap-recipient-overflow")
+	if _, err := repo.CreateShare(ownerCtx, created.ID, "cap-recipient-overflow@example.com"); !errors.Is(err, ErrTooManyShares) {
+		t.Fatalf("share past the cap = %v, want ErrTooManyShares", err)
 	}
 }

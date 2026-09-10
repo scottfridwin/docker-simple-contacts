@@ -185,6 +185,11 @@ export function deleteShare(personId: string, shareId: string): Promise<void> {
   return request<void>(`/persons/${personId}/shares/${shareId}`, { method: 'DELETE' });
 }
 
+/** Lets the current (recipient) account remove its own access to a contact shared with it. */
+export function leaveShare(personId: string): Promise<void> {
+  return request<void>(`/persons/${personId}/shares/mine`, { method: 'DELETE' });
+}
+
 export function listSyncAccounts(): Promise<SyncAccountListResponse> {
   return request<SyncAccountListResponse>('/sync-accounts');
 }

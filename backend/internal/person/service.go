@@ -35,6 +35,7 @@ type store interface {
 	CreateShare(ctx context.Context, personID uuid.UUID, email string) (*Share, error)
 	ListShares(ctx context.Context, personID uuid.UUID) ([]Share, error)
 	DeleteShare(ctx context.Context, personID, shareID uuid.UUID) error
+	DeleteShareByRecipient(ctx context.Context, personID uuid.UUID) error
 }
 
 // syncNotifier is implemented by the sync engine to enqueue follow-up work.
@@ -211,6 +212,9 @@ func (s *Service) CreateRelationship(ctx context.Context, personID uuid.UUID, in
 	if errors.Is(err, ErrRelationshipExists) {
 		return nil, ValidationErrors{{Field: "type", Message: "this relationship already exists"}}, nil
 	}
+	if errors.Is(err, ErrTooManyRelationships) {
+		return nil, ValidationErrors{{Field: "type", Message: ErrTooManyRelationships.Error()}}, nil
+	}
 	return view, nil, err
 }
 
@@ -267,6 +271,9 @@ func (s *Service) CreateShare(ctx context.Context, personID uuid.UUID, email str
 	if strings.TrimSpace(email) == "" {
 		return nil, ValidationErrors{{Field: "email", Message: "email is required"}}, nil
 	}
+	if !emailPattern.MatchString(strings.TrimSpace(email)) {
+		return nil, ValidationErrors{{Field: "email", Message: "must be a valid email address"}}, nil
+	}
 	share, err := s.repo.CreateShare(ctx, personID, email)
 	if errors.Is(err, ErrShareUserNotFound) {
 		return nil, ValidationErrors{{Field: "email", Message: "no account found for that email - ask them to log in to Contacts at least once first"}}, nil
@@ -276,6 +283,9 @@ func (s *Service) CreateShare(ctx context.Context, personID uuid.UUID, email str
 	}
 	if errors.Is(err, ErrCannotShareWithSelf) {
 		return nil, ValidationErrors{{Field: "email", Message: "cannot share a person with yourself"}}, nil
+	}
+	if errors.Is(err, ErrTooManyShares) {
+		return nil, ValidationErrors{{Field: "email", Message: ErrTooManyShares.Error()}}, nil
 	}
 	return share, nil, err
 }
@@ -294,6 +304,17 @@ func (s *Service) DeleteShare(ctx context.Context, personID, shareID uuid.UUID) 
 		return err
 	}
 	return s.repo.DeleteShare(ctx, personID, shareID)
+}
+
+// LeaveShare lets a recipient remove their own access to a Person shared
+// with them, without needing the owner to revoke it. Deliberately uses
+// GetAccessible (not the strict owner-only GetByID), since the caller here
+// is expected to be the recipient, not the owner.
+func (s *Service) LeaveShare(ctx context.Context, personID uuid.UUID) error {
+	if _, err := s.repo.GetAccessible(ctx, personID); err != nil {
+		return err
+	}
+	return s.repo.DeleteShareByRecipient(ctx, personID)
 }
 
 func applyUpdate(current *Person, in UpdateInput) {

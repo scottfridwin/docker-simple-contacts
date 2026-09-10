@@ -12,6 +12,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/scottfridlund/contacts/backend/internal/authn"
 	"github.com/scottfridlund/contacts/backend/internal/person"
 )
 
@@ -88,6 +89,7 @@ func TestShareEndpointsInvalidIDs(t *testing.T) {
 		{http.MethodPost, "/api/v1/persons/not-a-uuid/shares"},
 		{http.MethodDelete, "/api/v1/persons/not-a-uuid/shares/" + uuid.NewString()},
 		{http.MethodDelete, "/api/v1/persons/" + a.ID.String() + "/shares/not-a-uuid"},
+		{http.MethodDelete, "/api/v1/persons/not-a-uuid/shares/mine"},
 	} {
 		rec := doJSON(t, h, tc.method, tc.path, map[string]any{"email": "friend@example.com"})
 		if rec.Code != http.StatusBadRequest {
@@ -126,6 +128,9 @@ func (s *shareErrorStore) ListShares(context.Context, uuid.UUID) ([]person.Share
 func (s *shareErrorStore) DeleteShare(context.Context, uuid.UUID, uuid.UUID) error {
 	return s.err
 }
+func (s *shareErrorStore) DeleteShareByRecipient(context.Context, uuid.UUID) error {
+	return s.err
+}
 
 func TestShareEndpointsReturnInternalErrors(t *testing.T) {
 	store := &shareErrorStore{fakeStore: newFakeStore(), err: errors.New("database unavailable")}
@@ -144,5 +149,52 @@ func TestShareEndpointsReturnInternalErrors(t *testing.T) {
 	rec = doJSON(t, h, http.MethodDelete, "/api/v1/persons/"+created.ID.String()+"/shares/"+uuid.NewString(), nil)
 	if rec.Code != http.StatusInternalServerError {
 		t.Errorf("delete status = %d, want 500", rec.Code)
+	}
+	rec = doJSON(t, h, http.MethodDelete, "/api/v1/persons/"+created.ID.String()+"/shares/mine", nil)
+	if rec.Code != http.StatusInternalServerError {
+		t.Errorf("leave status = %d, want 500", rec.Code)
+	}
+}
+
+// TestShareEndpointLeave guards the recipient self-unshare route: the
+// recipient (identified via the authenticated context, not the owner) can
+// remove their own access, a second attempt 404s, and an unrelated account
+// can't remove someone else's share.
+func TestShareEndpointLeave(t *testing.T) {
+	h, store := testRouter()
+	svc := person.NewService(store)
+	a, _, _ := svc.Create(context.Background(), person.CreateInput{FirstName: "A", LastName: "Owner"})
+	created, _, err := svc.CreateShare(context.Background(), a.ID, "friend@example.com")
+	if err != nil {
+		t.Fatalf("CreateShare: %v", err)
+	}
+
+	leavePath := "/api/v1/persons/" + a.ID.String() + "/shares/mine"
+
+	// An unrelated account (no share of its own) gets 404.
+	req := httptest.NewRequest(http.MethodDelete, leavePath, nil)
+	req = req.WithContext(authn.WithUserID(req.Context(), uuid.New()))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("unrelated account leave status = %d, want 404", rec.Code)
+	}
+
+	// The actual recipient can leave.
+	req = httptest.NewRequest(http.MethodDelete, leavePath, nil)
+	req = req.WithContext(authn.WithUserID(req.Context(), created.SharedWithUserID))
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("recipient leave status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+
+	// Leaving again (no longer shared) 404s.
+	req = httptest.NewRequest(http.MethodDelete, leavePath, nil)
+	req = req.WithContext(authn.WithUserID(req.Context(), created.SharedWithUserID))
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("repeat leave status = %d, want 404", rec.Code)
 	}
 }
