@@ -265,6 +265,16 @@ func (f *fakeStore) FindByDisplayName(_ context.Context, name string) ([]person.
 	return out, nil
 }
 
+func (f *fakeStore) FindByExactName(_ context.Context, firstName, lastName string) ([]person.Person, error) {
+	var out []person.Person
+	for _, p := range f.items {
+		if p.FirstName == firstName && p.LastName == lastName && p.DeletedAt == nil {
+			out = append(out, *p)
+		}
+	}
+	return out, nil
+}
+
 func testRouter() (http.Handler, *fakeStore) {
 	store := newFakeStore()
 	svc := person.NewService(store)

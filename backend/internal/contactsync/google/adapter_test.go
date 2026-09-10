@@ -295,6 +295,11 @@ func (s *stubPersonService) FindByDisplayName(context.Context, string) ([]person
 	return nil, nil
 }
 
+func (s *stubPersonService) FindByExactName(context.Context, string, string) ([]person.Person, error) {
+	s.t.Fatal("unexpected FindByExactName call")
+	return nil, nil
+}
+
 // TestMergeRemoteRecordSkipsUnknownTombstone guards a real production
 // incident: a Google contact deleted before we ever linked it arrives as a
 // tombstone (Metadata.Deleted=true) with no local_id field, so remoteToLocal

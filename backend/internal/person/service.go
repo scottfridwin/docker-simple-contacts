@@ -29,6 +29,7 @@ type store interface {
 	DeleteRelationship(ctx context.Context, personID, relationshipID uuid.UUID) error
 	ReplaceRelationships(ctx context.Context, personID uuid.UUID, desired []RelationshipInput) error
 	FindByDisplayName(ctx context.Context, name string) ([]Person, error)
+	FindByExactName(ctx context.Context, firstName, lastName string) ([]Person, error)
 }
 
 // syncNotifier is implemented by the sync engine to enqueue follow-up work.
@@ -235,6 +236,14 @@ func (s *Service) ReplaceRelationships(ctx context.Context, personID uuid.UUID, 
 // relationship name to a local contact when possible.
 func (s *Service) FindByDisplayName(ctx context.Context, name string) ([]Person, error) {
 	return s.repo.FindByDisplayName(ctx, name)
+}
+
+// FindByExactName returns every owner-scoped Person whose first and last
+// name match exactly. Used by sync adapters to resolve a newly-seen
+// provider contact to an existing local contact before creating a
+// duplicate.
+func (s *Service) FindByExactName(ctx context.Context, firstName, lastName string) ([]Person, error) {
+	return s.repo.FindByExactName(ctx, firstName, lastName)
 }
 
 func applyUpdate(current *Person, in UpdateInput) {

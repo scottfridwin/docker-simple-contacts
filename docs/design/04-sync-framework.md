@@ -230,3 +230,39 @@ job- and periodic-triggered syncs (the common case after the first connect)
 were completely silent even on failure. See the README "Diagnosing Google
 sync issues" section for the exact log lines to look for.
 
+## Matching and merge fixes (2026-09-10)
+
+Found via a new automated test harness
+(`backend/internal/contactsync/google/sync_scenarios_integration_test.go` +
+`fake_server_test.go`, see
+[docs/testing/google-sync-test-scenarios.md](../testing/google-sync-test-scenarios.md))
+that exercises the real `Adapter.Sync()` against a real Postgres-backed
+`person.Service` and a fake in-memory Google People API.
+
+- **Tombstone-vs-edit 404 (bug fix)**: pushing a local edit newer than
+  Google's own delete of the same contact used to PATCH the already-deleted
+  resourceName, which 404s and aborted the *whole account's* sync run, not
+  just that record. Fixed: on that specific 404, `reconcileExisting`
+  recreates the contact under a new resourceName instead, the same recovery
+  already used for an unmapped tombstone.
+- **Exact-name matching**: a Google contact with no `contacts_local_id` tag
+  now first tries an exact first+last name match against existing,
+  not-yet-linked local contacts (`person.FindByExactName`) before creating a
+  duplicate. Ambiguous (more than one match) or absent matches still fall
+  back to creating a new Person, same as before. This is a plain exact,
+  case-sensitive string match — no fuzzy/similarity logic — matching the
+  precedent already used for resolving relationship names.
+- **Per-field merge on the remote-wins path**: `fieldAwareUpdate` only
+  applies a field from Google's payload when Google's own data actually
+  reported it (`FieldState.IsSet`), instead of unconditionally overwriting
+  every locally-tracked field whenever the record as a whole was newer on
+  Google's side. This stops a field Google's copy never had any data in
+  (e.g. no biography at all) from silently wiping out a local edit to that
+  same field. Two edits to the *same* field still resolve via the
+  whole-record timestamp — true field-level merge would need a per-field
+  modification timestamp or a 3-way baseline, which neither Postgres
+  (`persons.updated_at` is one timestamp per row) nor the Google People API
+  (`metadata.updateTime` is one timestamp per contact) currently provide.
+  Implementing that baseline (e.g. a synced-field snapshot on
+  `sync_record_links`) is a bigger follow-up, not attempted here.
+

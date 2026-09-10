@@ -69,6 +69,13 @@ conflict.
   `contacts_local_id`) are reserved system fields and should not be exposed as
   normal editable custom fields. Per-account remote record ids live in the
   `sync_record_links` table, not `Person.custom_fields`.
+- Google sync matching/merge: a Google contact with no `contacts_local_id` tag
+  matches an existing local contact only on an exact, unambiguous first+last
+  name match (no fuzzy matching), otherwise it's created as a new Person. When
+  Google's copy wins the record-level last-write-wins comparison, only fields
+  Google's payload actually reported (`FieldState.IsSet`) are applied, so a
+  field Google never had data for doesn't overwrite a local edit to it; two
+  edits to the same field still resolve by whichever timestamp is newer.
 - Keep public verification pages available without login: home page with app
   purpose and privacy policy at `/privacy`.
 

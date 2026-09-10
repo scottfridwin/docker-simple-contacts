@@ -187,6 +187,10 @@ func TestValidatePhoneNumbers(t *testing.T) {
 	if errs := ValidateCreate(CreateInput{FirstName: "A", LastName: "B", PhoneNumbers: []contactsync.LabeledValue{{Label: "mobile", Value: "+1-555-0100"}, {Label: "home", Value: "555-0101"}}}); errs.HasErrors() {
 		t.Errorf("expected no errors for valid phone numbers, got: %s", errs.Error())
 	}
+	longLabel := strings.Repeat("x", MaxLabelLength+1)
+	if errs := ValidateCreate(CreateInput{FirstName: "A", LastName: "B", PhoneNumbers: []contactsync.LabeledValue{{Label: longLabel, Value: "555-0100"}}}); !errs.HasErrors() {
+		t.Error("expected error for an oversized phone number label")
+	}
 }
 
 func TestValidateMiddleNames(t *testing.T) {
@@ -227,6 +231,17 @@ func TestValidateEmails(t *testing.T) {
 	if errs := ValidateCreate(CreateInput{FirstName: "A", LastName: "B", Emails: tooMany}); !errs.HasErrors() {
 		t.Error("expected error for too many emails")
 	}
+	if errs := ValidateCreate(CreateInput{FirstName: "A", LastName: "B", Emails: []contactsync.LabeledValue{{Value: "  "}}}); !errs.HasErrors() {
+		t.Error("expected error for a blank email value")
+	}
+	longValue := strings.Repeat("a", MaxEmailLength) + "@example.com"
+	if errs := ValidateCreate(CreateInput{FirstName: "A", LastName: "B", Emails: []contactsync.LabeledValue{{Value: longValue}}}); !errs.HasErrors() {
+		t.Error("expected error for an oversized email value")
+	}
+	longLabel := strings.Repeat("x", MaxLabelLength+1)
+	if errs := ValidateCreate(CreateInput{FirstName: "A", LastName: "B", Emails: []contactsync.LabeledValue{{Label: longLabel, Value: "a@example.com"}}}); !errs.HasErrors() {
+		t.Error("expected error for an oversized email label")
+	}
 }
 
 func TestValidateAddresses(t *testing.T) {
@@ -236,6 +251,20 @@ func TestValidateAddresses(t *testing.T) {
 	long := strings.Repeat("x", MaxAddressFieldLength+1)
 	if errs := ValidateCreate(CreateInput{FirstName: "A", LastName: "B", Addresses: []contactsync.Address{{City: long}}}); !errs.HasErrors() {
 		t.Error("expected error for oversized address field")
+	}
+	if errs := ValidateCreate(CreateInput{FirstName: "A", LastName: "B", Addresses: []contactsync.Address{{}}}); !errs.HasErrors() {
+		t.Error("expected error for an address with no fields set")
+	}
+	longLabel := strings.Repeat("x", MaxLabelLength+1)
+	if errs := ValidateCreate(CreateInput{FirstName: "A", LastName: "B", Addresses: []contactsync.Address{{Label: longLabel, City: "Springfield"}}}); !errs.HasErrors() {
+		t.Error("expected error for an oversized address label")
+	}
+	tooMany := make([]contactsync.Address, MaxAddresses+1)
+	for i := range tooMany {
+		tooMany[i] = contactsync.Address{City: "Springfield"}
+	}
+	if errs := ValidateCreate(CreateInput{FirstName: "A", LastName: "B", Addresses: tooMany}); !errs.HasErrors() {
+		t.Error("expected error for too many addresses")
 	}
 }
 

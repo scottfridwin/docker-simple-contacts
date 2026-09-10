@@ -8,13 +8,15 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/scottfridlund/contacts/backend/internal/authn"
 	"github.com/scottfridlund/contacts/backend/internal/contactsync"
 )
 
 // memStore is an in-memory store implementation for unit tests.
 type memStore struct {
-	items         map[uuid.UUID]*Person
-	relationships []storedRelationship
+	items          map[uuid.UUID]*Person
+	relationships  []storedRelationship
+	forceDeleteErr error
 }
 
 type storedRelationship struct {
@@ -86,6 +88,9 @@ func (m *memStore) Update(_ context.Context, id uuid.UUID, p *Person) (*Person, 
 }
 
 func (m *memStore) SoftDelete(_ context.Context, id uuid.UUID) error {
+	if m.forceDeleteErr != nil {
+		return m.forceDeleteErr
+	}
 	p, ok := m.items[id]
 	if !ok || p.DeletedAt != nil {
 		return ErrNotFound
@@ -107,6 +112,9 @@ func (m *memStore) ListDeleted(_ context.Context, _ ListParams) ([]Person, int, 
 }
 
 func (m *memStore) Restore(_ context.Context, id uuid.UUID) error {
+	if m.forceDeleteErr != nil {
+		return m.forceDeleteErr
+	}
 	p, ok := m.items[id]
 	if !ok || p.DeletedAt == nil {
 		return ErrNotFound
@@ -116,6 +124,9 @@ func (m *memStore) Restore(_ context.Context, id uuid.UUID) error {
 }
 
 func (m *memStore) HardDelete(_ context.Context, id uuid.UUID) error {
+	if m.forceDeleteErr != nil {
+		return m.forceDeleteErr
+	}
 	p, ok := m.items[id]
 	if !ok || p.DeletedAt == nil {
 		return ErrNotFound
@@ -233,6 +244,16 @@ func (m *memStore) FindByDisplayName(_ context.Context, name string) ([]Person, 
 	var out []Person
 	for _, p := range m.items {
 		if p.DisplayName == name && p.DeletedAt == nil {
+			out = append(out, *p)
+		}
+	}
+	return out, nil
+}
+
+func (m *memStore) FindByExactName(_ context.Context, firstName, lastName string) ([]Person, error) {
+	var out []Person
+	for _, p := range m.items {
+		if p.FirstName == firstName && p.LastName == lastName && p.DeletedAt == nil {
 			out = append(out, *p)
 		}
 	}
@@ -403,6 +424,36 @@ func TestServiceUpdateOrganizationAndNotes(t *testing.T) {
 	}
 }
 
+// TestServiceUpdateEmailsAndAddresses covers applyUpdate's EmailsSet/
+// AddressesSet/CustomFieldsSet branches when a real (non-nil) value is
+// provided, complementing TestServiceUpdateClearsSetFieldsWithNilValue
+// (which only exercises the nil/clear case).
+func TestServiceUpdateEmailsAndAddresses(t *testing.T) {
+	svc := NewService(newMemStore())
+	created, _, _ := svc.Create(context.Background(), CreateInput{FirstName: "A", LastName: "B"})
+
+	emails := []contactsync.LabeledValue{{Label: "home", Value: "a@example.com"}}
+	addresses := []contactsync.Address{{Label: "home", City: "Springfield"}}
+	customFields := map[string]any{"k": "v"}
+	updated, _, err := svc.Update(context.Background(), created.ID, UpdateInput{
+		Emails: &emails, EmailsSet: true,
+		Addresses: &addresses, AddressesSet: true,
+		CustomFields: customFields, CustomFieldsSet: true,
+	})
+	if err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	if len(updated.Emails) != 1 || updated.Emails[0].Value != "a@example.com" {
+		t.Errorf("Emails = %v", updated.Emails)
+	}
+	if len(updated.Addresses) != 1 || updated.Addresses[0].City != "Springfield" {
+		t.Errorf("Addresses = %v", updated.Addresses)
+	}
+	if updated.CustomFields["k"] != "v" {
+		t.Errorf("CustomFields = %v", updated.CustomFields)
+	}
+}
+
 func TestServiceUpdateDisplayNameRederived(t *testing.T) {
 	svc := NewService(newMemStore())
 	created, _, _ := svc.Create(context.Background(), CreateInput{
@@ -567,6 +618,24 @@ func TestServiceSkipsNotificationsForSyncOrigin(t *testing.T) {
 	}
 }
 
+// TestServiceNotifyIncludesOwnerID guards notify's owner-scoped branch: a
+// notification raised from an authenticated request must carry the
+// caller's owner id on the snapshot.
+func TestServiceNotifyIncludesOwnerID(t *testing.T) {
+	store := newMemStore()
+	notifier := &memNotifier{}
+	svc := NewService(store, notifier)
+
+	owner := uuid.New()
+	ctx := authn.WithUserID(context.Background(), owner)
+	if _, _, err := svc.Create(ctx, CreateInput{FirstName: "A", LastName: "B"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(notifier.events) != 1 || notifier.events[0].Snapshot.OwnerID == nil || *notifier.events[0].Snapshot.OwnerID != owner {
+		t.Fatalf("expected notification snapshot to carry owner id %v, got %#v", owner, notifier.events)
+	}
+}
+
 // TestServiceRelationshipDirectionality guards the core relationship design:
 // a single stored link (A is Parent of B) must be visible as the inverse
 // (B's list shows Child, pointing at A) without a second stored row.
@@ -636,6 +705,16 @@ func TestServiceRelationshipValidation(t *testing.T) {
 	}
 }
 
+// TestServiceCreateRelationshipNotFound guards the early-return branch: a
+// nonexistent personID should surface the lookup error before validating or
+// touching the relationship store at all.
+func TestServiceCreateRelationshipNotFound(t *testing.T) {
+	svc := NewService(newMemStore())
+	if _, _, err := svc.CreateRelationship(context.Background(), uuid.New(), RelationshipInput{Type: RelationSpouse}); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("CreateRelationship for unknown person = %v, want ErrNotFound", err)
+	}
+}
+
 func TestServiceRelationshipSymmetricTypesInvertToSameType(t *testing.T) {
 	svc := NewService(newMemStore())
 	ctx := context.Background()
@@ -675,6 +754,20 @@ func TestServiceReplaceRelationshipsAndFindByDisplayName(t *testing.T) {
 	}
 	if none, err := svc.FindByDisplayName(ctx, "Nobody Here"); err != nil || len(none) != 0 {
 		t.Fatalf("FindByDisplayName for unknown name = %+v, err=%v", none, err)
+	}
+}
+
+func TestServiceFindByExactName(t *testing.T) {
+	svc := NewService(newMemStore())
+	ctx := context.Background()
+	a, _, _ := svc.Create(ctx, CreateInput{FirstName: "Ada", LastName: "Lovelace"})
+
+	matches, err := svc.FindByExactName(ctx, "Ada", "Lovelace")
+	if err != nil || len(matches) != 1 || matches[0].ID != a.ID {
+		t.Fatalf("FindByExactName = %+v, err=%v", matches, err)
+	}
+	if none, err := svc.FindByExactName(ctx, "Ada", "Nobody"); err != nil || len(none) != 0 {
+		t.Fatalf("FindByExactName for unknown last name = %+v, err=%v", none, err)
 	}
 }
 
@@ -722,6 +815,18 @@ func TestServiceListIncomingRelationships(t *testing.T) {
 	}
 }
 
+// TestApplyUpdateIgnoresSetWithNilFirstOrLastName guards applyUpdate's
+// defensive nil-guard for First/LastName (normally unreachable via
+// Service.Update, since ValidateUpdate already rejects a *Set flag with a
+// nil pointer for these required fields before applyUpdate ever runs).
+func TestApplyUpdateIgnoresSetWithNilFirstOrLastName(t *testing.T) {
+	p := &Person{FirstName: "A", LastName: "B", DisplayName: "A B"}
+	applyUpdate(p, UpdateInput{FirstNameSet: true, LastNameSet: true})
+	if p.FirstName != "A" || p.LastName != "B" {
+		t.Fatalf("expected FirstName/LastName unchanged when Set but nil, got %q %q", p.FirstName, p.LastName)
+	}
+}
+
 func TestServiceUpdateRejectsInvalidInput(t *testing.T) {
 	svc := NewService(newMemStore())
 	ctx := context.Background()
@@ -763,5 +868,31 @@ func TestServiceDeleteRestoreHardDeletePropagateNotFound(t *testing.T) {
 	}
 	if err := svc.HardDelete(ctx, missing); !errors.Is(err, ErrNotFound) {
 		t.Errorf("HardDelete(missing) = %v, want ErrNotFound", err)
+	}
+}
+
+// TestServiceDeleteRestoreHardDeletePropagateStoreError guards the second
+// error path in each method: the underlying store call itself failing
+// after a successful lookup (as opposed to the lookup failing).
+func TestServiceDeleteRestoreHardDeletePropagateStoreError(t *testing.T) {
+	boom := errors.New("boom")
+	ctx := context.Background()
+
+	store := newMemStore()
+	created, _, _ := NewService(store).Create(ctx, CreateInput{FirstName: "A", LastName: "B"})
+	store.forceDeleteErr = boom
+	if err := NewService(store).Delete(ctx, created.ID); !errors.Is(err, boom) {
+		t.Errorf("Delete() = %v, want %v", err, boom)
+	}
+
+	store = newMemStore()
+	created, _, _ = NewService(store).Create(ctx, CreateInput{FirstName: "A", LastName: "B"})
+	_ = store.SoftDelete(ctx, created.ID)
+	store.forceDeleteErr = boom
+	if err := NewService(store).Restore(ctx, created.ID); !errors.Is(err, boom) {
+		t.Errorf("Restore() = %v, want %v", err, boom)
+	}
+	if err := NewService(store).HardDelete(ctx, created.ID); !errors.Is(err, boom) {
+		t.Errorf("HardDelete() = %v, want %v", err, boom)
 	}
 }

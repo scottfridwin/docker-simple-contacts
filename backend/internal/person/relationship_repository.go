@@ -298,3 +298,42 @@ func (r *Repository) FindByDisplayName(ctx context.Context, name string) ([]Pers
 	}
 	return out, nil
 }
+
+// FindByExactName returns every non-deleted, owner-scoped Person whose
+// first and last name match exactly, used by sync adapters to resolve a
+// newly-seen provider contact to an existing local contact (avoiding a
+// duplicate) before falling back to creating a new one.
+func (r *Repository) FindByExactName(ctx context.Context, firstName, lastName string) ([]Person, error) {
+	firstName = strings.TrimSpace(firstName)
+	lastName = strings.TrimSpace(lastName)
+	if firstName == "" || lastName == "" {
+		return nil, nil
+	}
+	q := `
+		SELECT id, first_name, middle_names, last_name, display_name, nickname, pronouns, birthdate, emails, phone_numbers, addresses, organization, notes, custom_fields, is_favorite,
+		       created_at, updated_at, deleted_at
+		FROM persons
+		WHERE first_name = $1 AND last_name = $2 AND deleted_at IS NULL`
+	args := []any{firstName, lastName}
+	if ownerID, ok := authn.UserID(ctx); ok {
+		q += ` AND owner_id = $3`
+		args = append(args, ownerID)
+	}
+	rows, err := r.pool.Query(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("finding persons by exact name: %w", err)
+	}
+	defer rows.Close()
+	var out []Person
+	for rows.Next() {
+		p, err := scanPerson(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *p)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterating persons by exact name: %w", err)
+	}
+	return out, nil
+}

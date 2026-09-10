@@ -62,6 +62,7 @@ type personService interface {
 	ListIncomingRelationships(context.Context, uuid.UUID) ([]person.RelationshipView, error)
 	ReplaceRelationships(context.Context, uuid.UUID, []person.RelationshipInput) error
 	FindByDisplayName(context.Context, string) ([]person.Person, error)
+	FindByExactName(context.Context, string, string) ([]person.Person, error)
 }
 
 // Adapter implements OAuth and People API operations for Google Contacts.
@@ -556,6 +557,35 @@ func (a *Adapter) exportLocal(ctx context.Context, accountID uuid.UUID, session 
 	return nil
 }
 
+// findUnlinkedMatch looks for exactly one existing local Person with the
+// same first+last name as a Google contact that has no contacts_local_id
+// tag, so a contact that already exists on both sides before this account
+// was ever connected gets linked instead of duplicated. Only persons not
+// already linked to this account are considered, since a linked person's
+// Google copy would already carry its local_id tag. An ambiguous (more than
+// one) or absent match returns false, leaving the caller to create a new
+// Person as before.
+func (a *Adapter) findUnlinkedMatch(ctx context.Context, accountID uuid.UUID, remoteModel person.CreateInput) (*person.Person, bool) {
+	matches, err := a.people.FindByExactName(ctx, remoteModel.FirstName, remoteModel.LastName)
+	if err != nil || len(matches) == 0 {
+		return nil, false
+	}
+	var candidate *person.Person
+	for i := range matches {
+		if a.remoteIDFor(ctx, accountID, matches[i].ID) != "" {
+			continue
+		}
+		if candidate != nil {
+			return nil, false
+		}
+		candidate = &matches[i]
+	}
+	if candidate == nil {
+		return nil, false
+	}
+	return candidate, true
+}
+
 func (a *Adapter) mergeRemoteRecord(ctx context.Context, accountID uuid.UUID, session contactsync.AuthSession, remote contactsync.ProviderRecord, pending *[]pendingRelationship) error {
 	remoteModel, localID := remoteToLocal(remote)
 	if localID == nil {
@@ -567,6 +597,9 @@ func (a *Adapter) mergeRemoteRecord(ctx context.Context, accountID uuid.UUID, se
 			// resourceName, which 404s ("Requested entity was not found")
 			// and aborts the whole sync run.
 			return nil
+		}
+		if match, ok := a.findUnlinkedMatch(ctx, accountID, remoteModel); ok {
+			return a.reconcileExisting(ctx, accountID, session, match, remoteModel, remote, pending)
 		}
 		created, _, err := a.people.Create(contactsync.WithSyncOrigin(ctx), remoteModel)
 		if err != nil {
@@ -604,10 +637,18 @@ func (a *Adapter) mergeRemoteRecord(ctx context.Context, accountID uuid.UUID, se
 		return nil
 	}
 
+	return a.reconcileExisting(ctx, accountID, session, local, remoteModel, remote, pending)
+}
+
+// reconcileExisting reconciles a remote record against a Person already
+// known to exist locally, whether found via its contacts_local_id tag or
+// (for a contact never linked before) an exact first+last name match.
+func (a *Adapter) reconcileExisting(ctx context.Context, accountID uuid.UUID, session contactsync.AuthSession, local *person.Person, remoteModel person.CreateInput, remote contactsync.ProviderRecord, pending *[]pendingRelationship) error {
 	// The remote record's own resource name is now confirmed for this
 	// (account, person) pair regardless of which branch below runs, so record
 	// it opportunistically. This also self-heals the link table for contacts
-	// that were synced before per-account link tracking existed.
+	// that were synced before per-account link tracking existed (or just
+	// matched by name for the first time).
 	a.linkRecord(ctx, accountID, local.ID, remote.Record.ExternalID)
 
 	remoteUpdatedAt := extractUpdatedAt(remote)
@@ -617,33 +658,30 @@ func (a *Adapter) mergeRemoteRecord(ctx context.Context, accountID uuid.UUID, se
 				return fmt.Errorf("deleting local person %s: %w", local.ID.String(), err)
 			}
 		} else {
-			_, upsertErr := a.UpsertRecord(ctx, session, a.attachRelationsForExport(ctx, local.ID, local.UpdatedAt, personToRecord(*local, remote.Record.ExternalID)))
+			record := a.attachRelationsForExport(ctx, local.ID, local.UpdatedAt, personToRecord(*local, remote.Record.ExternalID))
+			out, upsertErr := a.UpsertRecord(ctx, session, record)
+			var apiErr *apiError
+			if upsertErr != nil && errors.As(upsertErr, &apiErr) && apiErr.Status == http.StatusNotFound {
+				// The local edit is newer, so it should survive - but the
+				// resourceName it's linked to is already gone on Google's
+				// side (deleted, and by now possibly purged from Google's
+				// trash), so updating it 404s. Recreate it as a brand new
+				// contact instead of aborting the whole account's sync, the
+				// same way an unmapped tombstone is handled above (see
+				// TestMergeRemoteRecordSkipsUnknownTombstone).
+				record.ExternalID = ""
+				out, upsertErr = a.UpsertRecord(ctx, session, record)
+			}
 			if upsertErr != nil {
 				return upsertErr
 			}
+			a.linkRecord(ctx, accountID, local.ID, out.Record.ExternalID)
 		}
 		return nil
 	}
 
 	if remoteUpdatedAt.After(local.UpdatedAt) {
-		update := person.UpdateInput{
-			FirstName:       stringPtr(remoteModel.FirstName),
-			FirstNameSet:    true,
-			MiddleNames:     &remoteModel.MiddleNames,
-			MiddleNamesSet:  true,
-			LastName:        stringPtr(remoteModel.LastName),
-			LastNameSet:     true,
-			PhoneNumbers:    &remoteModel.PhoneNumbers,
-			PhoneNumbersSet: true,
-			Emails:          &remoteModel.Emails,
-			EmailsSet:       true,
-			Addresses:       &remoteModel.Addresses,
-			AddressesSet:    true,
-			Organization:    remoteModel.Organization,
-			OrganizationSet: true,
-			Notes:           remoteModel.Notes,
-			NotesSet:        true,
-		}
+		update := fieldAwareUpdate(remote.Record.Fields, remoteModel)
 		if _, _, err := a.people.Update(contactsync.WithSyncOrigin(ctx), local.ID, update); err != nil {
 			return fmt.Errorf("updating local person %s: %w", local.ID.String(), err)
 		}
@@ -656,6 +694,56 @@ func (a *Adapter) mergeRemoteRecord(ctx context.Context, accountID uuid.UUID, se
 		return err
 	}
 	return nil
+}
+
+// fieldAwareUpdate builds the local UpdateInput to apply when the remote
+// side wins, only marking a field *Set when Google's own payload actually
+// reported it (fields[key].IsSet). Without this, a Google contact that
+// simply never had e.g. an organization or note would unconditionally wipe
+// out a local value for that field on every sync where Google's copy
+// happened to be newer overall - clobbering an edit make on the local side
+// that Google's edit never touched, even though the two changes didn't
+// actually conflict.
+func fieldAwareUpdate(fields map[string]contactsync.FieldState, remoteModel person.CreateInput) person.UpdateInput {
+	var update person.UpdateInput
+	if fieldIsSet(fields, "first_name") {
+		update.FirstName = stringPtr(remoteModel.FirstName)
+		update.FirstNameSet = true
+	}
+	if fieldIsSet(fields, "middle_names") {
+		update.MiddleNames = &remoteModel.MiddleNames
+		update.MiddleNamesSet = true
+	}
+	if fieldIsSet(fields, "last_name") {
+		update.LastName = stringPtr(remoteModel.LastName)
+		update.LastNameSet = true
+	}
+	if fieldIsSet(fields, "phone_numbers") {
+		update.PhoneNumbers = &remoteModel.PhoneNumbers
+		update.PhoneNumbersSet = true
+	}
+	if fieldIsSet(fields, "emails") {
+		update.Emails = &remoteModel.Emails
+		update.EmailsSet = true
+	}
+	if fieldIsSet(fields, "addresses") {
+		update.Addresses = &remoteModel.Addresses
+		update.AddressesSet = true
+	}
+	if fieldIsSet(fields, "organization") {
+		update.Organization = remoteModel.Organization
+		update.OrganizationSet = true
+	}
+	if fieldIsSet(fields, "notes") {
+		update.Notes = remoteModel.Notes
+		update.NotesSet = true
+	}
+	return update
+}
+
+func fieldIsSet(fields map[string]contactsync.FieldState, key string) bool {
+	field, ok := fields[key]
+	return ok && field.IsSet
 }
 
 func (a *Adapter) ensureSession(ctx context.Context, account *contactsync.Account, session contactsync.AuthSession) (contactsync.AuthSession, error) {

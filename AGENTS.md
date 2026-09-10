@@ -123,6 +123,16 @@ docs/design/            authoritative design documents
   use; do not expose them as generic editable custom fields in list/detail
   UI. New Google syncs track remote record ids per account via the
   `sync_record_links` table, not `Person.custom_fields`.
+- **Sync matching/merge**: a Google contact with no `contacts_local_id` tag
+  matches an existing local contact only on an exact, unambiguous
+  first+last name match (`person.FindByExactName`), otherwise it's created
+  as a new Person — no fuzzy matching. When Google's copy of an
+  already-linked contact wins the record-level last-write-wins comparison,
+  only fields Google's own payload actually reported are applied
+  (`FieldState.IsSet`); a field Google never had data for doesn't overwrite
+  a local edit to that same field. Two edits to the *same* field still
+  resolve by whichever side's timestamp is newer — there's no per-field
+  timestamp on either side to do a real 3-way merge.
 - **OAuth verification pages**: unauthenticated users must be able to view a
   public home page describing app purpose, and a public privacy policy page at
   `/privacy`.
