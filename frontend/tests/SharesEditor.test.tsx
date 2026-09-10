@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { SharesEditor } from '../src/components/SharesEditor';
+import { ApiRequestError } from '../src/api';
 import type { Share } from '../src/types';
 
 const mocks = vi.hoisted(() => ({
@@ -10,11 +11,15 @@ const mocks = vi.hoisted(() => ({
   deleteShare: vi.fn(),
 }));
 
-vi.mock('../src/api', () => ({
-  listShares: mocks.listShares,
-  createShare: mocks.createShare,
-  deleteShare: mocks.deleteShare,
-}));
+vi.mock('../src/api', async () => {
+  const actual = await vi.importActual<typeof import('../src/api')>('../src/api');
+  return {
+    ...actual,
+    listShares: mocks.listShares,
+    createShare: mocks.createShare,
+    deleteShare: mocks.deleteShare,
+  };
+});
 
 function makeShare(overrides: Partial<Share> = {}): Share {
   return {
@@ -66,5 +71,25 @@ describe('SharesEditor', () => {
     await waitFor(() => {
       expect(mocks.deleteShare).toHaveBeenCalledWith('me', 'share-1');
     });
+  });
+
+  it('shows the specific validation reason instead of the generic envelope message', async () => {
+    mocks.listShares.mockResolvedValue({ data: [] });
+    mocks.createShare.mockRejectedValue(
+      new ApiRequestError(422, 'validation_error', 'request validation failed', [
+        { field: 'email', message: 'no account found for that email' },
+      ]),
+    );
+
+    render(<SharesEditor personId="me" />);
+    await waitFor(() => expect(screen.getByText(/not shared with anyone/i)).toBeInTheDocument());
+
+    await userEvent.type(screen.getByLabelText('share with email'), 'nobody@example.com');
+    await userEvent.click(screen.getByRole('button', { name: /share contact/i }));
+
+    await waitFor(() => {
+      expect(screen.getByText(/no account found for that email/i)).toBeInTheDocument();
+    });
+    expect(screen.queryByText(/request validation failed/i)).not.toBeInTheDocument();
   });
 });

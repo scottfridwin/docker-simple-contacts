@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { RelationshipsEditor } from '../src/components/RelationshipsEditor';
+import { ApiRequestError } from '../src/api';
 import type { Person, PersonListResponse, Relationship } from '../src/types';
 
 const mocks = vi.hoisted(() => ({
@@ -11,12 +12,16 @@ const mocks = vi.hoisted(() => ({
   listPersons: vi.fn(),
 }));
 
-vi.mock('../src/api', () => ({
-  listRelationships: mocks.listRelationships,
-  createRelationship: mocks.createRelationship,
-  deleteRelationship: mocks.deleteRelationship,
-  listPersons: mocks.listPersons,
-}));
+vi.mock('../src/api', async () => {
+  const actual = await vi.importActual<typeof import('../src/api')>('../src/api');
+  return {
+    ...actual,
+    listRelationships: mocks.listRelationships,
+    createRelationship: mocks.createRelationship,
+    deleteRelationship: mocks.deleteRelationship,
+    listPersons: mocks.listPersons,
+  };
+});
 
 function makePerson(overrides: Partial<Person> = {}): Person {
   return {
@@ -159,5 +164,27 @@ describe('RelationshipsEditor', () => {
     await waitFor(() => {
       expect(mocks.deleteRelationship).toHaveBeenCalledWith('me', 'rel-1');
     });
+  });
+
+  it('shows the specific validation reason instead of the generic envelope message', async () => {
+    mocks.listRelationships.mockResolvedValue({ data: [] });
+    mocks.createRelationship.mockRejectedValue(
+      new ApiRequestError(422, 'validation_error', 'request validation failed', [
+        { field: 'type', message: 'type must be one of parent, child, spouse, sibling, partner' },
+      ]),
+    );
+
+    render(<RelationshipsEditor personId="me" />);
+    await waitFor(() => expect(screen.getByText(/no relationships yet/i)).toBeInTheDocument());
+
+    await userEvent.type(screen.getByLabelText('related contact'), 'Someone');
+    await userEvent.click(screen.getByRole('button', { name: /add relationship/i }));
+
+    await waitFor(() => {
+      expect(
+        screen.getByText(/type must be one of parent, child, spouse, sibling, partner/i),
+      ).toBeInTheDocument();
+    });
+    expect(screen.queryByText(/^request validation failed$/i)).not.toBeInTheDocument();
   });
 });

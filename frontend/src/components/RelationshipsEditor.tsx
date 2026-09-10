@@ -1,5 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
-import { createRelationship, deleteRelationship, listPersons, listRelationships } from '../api';
+import {
+  apiErrorMessage,
+  createRelationship,
+  deleteRelationship,
+  listPersons,
+  listRelationships,
+} from '../api';
 import { RELATION_TYPES, type Person, type RelationType, type Relationship } from '../types';
 
 interface RelationshipsEditorProps {
@@ -155,7 +161,7 @@ export function RelationshipsEditor({ personId, onNavigateToPerson }: Relationsh
       const relRes = await listRelationships(personId);
       setRelationships(relRes.data);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load relationships');
+      setError(apiErrorMessage(err, 'Failed to load relationships'));
     } finally {
       setLoading(false);
     }
@@ -201,7 +207,7 @@ export function RelationshipsEditor({ personId, onNavigateToPerson }: Relationsh
       setSelected(null);
       await refresh();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to add relationship');
+      setError(apiErrorMessage(err, 'Failed to add relationship'));
     } finally {
       setSubmitting(false);
     }
@@ -213,7 +219,7 @@ export function RelationshipsEditor({ personId, onNavigateToPerson }: Relationsh
       await deleteRelationship(personId, relationship.id);
       await refresh();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to remove relationship');
+      setError(apiErrorMessage(err, 'Failed to remove relationship'));
     }
   };
 

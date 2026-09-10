@@ -29,6 +29,24 @@ export class ApiRequestError extends Error {
   }
 }
 
+/**
+ * Extracts a user-facing message from a caught error, preferring the
+ * specific per-field validation reason (e.g. "no account found for that
+ * email") over the generic "request validation failed" envelope message.
+ */
+export function apiErrorMessage(err: unknown, fallback: string): string {
+  if (err instanceof ApiRequestError) {
+    if (err.details && err.details.length > 0) {
+      return err.details.map((d) => d.message).join('; ');
+    }
+    return err.message;
+  }
+  if (err instanceof Error) {
+    return err.message;
+  }
+  return fallback;
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${API_BASE_URL}/api/v1${path}`, {
     headers: { 'Content-Type': 'application/json' },

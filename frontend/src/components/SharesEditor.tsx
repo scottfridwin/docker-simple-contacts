@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { createShare, deleteShare, listShares } from '../api';
+import { apiErrorMessage, createShare, deleteShare, listShares } from '../api';
 import type { Share } from '../types';
 
 interface SharesEditorProps {
@@ -20,7 +20,7 @@ export function SharesEditor({ personId }: SharesEditorProps) {
       const res = await listShares(personId);
       setShares(res.data);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load shares');
+      setError(apiErrorMessage(err, 'Failed to load shares'));
     } finally {
       setLoading(false);
     }
@@ -45,7 +45,7 @@ export function SharesEditor({ personId }: SharesEditorProps) {
       setEmail('');
       await refresh();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to share this contact');
+      setError(apiErrorMessage(err, 'Failed to share this contact'));
     } finally {
       setSubmitting(false);
     }
@@ -57,7 +57,7 @@ export function SharesEditor({ personId }: SharesEditorProps) {
       await deleteShare(personId, share.id);
       await refresh();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to revoke access');
+      setError(apiErrorMessage(err, 'Failed to revoke access'));
     }
   };
 
