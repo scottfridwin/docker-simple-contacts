@@ -4,9 +4,11 @@ package google
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"sync"
 	"testing"
@@ -868,5 +870,60 @@ func TestSyncRejectsConcurrentRunsForSameAccount(t *testing.T) {
 	}
 	if count != 1 {
 		t.Fatalf("expected exactly 1 Con Current, got %d: %+v", count, people)
+	}
+}
+
+// TestPullRemoteRefreshesExpiringTokenMidRun guards a real production
+// incident: a large/slow pull (heavy 429 backoff) can outlive the access
+// token's remaining lifetime, since previously the only refresh check
+// happened once at the very top of Sync() - a request made later in the
+// same run then failed with 401 UNAUTHENTICATED even though the account's
+// refresh token was perfectly valid. pullRemote is called directly here
+// (bypassing Sync()'s own top-level refresh) so any refresh-endpoint call
+// proves pullRemote itself now re-checks/refreshes before fetching a page.
+func TestPullRemoteRefreshesExpiringTokenMidRun(t *testing.T) {
+	sc := newScenario(t)
+
+	refreshCalls := 0
+	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		refreshCalls++
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"access_token": "refreshed-token",
+			"token_type":   "Bearer",
+			"expires_in":   3600,
+		})
+	}))
+	defer tokenServer.Close()
+	sc.adapter.cfg.TokenURL = tokenServer.URL
+	sc.adapter.cfg.ClientID = "test-client"
+	sc.adapter.cfg.ClientSecret = "test-secret"
+
+	sc.server.seed(googlePerson{Names: []googleName{{GivenName: "Ada", FamilyName: "Lovelace"}}})
+
+	refreshToken := "test-refresh-token"
+	expired := time.Now().Add(-time.Hour)
+	sc.account.RefreshToken = &refreshToken
+	sc.account.ExpiresAt = &expired
+
+	session, err := sessionFromAccount(sc.account)
+	if err != nil {
+		t.Fatalf("sessionFromAccount: %v", err)
+	}
+
+	if _, _, err := sc.adapter.pullRemote(sc.ctx, &sc.account, session, ""); err != nil {
+		t.Fatalf("pullRemote: %v", err)
+	}
+
+	if refreshCalls == 0 {
+		t.Fatal("expected pullRemote to refresh the expiring access token before fetching a page")
+	}
+
+	people, _, err := sc.people.List(sc.ctx, person.ListParams{Page: 1, PageSize: 100})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if _, ok := findPersonByName(t, people, "Ada", "Lovelace"); !ok {
+		t.Fatal("expected the pull to still succeed after refreshing mid-run")
 	}
 }

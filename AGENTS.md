@@ -163,6 +163,12 @@ docs/design/            authoritative design documents
   per-minute "Critical read requests" quota (which our own exponential
   backoff alone, capped well under a minute, can't reliably outlast),
   falling back to backoff otherwise; 6 attempts, backoff capped at 30s.
+- A single Sync() run only refreshed the OAuth access token once, at the
+  very top, before pulling/exporting - a large/slow pull (heavy 429
+  backoff) can outlive the token's remaining lifetime and then fail
+  partway through with 401 UNAUTHENTICATED even though the refresh token
+  is fine. `pullRemote`/`exportLocal` now re-check (and refresh if needed)
+  before every page, not just once per run.
 - **Sync matching/merge**: a Google contact with no `contacts_local_id` tag
   matches an existing local contact only on an exact, unambiguous
   first+last name match (`person.FindByExactName`), otherwise it's created

@@ -397,7 +397,7 @@ func (a *Adapter) Sync(ctx context.Context, account contactsync.Account, job con
 	}
 
 	initialSync := strings.TrimSpace(account.SyncCursor) == ""
-	nextCursor, pulled, err := a.pullRemote(ctx, account.ID, session, account.SyncCursor)
+	nextCursor, pulled, err := a.pullRemote(ctx, &account, session, account.SyncCursor)
 	// Persist whatever progress pullRemote made even on error, so a failed
 	// attempt doesn't force the next one to replay already-merged pages
 	// (see pullRemote's comments) - a plain assignment after an early
@@ -408,7 +408,7 @@ func (a *Adapter) Sync(ctx context.Context, account contactsync.Account, job con
 	}
 
 	if initialSync {
-		if err := a.exportLocal(ctx, account.ID, session); err != nil {
+		if err := a.exportLocal(ctx, &account, session); err != nil {
 			return a.markAccountFailed(ctx, &account, err)
 		}
 	}
@@ -564,11 +564,24 @@ func (a *Adapter) syncLocalJob(ctx context.Context, accountID uuid.UUID, session
 	return nil
 }
 
-func (a *Adapter) pullRemote(ctx context.Context, accountID uuid.UUID, session contactsync.AuthSession, cursor string) (string, int, error) {
+func (a *Adapter) pullRemote(ctx context.Context, account *contactsync.Account, session contactsync.AuthSession, cursor string) (string, int, error) {
+	accountID := account.ID
 	current := cursor
 	seen := 0
 	var pending []pendingRelationship
 	for {
+		// A single Sync() run - especially a large pull slowed by repeated
+		// 429 rate-limit backoff - can run far longer than the access
+		// token's remaining lifetime. The one refresh at the top of Sync()
+		// only covers the token as of the start of the run, so re-check
+		// (and refresh if needed) before every page instead of just once,
+		// or a long-running pull ends up failing partway through with a
+		// 401 even though the account's credentials are actually fine.
+		refreshed, err := a.ensureSession(ctx, account, session)
+		if err != nil {
+			return current, seen, &reauthRequiredError{err}
+		}
+		session = refreshed
 		page, err := a.ListChanges(ctx, session, current)
 		if err != nil {
 			var apiErr *apiError
@@ -612,10 +625,20 @@ func (a *Adapter) pullRemote(ctx context.Context, accountID uuid.UUID, session c
 	return current, seen, nil
 }
 
-func (a *Adapter) exportLocal(ctx context.Context, accountID uuid.UUID, session contactsync.AuthSession) error {
+func (a *Adapter) exportLocal(ctx context.Context, account *contactsync.Account, session contactsync.AuthSession) error {
+	accountID := account.ID
 	page := 1
 	exported := 0
 	for {
+		// See the matching comment in pullRemote: a large export can run
+		// long enough for the access token to expire mid-run, so refresh
+		// (if needed) before every page rather than relying solely on the
+		// one refresh at the top of Sync().
+		refreshed, err := a.ensureSession(ctx, account, session)
+		if err != nil {
+			return &reauthRequiredError{err}
+		}
+		session = refreshed
 		rows, total, err := a.people.List(ctx, person.ListParams{Page: page, PageSize: 100, SortField: "updated_at", SortDesc: false})
 		if err != nil {
 			return fmt.Errorf("listing local persons for export: %w", err)
