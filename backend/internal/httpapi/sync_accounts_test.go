@@ -224,6 +224,63 @@ func TestListGetUpdateDeleteSyncAccountFlow(t *testing.T) {
 	}
 }
 
+// TestSyncNowTriggersBackgroundSync guards the on-demand "Sync now" action:
+// POSTing to /sync-accounts/{id}/sync must call Adapter.Sync for that
+// account and return immediately (202), not block until the sync itself
+// finishes - a large/rate-limited pull can run far longer than a browser or
+// proxy is willing to wait on one request.
+func TestSyncNowTriggersBackgroundSync(t *testing.T) {
+	store := newFakeSyncAccountStore()
+	created, err := store.Create(context.Background(), &contactsync.Account{
+		Provider:          "google",
+		ProviderAccountID: "subject-1",
+	})
+	if err != nil {
+		t.Fatalf("seeding account: %v", err)
+	}
+	done := make(chan struct{}, 1)
+	adapter := &fakeGoogleAdapter{syncDone: done}
+	personStore := newFakeStore()
+	personSvc := person.NewService(personStore)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	h := NewRouter(logger, personSvc, personStore, store, adapter, []string{"http://localhost:5173"})
+
+	rec := doJSON(t, h, http.MethodPost, "/api/v1/sync-accounts/"+created.ID.String()+"/sync", nil)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204", rec.Code)
+	}
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected Adapter.Sync to be called in the background")
+	}
+	if adapter.syncCalls != 1 {
+		t.Fatalf("syncCalls = %d, want 1", adapter.syncCalls)
+	}
+}
+
+func TestSyncNowNotFoundAndUnconfigured(t *testing.T) {
+	store := newFakeSyncAccountStore()
+	personStore := newFakeStore()
+	personSvc := person.NewService(personStore)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	// No adapter configured (Google sync disabled entirely).
+	h := NewRouter(logger, personSvc, personStore, store, nil, []string{"http://localhost:5173"})
+	rec := doJSON(t, h, http.MethodPost, "/api/v1/sync-accounts/"+uuid.New().String()+"/sync", nil)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503 when no adapter is configured", rec.Code)
+	}
+
+	// Adapter configured, but the account id doesn't exist.
+	h = NewRouter(logger, personSvc, personStore, store, &fakeGoogleAdapter{}, []string{"http://localhost:5173"})
+	rec = doJSON(t, h, http.MethodPost, "/api/v1/sync-accounts/"+uuid.New().String()+"/sync", nil)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404 for an unknown account", rec.Code)
+	}
+}
+
 func TestSyncAccountInvalidID(t *testing.T) {
 	h := testSyncRouter()
 	for _, req := range []struct {

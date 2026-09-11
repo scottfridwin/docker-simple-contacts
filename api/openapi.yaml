@@ -389,6 +389,23 @@ paths:
       responses:
         '204': { description: Deleted }
         '404': { $ref: '#/components/responses/NotFound' }
+  /sync-accounts/{id}/sync:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    post:
+      summary: Trigger an on-demand sync for this account
+      description: >-
+        Starts a sync in the background and returns immediately; poll
+        GET /sync-accounts/{id} to observe progress. A sync already in
+        progress for this account is a safe no-op.
+      operationId: syncAccountNow
+      responses:
+        '204': { description: Sync triggered }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { description: Sync provider is not configured }
   /sync/google/begin:
     get:
       summary: Begin Google OAuth for contact sync

@@ -205,6 +205,11 @@ export function deleteSyncAccount(id: string): Promise<void> {
   return request<void>(`/sync-accounts/${id}`, { method: 'DELETE' });
 }
 
+/** Triggers an on-demand sync for one account; the sync itself runs in the background. */
+export function syncAccountNow(id: string): Promise<void> {
+  return request<void>(`/sync-accounts/${id}/sync`, { method: 'POST' });
+}
+
 export function beginGoogleSync(redirectUri?: string): Promise<GoogleOAuthBeginResponse> {
   const query = new URLSearchParams();
   if (redirectUri) {

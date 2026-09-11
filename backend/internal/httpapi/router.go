@@ -50,7 +50,7 @@ func NewRouter(logger *slog.Logger, svc *person.Service, ready pinger, syncRepo 
 	h := &personHandler{svc: svc}
 	relHandler := &relationshipHandler{svc: svc}
 	sharesHandler := &shareHandler{svc: svc}
-	syncHandler := &syncAccountHandler{repo: syncRepo}
+	syncHandler := &syncAccountHandler{repo: syncRepo, adapter: googleAdapter, logger: logger}
 	googleAuth := &googleOAuthHandler{repo: syncRepo, adapter: googleAdapter, logger: logger}
 	shareCreateLimit := rateLimit(ratelimit.NewLimiter(20, time.Minute))
 	r.Route("/api/v1", func(api chi.Router) {
@@ -77,6 +77,7 @@ func NewRouter(logger *slog.Logger, svc *person.Service, ready pinger, syncRepo 
 			s.Get("/{id}", syncHandler.get)
 			s.Patch("/{id}", syncHandler.update)
 			s.Delete("/{id}", syncHandler.delete)
+			s.Post("/{id}/sync", syncHandler.syncNow)
 		})
 		api.Route("/sync/google", func(s chi.Router) {
 			s.Get("/begin", googleAuth.begin)

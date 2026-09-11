@@ -13,6 +13,7 @@ import {
   listPersons,
   permanentlyDeletePerson,
   restorePerson,
+  syncAccountNow,
   updatePerson,
   updateSyncAccount,
 } from './api';
@@ -119,6 +120,8 @@ export default function App() {
   const [syncLoaded, setSyncLoaded] = useState(false);
   const [syncConnecting, setSyncConnecting] = useState(false);
   const [syncSavingId, setSyncSavingId] = useState<string | null>(null);
+  const [syncNowId, setSyncNowId] = useState<string | null>(null);
+  const [syncingAll, setSyncingAll] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [syncError, setSyncError] = useState<string | null>(null);
@@ -383,6 +386,32 @@ export default function App() {
     }
   };
 
+  const handleSyncNow = async (account: SyncAccount) => {
+    setSyncError(null);
+    setSyncNowId(account.id);
+    try {
+      await syncAccountNow(account.id);
+      await refreshSyncAccounts();
+    } catch (err) {
+      setSyncError(err instanceof Error ? err.message : 'Failed to start sync');
+    } finally {
+      setSyncNowId((prev) => (prev === account.id ? null : prev));
+    }
+  };
+
+  const handleSyncAllNow = async () => {
+    setSyncError(null);
+    setSyncingAll(true);
+    try {
+      await Promise.all(syncAccounts.map((account) => syncAccountNow(account.id)));
+      await refreshSyncAccounts();
+    } catch (err) {
+      setSyncError(err instanceof Error ? err.message : 'Failed to start sync');
+    } finally {
+      setSyncingAll(false);
+    }
+  };
+
   if (authenticationRequired) {
     return <HomeInfoPage />;
   }
@@ -643,10 +672,10 @@ export default function App() {
           <button
             type="button"
             className="ghost"
-            onClick={() => void refreshSyncAccounts()}
-            disabled={syncLoading}
+            onClick={() => void handleSyncAllNow()}
+            disabled={syncingAll || syncLoading || syncAccounts.length === 0}
           >
-            {syncLoading ? 'Refreshing…' : 'Refresh sync'}
+            {syncingAll ? 'Syncing…' : 'Sync now'}
           </button>
         </div>
         {!syncLoaded ? (
@@ -709,6 +738,14 @@ export default function App() {
                     </div>
                   </dl>
                   <div className="sync-account-actions">
+                    <button
+                      type="button"
+                      className="ghost"
+                      onClick={() => void handleSyncNow(account)}
+                      disabled={syncNowId === account.id}
+                    >
+                      {syncNowId === account.id ? 'Syncing…' : 'Sync now'}
+                    </button>
                     {(account.status === 'error' || account.status === 'reconnect_required') && (
                       <button
                         type="button"
