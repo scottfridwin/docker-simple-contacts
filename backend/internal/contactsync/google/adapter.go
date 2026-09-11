@@ -1700,14 +1700,31 @@ func toProviderRecord(in googlePerson, resolver *groupResolver) contactsync.Prov
 	fields["relations"] = contactsync.FieldState{IsSet: true, Value: relations, UpdatedAt: updatedAt}
 	fields[remoteUpdatedFieldKey] = contactsync.FieldState{IsSet: true, Value: updatedAt.Format(time.RFC3339Nano), UpdatedAt: updatedAt}
 	customFields := map[string]any{}
+	localIDSeen := false
+	localIDAmbiguous := false
 	for _, item := range in.UserDefined {
 		if item.Key == localIDUserDefinedKey {
-			fields["local_id"] = contactsync.FieldState{IsSet: true, Value: item.Value, UpdatedAt: updatedAt}
+			// Google enforces no uniqueness on userDefined labels - a second
+			// custom field also labeled "contacts_local_id" (e.g. hand-added
+			// via the Google Contacts UI) is possible. Picking either one
+			// arbitrarily risks merging into an unrelated existing Person,
+			// so an ambiguous tag is treated the same as no tag at all,
+			// falling back to the link table / exact-name match instead.
+			if localIDSeen {
+				localIDAmbiguous = true
+			}
+			localIDSeen = true
+			if !localIDAmbiguous {
+				fields["local_id"] = contactsync.FieldState{IsSet: true, Value: item.Value, UpdatedAt: updatedAt}
+			}
 			continue
 		}
 		if key := strings.TrimSpace(item.Key); key != "" {
 			customFields[key] = sniffCustomFieldValue(item.Value)
 		}
+	}
+	if localIDAmbiguous {
+		delete(fields, "local_id")
 	}
 	fields["custom_fields"] = contactsync.FieldState{IsSet: true, Value: person.SanitizeCustomFieldsForSync(customFields), UpdatedAt: updatedAt}
 	labels, isFavorite := resolveMemberships(in.Memberships, resolver)

@@ -306,6 +306,28 @@ func TestToProviderRecordMapsNewContactFields(t *testing.T) {
 	}
 }
 
+// TestToProviderRecordTreatsAmbiguousLocalIDAsUntagged guards against a
+// Google contact that somehow carries more than one userDefined entry
+// labeled "contacts_local_id" (Google enforces no uniqueness on userDefined
+// labels, so this is possible via manual edits in the Google Contacts UI).
+// Picking either value arbitrarily risks merging into an unrelated existing
+// Person, so the ambiguous tag must be dropped entirely rather than trusted.
+func TestToProviderRecordTreatsAmbiguousLocalIDAsUntagged(t *testing.T) {
+	in := googlePerson{
+		ResourceName: "people/c1",
+		Names:        []googleName{{GivenName: "Mike", FamilyName: "Abel"}},
+		UserDefined: []googleUserDefined{
+			{Key: "contacts_local_id", Value: uuid.New().String()},
+			{Key: "contacts_local_id", Value: uuid.New().String()},
+		},
+	}
+
+	fields := toProviderRecord(in, nil).Record.Fields
+	if v := fieldString(fields, "local_id"); v != "" {
+		t.Fatalf("local_id = %q, want empty (ambiguous tag should be dropped)", v)
+	}
+}
+
 // TestToProviderRecordDedupesExactDuplicates guards a real production
 // finding: a Google contact can carry genuine duplicate entries within a
 // single source (observed live: the same mobile number, home email, and home
