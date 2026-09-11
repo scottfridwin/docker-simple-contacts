@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -92,12 +93,20 @@ type fakeProcessor struct {
 	calls         int
 	err           error
 	panics        bool
+	failFor       map[uuid.UUID]error
+	failForJob    map[uuid.UUID]error
 }
 
 func (f *fakeProcessor) Process(ctx context.Context, account Account, job Job) error {
 	f.calls++
 	if f.panics {
 		panic("simulated processor panic")
+	}
+	if err, ok := f.failFor[account.ID]; ok {
+		return err
+	}
+	if err, ok := f.failForJob[job.ID]; ok {
+		return err
 	}
 	if f.err != nil {
 		return f.err
@@ -191,6 +200,36 @@ func TestRunnerRunJobFansOutToShareRecipientAccountsNeverLinkedBefore(t *testing
 	}
 }
 
+// TestRunnerRunJobExcludesOriginAccount guards the propagation-vs-ping-pong
+// fix: a change pulled in from one sync account (Job.OriginAccountID) must
+// still reach every OTHER linked/shared account, but must never be pushed
+// straight back to the account it just came from - doing so would look like
+// a newer remote change on that account's next pull and loop forever.
+func TestRunnerRunJobExcludesOriginAccount(t *testing.T) {
+	ownerA := uuid.New()
+	ownerB := uuid.New()
+	personID := uuid.New()
+	accountA := Account{ID: uuid.New(), Provider: "google", OwnerID: &ownerA}
+	accountB := Account{ID: uuid.New(), Provider: "google", OwnerID: &ownerB}
+	job := Job{ID: uuid.New(), OwnerID: &ownerA, PersonID: personID, Status: JobStatusPending, OriginAccountID: &accountA.ID}
+	proc := &fakeProcessor{}
+	runner := NewRunner(
+		&fakeAccountStore{accounts: []Account{accountA}, linked: []Account{accountA, accountB}},
+		&fakeQueue{jobs: []Job{job}},
+		proc,
+		nil,
+	)
+	if _, err := runner.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	if proc.calls != 1 {
+		t.Fatalf("processor calls = %d, want 1 (only account B, account A excluded as the origin)", proc.calls)
+	}
+	if len(proc.contextOwners) != 1 || proc.contextOwners[0] != ownerB {
+		t.Fatalf("contextOwners = %#v, want [%s]", proc.contextOwners, ownerB)
+	}
+}
+
 func TestRunnerRunOnceMarksFailures(t *testing.T) {
 	job := Job{ID: uuid.New(), Status: JobStatusPending}
 	proc := &fakeProcessor{err: errors.New("adapter failed")}
@@ -204,8 +243,72 @@ func TestRunnerRunOnceMarksFailures(t *testing.T) {
 		t.Fatal("expected error")
 	}
 	q := runner.jobs.(*fakeQueue)
-	if got := q.failed[job.ID]; got != "adapter failed" {
-		t.Fatalf("failed reason = %q, want adapter failed", got)
+	if got := q.failed[job.ID]; !strings.Contains(got, "adapter failed") {
+		t.Fatalf("failed reason = %q, want it to contain adapter failed", got)
+	}
+}
+
+// TestRunnerRunJobContinuesAfterOneAccountFails guards best-effort fan-out:
+// one account failing must not stop the job from being attempted against
+// every other account in the fan-out list (e.g. other share recipients who
+// had nothing to do with the failure) - it used to return on the very first
+// failing account, silently skipping the rest for this attempt.
+func TestRunnerRunJobContinuesAfterOneAccountFails(t *testing.T) {
+	ownerA := uuid.New()
+	ownerB := uuid.New()
+	personID := uuid.New()
+	accountA := Account{ID: uuid.New(), Provider: "google", OwnerID: &ownerA}
+	accountB := Account{ID: uuid.New(), Provider: "google", OwnerID: &ownerB}
+	job := Job{ID: uuid.New(), OwnerID: &ownerA, PersonID: personID, Status: JobStatusPending}
+	proc := &fakeProcessor{failFor: map[uuid.UUID]error{accountA.ID: errors.New("account A broken")}}
+	runner := NewRunner(
+		&fakeAccountStore{accounts: []Account{accountA}, linked: []Account{accountA, accountB}},
+		&fakeQueue{jobs: []Job{job}},
+		proc,
+		nil,
+	)
+	if _, err := runner.RunOnce(context.Background()); err == nil {
+		t.Fatal("expected error since account A failed")
+	}
+	if proc.calls != 2 {
+		t.Fatalf("processor calls = %d, want 2 (both accounts attempted despite A failing)", proc.calls)
+	}
+	if len(proc.processed) != 1 || proc.processed[0] != "google:"+job.ID.String() {
+		t.Fatalf("expected account B to still be processed successfully, got %#v", proc.processed)
+	}
+	q := runner.jobs.(*fakeQueue)
+	if !strings.Contains(q.failed[job.ID], "account A broken") {
+		t.Fatalf("failed reason = %q, want it to contain account A broken", q.failed[job.ID])
+	}
+}
+
+// TestRunnerRunOnceContinuesAfterOneJobFails guards the same best-effort
+// principle at the batch level: one job failing must not prevent other,
+// unrelated pending jobs in the same batch from being attempted.
+func TestRunnerRunOnceContinuesAfterOneJobFails(t *testing.T) {
+	account := Account{ID: uuid.New(), Provider: "google"}
+	brokenJob := Job{ID: uuid.New(), PersonID: uuid.New(), Status: JobStatusPending}
+	okJob := Job{ID: uuid.New(), PersonID: uuid.New(), Status: JobStatusPending}
+	proc := &fakeProcessor{failForJob: map[uuid.UUID]error{brokenJob.ID: errors.New("broken")}}
+	runner := NewRunner(
+		&fakeAccountStore{accounts: []Account{account}},
+		&fakeQueue{jobs: []Job{brokenJob, okJob}},
+		proc,
+		nil,
+	)
+	processed, err := runner.RunOnce(context.Background())
+	if err == nil {
+		t.Fatal("expected a combined error since brokenJob failed")
+	}
+	if processed != 1 {
+		t.Fatalf("processed = %d, want 1 (okJob still succeeds despite brokenJob failing)", processed)
+	}
+	q := runner.jobs.(*fakeQueue)
+	if len(q.done) != 1 || q.done[0] != okJob.ID {
+		t.Fatalf("expected only okJob marked done, got %#v", q.done)
+	}
+	if _, failed := q.failed[brokenJob.ID]; !failed {
+		t.Fatalf("expected brokenJob marked failed, got %#v", q.failed)
 	}
 }
 

@@ -47,7 +47,10 @@ func NewRunner(accounts accountStore, jobs jobQueue, processor Processor, logger
 	return &Runner{accounts: accounts, jobs: jobs, processor: processor, batchSize: 50, logger: logger}
 }
 
-// RunOnce processes one batch of pending jobs.
+// RunOnce processes one batch of pending jobs. A single job failing must not
+// prevent the rest of the batch from being attempted in this pass - it used
+// to return on the first error, silently starving every other pending job
+// (possibly for entirely unrelated Persons/accounts) until the next tick.
 func (r *Runner) RunOnce(ctx context.Context) (int, error) {
 	if r == nil || r.jobs == nil || r.accounts == nil || r.processor == nil {
 		return 0, nil
@@ -57,13 +60,16 @@ func (r *Runner) RunOnce(ctx context.Context) (int, error) {
 		return 0, fmt.Errorf("loading pending sync jobs: %w", err)
 	}
 	processed := 0
+	var errs []error
 	for _, job := range jobs {
 		if err := r.runJob(ctx, job); err != nil {
-			return processed, err
+			r.logger.Error("processing sync job failed", "job_id", job.ID, "error", err)
+			errs = append(errs, err)
+			continue
 		}
 		processed++
 	}
-	return processed, nil
+	return processed, errors.Join(errs...)
 }
 
 // RunLoop keeps executing sync jobs until the context is canceled. A job or
@@ -176,12 +182,24 @@ func (r *Runner) runJob(ctx context.Context, job Job) error {
 	}
 	accounts = mergeAccountsByID(accounts, linked)
 	accounts = mergeAccountsByID(accounts, shared)
+	if job.OriginAccountID != nil {
+		// This change was itself pulled in from job.OriginAccountID - it
+		// must not be pushed straight back to that same account, or every
+		// write there looks like a newer remote change on the next pull,
+		// creating a self-sustaining ping-pong loop.
+		accounts = excludeAccountByID(accounts, *job.OriginAccountID)
+	}
 	if len(accounts) == 0 {
 		if err := r.jobs.MarkDone(ownerCtx, job.ID); err != nil {
 			return fmt.Errorf("marking job %s done: %w", job.ID, err)
 		}
 		return nil
 	}
+	// Every account in the fan-out gets a chance regardless of an earlier
+	// one failing - this used to return on the first failing account,
+	// silently skipping every account listed after it (including other
+	// share recipients who had nothing to do with the failure).
+	var errs []error
 	for _, account := range accounts {
 		// Each account must be processed under its own owner's context (not
 		// necessarily the triggering job's owner), so owner-scoped lookups
@@ -191,11 +209,15 @@ func (r *Runner) runJob(ctx context.Context, job Job) error {
 			acctCtx = authn.WithUserID(ctx, *account.OwnerID)
 		}
 		if err := r.safeProcess(acctCtx, account, job); err != nil {
-			if markErr := r.jobs.MarkFailed(ownerCtx, job.ID, err.Error()); markErr != nil {
-				return fmt.Errorf("marking job %s failed: %w", job.ID, markErr)
-			}
-			return fmt.Errorf("processing job %s for provider %s: %w", job.ID, account.Provider, err)
+			errs = append(errs, fmt.Errorf("provider %s (account %s): %w", account.Provider, account.ID, err))
 		}
+	}
+	if len(errs) > 0 {
+		combined := errors.Join(errs...)
+		if markErr := r.jobs.MarkFailed(ownerCtx, job.ID, combined.Error()); markErr != nil {
+			return fmt.Errorf("marking job %s failed: %w", job.ID, markErr)
+		}
+		return fmt.Errorf("processing job %s: %w", job.ID, combined)
 	}
 	if err := r.jobs.MarkDone(ownerCtx, job.ID); err != nil {
 		return fmt.Errorf("marking job %s done: %w", job.ID, err)
@@ -217,6 +239,17 @@ func mergeAccountsByID(primary, extra []Account) []Account {
 	for _, a := range extra {
 		if !seen[a.ID] {
 			seen[a.ID] = true
+			out = append(out, a)
+		}
+	}
+	return out
+}
+
+// excludeAccountByID returns accounts with the given id removed.
+func excludeAccountByID(accounts []Account, id uuid.UUID) []Account {
+	out := make([]Account, 0, len(accounts))
+	for _, a := range accounts {
+		if a.ID != id {
 			out = append(out, a)
 		}
 	}

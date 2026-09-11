@@ -24,7 +24,7 @@ type store interface {
 	SoftDelete(ctx context.Context, id uuid.UUID) error
 	Restore(ctx context.Context, id uuid.UUID) error
 	HardDelete(ctx context.Context, id uuid.UUID) error
-	PurgeExpired(ctx context.Context, olderThan time.Duration) (int64, error)
+	PurgeExpired(ctx context.Context, olderThan time.Duration) ([]Person, error)
 	CreateRelationship(ctx context.Context, personID uuid.UUID, in RelationshipInput) (*RelationshipView, error)
 	ListRelationships(ctx context.Context, personID uuid.UUID) ([]RelationshipView, error)
 	ListIncomingRelationships(ctx context.Context, personID uuid.UUID) ([]RelationshipView, error)
@@ -196,8 +196,19 @@ func (s *Service) HardDelete(ctx context.Context, id uuid.UUID) error {
 }
 
 // PurgeExpired removes soft-deleted records older than the retention window.
+// Each purged record is notified the same as an explicit HardDelete, so the
+// corresponding remote contact (if any) is deleted on every synced account
+// too - otherwise a purged contact's stale contacts_local_id tag would make
+// it look "missing locally" on the next pull and get silently recreated.
 func (s *Service) PurgeExpired(ctx context.Context, olderThan time.Duration) (int64, error) {
-	return s.repo.PurgeExpired(ctx, olderThan)
+	purged, err := s.repo.PurgeExpired(ctx, olderThan)
+	if err != nil {
+		return 0, err
+	}
+	for i := range purged {
+		s.notify(ctx, contactsync.ChangeKindHardDeleted, &purged[i])
+	}
+	return int64(len(purged)), nil
 }
 
 // CreateRelationship validates and stores a relationship from personID's
@@ -397,19 +408,37 @@ func (s *Service) notify(ctx context.Context, kind contactsync.ChangeKind, p *Pe
 	if s.notifier == nil || p == nil {
 		return
 	}
-	if contactsync.IsSyncOrigin(ctx) {
-		return
+	ownerID, ok := authn.UserID(ctx)
+	if !ok && p.OwnerID != nil {
+		// Background/system-initiated changes (e.g. the retention purge
+		// loop) run without an authenticated actor in ctx. Fall back to the
+		// Person's own owner so the resulting job still fans out to at
+		// least the owner's accounts, instead of an unscoped Job.OwnerID
+		// making the account lookup fall through to every connected
+		// account system-wide.
+		ownerID = *p.OwnerID
+		ok = true
 	}
-	ownerID, _ := authn.UserID(ctx)
 	var ownerPtr *uuid.UUID
-	if ownerID != uuid.Nil {
+	if ok && ownerID != uuid.Nil {
 		ownerPtr = &ownerID
 	}
-	_ = s.notifier.RecordChanged(ctx, contactsync.PersonChange{
+	change := contactsync.PersonChange{
 		Kind:      kind,
 		Snapshot:  p.Snapshot(ownerPtr),
 		ChangedAt: time.Now(),
-	})
+	}
+	// A change pulled in from a sync account must still propagate onward to
+	// any OTHER linked/shared accounts (e.g. a contact edited directly in
+	// G1 should still reach G2) - it must not be dropped entirely just
+	// because it originated from sync reconciliation. It only needs to
+	// exclude the account it came from, which Runner.runJob does using
+	// OriginAccountID, so the change doesn't get pushed straight back to
+	// where it just came from and loop forever.
+	if originID, ok := contactsync.SyncOriginAccountID(ctx); ok {
+		change.OriginAccountID = &originID
+	}
+	_ = s.notifier.RecordChanged(ctx, change)
 }
 
 func timePtr(t time.Time) *time.Time { return &t }

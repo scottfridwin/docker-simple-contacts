@@ -146,6 +146,23 @@ conflict.
 - `POST /sync-accounts/{id}/sync` ("Sync now") clears the account's
   `SyncCursor` before syncing - it's a full-resync override (re-pulls
   everything, re-runs export), not a lightweight incremental refresh.
+- A change merged in *from* Google used to never propagate onward to any
+  other linked/shared account (`notify` unconditionally skipped raising a
+  job for any sync-origin change, to avoid a ping-pong loop back to the
+  same account). `WithSyncOrigin(ctx, accountID)` now carries the
+  originating account; `notify` still raises a job but tags
+  `Job.OriginAccountID`, and `Runner.runJob` excludes just that account
+  from its fan-out, so the change still reaches every other linked/shared
+  account without looping back.
+- A job-scoped `Adapter.Sync` call that lost the same-account concurrency
+  race used to return `nil` (like a plain full sync), so `Runner.runJob`
+  marked the job "done" even though the edit was never pushed. It now
+  returns `google.ErrSyncInProgress` so the job retries instead.
+- `Runner.RunOnce`/`Runner.runJob` are best-effort: one failing job or
+  fan-out account no longer aborts every other job/account in that pass.
+- The 30-day retention purge now notifies sync per purged record (like
+  `HardDelete`) instead of bypassing it, so a purged contact's linked
+  remote copy is deleted too instead of resurrecting on the next pull.
 - Failed sync jobs retry with exponential backoff up to `MaxJobAttempts`
   (5), then stay `failed` (dead letter) - see `contactsync.JobRepository`.
 - Login and share creation are rate-limited per client IP (20/minute) via

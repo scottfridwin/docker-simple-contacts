@@ -45,11 +45,15 @@ func newMemStore() *memStore {
 	return &memStore{items: make(map[uuid.UUID]*Person)}
 }
 
-func (m *memStore) Create(_ context.Context, p *Person) (*Person, error) {
+func (m *memStore) Create(ctx context.Context, p *Person) (*Person, error) {
 	cp := *p
 	cp.ID = uuid.New()
 	cp.CreatedAt = time.Now()
 	cp.UpdatedAt = cp.CreatedAt
+	// Mirror the real repository: owner_id comes from the request context.
+	if ownerID, ok := authn.UserID(ctx); ok {
+		cp.OwnerID = &ownerID
+	}
 	m.items[cp.ID] = &cp
 	out := cp
 	return &out, nil
@@ -205,8 +209,16 @@ func (m *memStore) HardDelete(_ context.Context, id uuid.UUID) error {
 	return nil
 }
 
-func (m *memStore) PurgeExpired(_ context.Context, _ time.Duration) (int64, error) {
-	return 0, nil
+func (m *memStore) PurgeExpired(_ context.Context, olderThan time.Duration) ([]Person, error) {
+	cutoff := time.Now().Add(-olderThan)
+	var purged []Person
+	for id, p := range m.items {
+		if p.DeletedAt != nil && p.DeletedAt.Before(cutoff) {
+			purged = append(purged, *p)
+			delete(m.items, id)
+		}
+	}
+	return purged, nil
 }
 
 func (m *memStore) CreateRelationship(_ context.Context, personID uuid.UUID, in RelationshipInput) (*RelationshipView, error) {
@@ -693,17 +705,29 @@ func TestServiceEmitsSyncNotifications(t *testing.T) {
 	}
 }
 
-func TestServiceSkipsNotificationsForSyncOrigin(t *testing.T) {
+// TestServiceSyncOriginChangesStillNotifyButCarryOriginAccount guards the
+// propagation fix: a change pulled in from one sync account (e.g. an edit
+// made directly in Google) must still notify sync - so it can propagate
+// onward to any OTHER linked/shared accounts - rather than being dropped
+// entirely like it used to be. It must carry OriginAccountID so the
+// resulting job can exclude just that one account from its own fan-out
+// (Runner.runJob), which is what actually prevents the ping-pong loop that
+// blanket-skipping notifications was originally meant to avoid.
+func TestServiceSyncOriginChangesStillNotifyButCarryOriginAccount(t *testing.T) {
 	store := newMemStore()
 	notifier := &memNotifier{}
 	svc := NewService(store, notifier)
 
-	ctx := contactsync.WithSyncOrigin(context.Background())
+	originAccount := uuid.New()
+	ctx := contactsync.WithSyncOrigin(context.Background(), originAccount)
 	if _, _, err := svc.Create(ctx, CreateInput{FirstName: "A", LastName: "B"}); err != nil {
 		t.Fatal(err)
 	}
-	if len(notifier.events) != 0 {
-		t.Fatalf("expected no events for sync-origin context, got %#v", notifier.events)
+	if len(notifier.events) != 1 {
+		t.Fatalf("expected one event for a sync-origin change, got %#v", notifier.events)
+	}
+	if notifier.events[0].OriginAccountID == nil || *notifier.events[0].OriginAccountID != originAccount {
+		t.Fatalf("expected event to carry origin account id %v, got %#v", originAccount, notifier.events[0].OriginAccountID)
 	}
 }
 
@@ -722,6 +746,50 @@ func TestServiceNotifyIncludesOwnerID(t *testing.T) {
 	}
 	if len(notifier.events) != 1 || notifier.events[0].Snapshot.OwnerID == nil || *notifier.events[0].Snapshot.OwnerID != owner {
 		t.Fatalf("expected notification snapshot to carry owner id %v, got %#v", owner, notifier.events)
+	}
+}
+
+// TestServicePurgeExpiredNotifiesSync guards a real production gap: the
+// retention purge loop used to remove soft-deleted rows directly, without
+// ever notifying sync - so a purged contact's remote copy (if linked) was
+// never deleted, and its now-dangling contacts_local_id tag would make the
+// next pull recreate it locally as if it were brand new. Purge must notify
+// exactly like an explicit HardDelete. The purge loop also has no
+// authenticated actor in ctx, so the notification must fall back to the
+// Person's own owner id rather than dropping owner scoping entirely (which
+// would otherwise fan the resulting job out to every connected account
+// system-wide instead of just the owner's).
+func TestServicePurgeExpiredNotifiesSync(t *testing.T) {
+	store := newMemStore()
+	notifier := &memNotifier{}
+	svc := NewService(store, notifier)
+
+	owner := uuid.New()
+	ctx := authn.WithUserID(context.Background(), owner)
+	created, _, err := svc.Create(ctx, CreateInput{FirstName: "A", LastName: "B"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.Delete(ctx, created.ID); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-48 * time.Hour)
+	store.items[created.ID].DeletedAt = &old
+	notifier.events = nil
+
+	// Purge runs from a background loop with no authenticated actor.
+	count, err := svc.PurgeExpired(context.Background(), 24*time.Hour)
+	if err != nil {
+		t.Fatalf("purge: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("purged count = %d, want 1", count)
+	}
+	if len(notifier.events) != 1 || notifier.events[0].Kind != contactsync.ChangeKindHardDeleted {
+		t.Fatalf("expected one hard-delete event, got %#v", notifier.events)
+	}
+	if notifier.events[0].Snapshot.OwnerID == nil || *notifier.events[0].Snapshot.OwnerID != owner {
+		t.Fatalf("expected purge notification to fall back to the person's own owner %v, got %#v", owner, notifier.events[0].Snapshot.OwnerID)
 	}
 }
 

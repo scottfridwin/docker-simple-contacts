@@ -242,6 +242,40 @@ docs/design/            authoritative design documents
   last cursor - the only way, short of disconnect/reconnect, to force an
   already-initialized account to fully realign with Google (e.g. to pick
   up newly-shared-but-never-linked contacts without waiting for an edit).
+- A change merged in *from* a sync account (a contact edited directly in
+  Google) used to never propagate onward at all: `person.Service.notify`
+  unconditionally skipped raising a sync job for any `WithSyncOrigin`
+  context, to avoid pushing the change straight back to the same account
+  in a ping-pong loop. That also meant it could never reach any *other*
+  linked/shared account either. `WithSyncOrigin(ctx, accountID)` now
+  carries which account the change came from; `notify` still raises a job
+  but tags it `Job.OriginAccountID`, and `Runner.runJob` excludes just
+  that one account from its fan-out - so the change reaches every other
+  linked/shared account (and even a second Google account of the *same*
+  owner) without ever looping back to where it came from.
+- A job-scoped `Adapter.Sync` call that lost the same-account concurrency
+  race (see `syncing sync.Map` above) used to return `nil` just like a
+  plain periodic/full sync - so `Runner.runJob` marked the job "done"
+  even though `syncLocalJob` never got a chance to push that job's own
+  edit, silently dropping it with no retry. It now returns
+  `google.ErrSyncInProgress` for job-scoped calls specifically, so the
+  job's existing retry/backoff machinery tries again shortly instead.
+- `Runner.RunOnce` (per-job batch loop) and `Runner.runJob` (per-account
+  fan-out) both used to return on the very first failure, silently
+  skipping every other pending job or fan-out account that came after it
+  in that pass. Both are now best-effort: every job/account in the batch
+  is attempted regardless of earlier failures, matching the same
+  per-record resilience already used inside `pullRemote`/`exportLocal`.
+- The 30-day retention purge (`PurgeExpired`) used to hard-delete rows
+  directly via bulk SQL, bypassing `notify()` entirely - so a purged
+  contact's linked remote copy (if any) was never deleted, and its now-
+  dangling `contacts_local_id` tag would make the next pull recreate it
+  locally as if brand new. `PurgeExpired` now notifies sync exactly like
+  an explicit `HardDelete` for each purged record. Since the purge loop
+  has no authenticated actor in ctx, `notify` falls back to the Person's
+  own `OwnerID` (and `JobRepository.Create` falls back to `Job.OwnerID`
+  the same way) rather than persisting an unscoped job that would
+  otherwise fan out to every connected account system-wide.
 
 ## Conventions
 

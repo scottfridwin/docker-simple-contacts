@@ -596,6 +596,49 @@ func (f *fakeAccountStore) UpdateSyncState(_ context.Context, a *contactsync.Acc
 	return a, nil
 }
 
+// TestSyncJobScopedCallReturnsRetryableErrorWhenAlreadySyncing guards
+// against a job's edit being silently dropped: unlike a plain periodic/full
+// sync (job.PersonID == uuid.Nil), a job-scoped call that finds another sync
+// already in flight for the account must not return nil - the caller
+// (Runner.runJob) would otherwise mark the job "done" even though
+// syncLocalJob never got a chance to push this specific edit. Uses
+// stubPersonService (fails the test on any call) to also confirm the guard
+// short-circuits before touching people/links at all.
+func TestSyncJobScopedCallReturnsRetryableErrorWhenAlreadySyncing(t *testing.T) {
+	accountID := uuid.New()
+	adapter := &Adapter{
+		accounts: &fakeAccountStore{},
+		people:   &stubPersonService{t: t},
+		links:    noopLinkStore{},
+		logger:   slog.Default(),
+	}
+	adapter.syncing.Store(accountID, struct{}{})
+
+	err := adapter.Sync(context.Background(), contactsync.Account{ID: accountID}, contactsync.Job{PersonID: uuid.New()})
+	if !errors.Is(err, ErrSyncInProgress) {
+		t.Fatalf("Sync() = %v, want ErrSyncInProgress", err)
+	}
+}
+
+// TestSyncPlainCallSkipsSilentlyWhenAlreadySyncing guards the complementary,
+// unchanged case: a plain periodic/full sync (no job) has nowhere to retry
+// via - the in-flight sync already covers the same work - so it should keep
+// returning nil rather than being treated as a failure.
+func TestSyncPlainCallSkipsSilentlyWhenAlreadySyncing(t *testing.T) {
+	accountID := uuid.New()
+	adapter := &Adapter{
+		accounts: &fakeAccountStore{},
+		people:   &stubPersonService{t: t},
+		links:    noopLinkStore{},
+		logger:   slog.Default(),
+	}
+	adapter.syncing.Store(accountID, struct{}{})
+
+	if err := adapter.Sync(context.Background(), contactsync.Account{ID: accountID}, contactsync.Job{}); err != nil {
+		t.Fatalf("Sync() = %v, want nil", err)
+	}
+}
+
 // TestMarkAccountFailedOnlyReconnectsOnAuthFailures guards against forcing
 // users to re-authenticate for transient or record-specific sync failures
 // (rate limits, a single bad record, Google 5xx, network blips): only

@@ -5,6 +5,7 @@ package google
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -887,6 +888,50 @@ func TestSyncRejectsConcurrentRunsForSameAccount(t *testing.T) {
 	}
 	if count != 1 {
 		t.Fatalf("expected exactly 1 Con Current, got %d: %+v", count, people)
+	}
+}
+
+// TestSyncJobScopedCallReturnsRetryableErrorWhenAccountAlreadySyncing guards
+// against a job's edit being silently dropped: a job-scoped Sync() call that
+// loses the same-account race above must not return nil like a plain
+// periodic/full sync does - the caller (Runner.runJob) would otherwise mark
+// the job "done" even though syncLocalJob never ran and the edit was never
+// pushed for that account. It must return ErrSyncInProgress so the job's
+// existing retry/backoff machinery tries again shortly instead.
+func TestSyncJobScopedCallReturnsRetryableErrorWhenAccountAlreadySyncing(t *testing.T) {
+	sc := newScenario(t)
+	sc.server.seed(googlePerson{Names: []googleName{{GivenName: "Race", FamilyName: "Job"}}})
+
+	ready := make(chan struct{})
+	release := make(chan struct{})
+	sc.server.blockNextList(ready, release)
+
+	var wg1, wg2 sync.WaitGroup
+	var firstErr, secondErr error
+	wg1.Add(1)
+	go func() {
+		defer wg1.Done()
+		firstErr = sc.adapter.Sync(sc.ctx, sc.account, contactsync.Job{})
+	}()
+
+	<-ready // the first Sync() call is now blocked inside its list request
+
+	wg2.Add(1)
+	go func() {
+		defer wg2.Done()
+		// A job-scoped call (PersonID set), unlike the plain full-sync case.
+		secondErr = sc.adapter.Sync(sc.ctx, sc.account, contactsync.Job{PersonID: uuid.New()})
+	}()
+	wg2.Wait() // the second call must return immediately without blocking
+
+	close(release)
+	wg1.Wait() // let the (unblocked) first call finish normally
+
+	if firstErr != nil {
+		t.Fatalf("first Sync() = %v, want nil", firstErr)
+	}
+	if !errors.Is(secondErr, ErrSyncInProgress) {
+		t.Fatalf("second (job-scoped, concurrent) Sync() = %v, want ErrSyncInProgress", secondErr)
 	}
 }
 

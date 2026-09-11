@@ -221,7 +221,9 @@ func (f *fakeStore) HardDelete(_ context.Context, id uuid.UUID) error {
 	return nil
 }
 
-func (f *fakeStore) PurgeExpired(_ context.Context, _ time.Duration) (int64, error) { return 0, nil }
+func (f *fakeStore) PurgeExpired(_ context.Context, _ time.Duration) ([]person.Person, error) {
+	return nil, nil
+}
 
 func (f *fakeStore) Ping(_ context.Context) error { return nil }
 

@@ -20,15 +20,18 @@ const MaxJobAttempts = 5
 
 // Job represents one queued sync operation for a local record.
 type Job struct {
-	ID          uuid.UUID
-	OwnerID     *uuid.UUID
-	PersonID    uuid.UUID
-	Kind        ChangeKind
-	Snapshot    PersonSnapshot
-	Status      string
-	Attempts    int
-	LastError   *string
-	ProcessedAt *time.Time
-	CreatedAt   time.Time
-	UpdatedAt   time.Time
+	ID       uuid.UUID
+	OwnerID  *uuid.UUID
+	PersonID uuid.UUID
+	Kind     ChangeKind
+	Snapshot PersonSnapshot
+	// OriginAccountID, when set, is excluded from this job's own fan-out -
+	// see PersonChange.OriginAccountID.
+	OriginAccountID *uuid.UUID
+	Status          string
+	Attempts        int
+	LastError       *string
+	ProcessedAt     *time.Time
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
 }

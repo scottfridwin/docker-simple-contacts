@@ -448,6 +448,17 @@ func (a *Adapter) Sync(ctx context.Context, account contactsync.Account, job con
 	// account) falls through to creating a second Person for almost every
 	// contact - reject the second call outright instead.
 	if _, alreadyRunning := a.syncing.LoadOrStore(account.ID, struct{}{}); alreadyRunning {
+		if job.PersonID != uuid.Nil {
+			// A job-scoped call must not report success without ever having
+			// pushed the job's own change: returning nil here (like the
+			// full-sync case below) would make the caller mark the job
+			// "done" even though syncLocalJob never ran for this account,
+			// silently dropping that specific edit. Returning an error lets
+			// the existing job retry/backoff machinery pick it up again
+			// shortly, once the in-flight sync has finished.
+			a.logger.Info("google sync already in progress for this account, will retry the pending job", "account_id", account.ID, "person_id", job.PersonID)
+			return ErrSyncInProgress
+		}
 		a.logger.Info("google sync already in progress for this account, skipping", "account_id", account.ID)
 		return nil
 	}
@@ -835,7 +846,7 @@ func (a *Adapter) mergeRemoteRecord(ctx context.Context, accountID uuid.UUID, se
 			a.logger.Info("google sync mergeRemoteRecord: reconciling against unlinked name match", "account_id", accountID, "external_id", remote.Record.ExternalID, "person_id", match.ID)
 			return a.reconcileExisting(ctx, accountID, session, match, remoteModel, remote, pending)
 		}
-		created, verrs, err := a.people.Create(contactsync.WithSyncOrigin(ctx), remoteModel)
+		created, verrs, err := a.people.Create(contactsync.WithSyncOrigin(ctx, accountID), remoteModel)
 		if err != nil {
 			return fmt.Errorf("creating local person from google record %s: %w", remote.Record.ExternalID, err)
 		}
@@ -863,7 +874,7 @@ func (a *Adapter) mergeRemoteRecord(ctx context.Context, accountID uuid.UUID, se
 			// remote record is a tombstone too - nothing to reconcile.
 			return nil
 		}
-		created, verrs, createErr := a.people.Create(contactsync.WithSyncOrigin(ctx), remoteModel)
+		created, verrs, createErr := a.people.Create(contactsync.WithSyncOrigin(ctx, accountID), remoteModel)
 		if createErr != nil {
 			return fmt.Errorf("creating local person for missing mapping: %w", createErr)
 		}
@@ -898,7 +909,7 @@ func (a *Adapter) reconcileExisting(ctx context.Context, accountID uuid.UUID, se
 	remoteUpdatedAt := extractUpdatedAt(remote)
 	if remote.Record.Tombstone.Deleted {
 		if remoteUpdatedAt.After(local.UpdatedAt) {
-			if err := a.people.Delete(contactsync.WithSyncOrigin(ctx), local.ID); err != nil && !errors.Is(err, person.ErrNotFound) {
+			if err := a.people.Delete(contactsync.WithSyncOrigin(ctx, accountID), local.ID); err != nil && !errors.Is(err, person.ErrNotFound) {
 				return fmt.Errorf("deleting local person %s: %w", local.ID.String(), err)
 			}
 		} else {
@@ -926,7 +937,7 @@ func (a *Adapter) reconcileExisting(ctx context.Context, accountID uuid.UUID, se
 
 	if remoteUpdatedAt.After(local.UpdatedAt) {
 		update := fieldAwareUpdate(remote.Record.Fields, remoteModel)
-		_, verrs, err := a.people.Update(contactsync.WithSyncOrigin(ctx), local.ID, update)
+		_, verrs, err := a.people.Update(contactsync.WithSyncOrigin(ctx, accountID), local.ID, update)
 		if err != nil {
 			return fmt.Errorf("updating local person %s: %w", local.ID.String(), err)
 		}
@@ -1061,6 +1072,12 @@ type reauthRequiredError struct {
 
 func (e *reauthRequiredError) Error() string { return e.err.Error() }
 func (e *reauthRequiredError) Unwrap() error { return e.err }
+
+// ErrSyncInProgress is returned by a job-scoped Sync call that lost the race
+// against another sync already running for the same account. It's a
+// transient condition, not a real failure - the caller should let the
+// existing job retry/backoff mechanism try again shortly.
+var ErrSyncInProgress = errors.New("google sync already in progress for this account")
 
 func sessionFromAccount(account contactsync.Account) (contactsync.AuthSession, error) {
 	if account.AccessToken == nil || strings.TrimSpace(*account.AccessToken) == "" {

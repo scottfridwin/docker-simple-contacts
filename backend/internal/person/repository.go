@@ -360,15 +360,31 @@ func (r *Repository) HardDelete(ctx context.Context, id uuid.UUID) error {
 }
 
 // PurgeExpired permanently removes records soft-deleted before the cutoff. It
-// returns the number of purged rows.
-func (r *Repository) PurgeExpired(ctx context.Context, olderThan time.Duration) (int64, error) {
-	const q = `DELETE FROM persons WHERE deleted_at IS NOT NULL AND deleted_at < $1`
+// returns the id and owner of every purged record, so the caller can notify
+// sync (deleting the corresponding remote contact, if any) for each one.
+func (r *Repository) PurgeExpired(ctx context.Context, olderThan time.Duration) ([]Person, error) {
+	const q = `DELETE FROM persons WHERE deleted_at IS NOT NULL AND deleted_at < $1 RETURNING id, owner_id`
 	cutoff := time.Now().Add(-olderThan)
-	tag, err := r.pool.Exec(ctx, q, cutoff)
+	rows, err := r.pool.Query(ctx, q, cutoff)
 	if err != nil {
-		return 0, fmt.Errorf("purging expired persons: %w", err)
+		return nil, fmt.Errorf("purging expired persons: %w", err)
 	}
-	return tag.RowsAffected(), nil
+	defer rows.Close()
+
+	purged := make([]Person, 0)
+	for rows.Next() {
+		var p Person
+		var ownerID *uuid.UUID
+		if err := rows.Scan(&p.ID, &ownerID); err != nil {
+			return nil, fmt.Errorf("scanning purged person: %w", err)
+		}
+		p.OwnerID = ownerID
+		purged = append(purged, p)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterating purged persons: %w", err)
+	}
+	return purged, nil
 }
 
 // Ping verifies database connectivity for readiness checks.

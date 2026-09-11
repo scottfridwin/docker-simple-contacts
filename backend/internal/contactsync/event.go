@@ -71,6 +71,11 @@ type PersonChange struct {
 	Kind      ChangeKind
 	Snapshot  PersonSnapshot
 	ChangedAt time.Time
+	// OriginAccountID is set when this change was itself applied by pulling
+	// a remote update from a sync account, so the resulting job can
+	// propagate the change onward to other linked/shared accounts while
+	// excluding the account it just came from (avoiding a ping-pong loop).
+	OriginAccountID *uuid.UUID
 }
 
 // Notifier receives local person mutations so a sync engine can enqueue work.
