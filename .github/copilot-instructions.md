@@ -109,6 +109,13 @@ conflict.
   A pull spanning more than one page never terminated because later pages
   sent Google's `nextPageToken` via the `syncToken` param instead of
   `pageToken`; `ListChanges` now tracks which kind of token its cursor is.
+- `Adapter.Sync` used to write its whole in-memory `Account` snapshot back
+  (via a blanket `Update`) whenever it persisted token refreshes/status,
+  which could clobber `sync_frequency_minutes`/`display_name` changed via
+  the API while a long sync was still running, reverting it to the stale
+  value from the start of the run. `Repository.UpdateSyncState` persists
+  only sync-owned fields (tokens/cursor/status/last-synced/error);
+  `Adapter` uses it exclusively now instead of the full `Update`.
 - Google sync matching/merge: a Google contact with no `contacts_local_id` tag
   matches an existing local contact only on an exact, unambiguous first+last
   name match (no fuzzy matching), otherwise it's created as a new Person. When

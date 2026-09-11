@@ -181,6 +181,18 @@ docs/design/            authoritative design documents
   no test could have caught it; it now supports forced pagination
   (`setListPageSize`/`listCallCount`) and there's a regression test
   asserting a multi-page pull terminates in a bounded number of calls.
+- `Adapter.Sync` held its own in-memory `Account` snapshot for the whole
+  run (which, per the bug above, could be hours) and, via `ensureSession`'s
+  periodic token refresh or its own completion/failure handling, wrote
+  that ENTIRE stale snapshot back with a blanket `UPDATE ... SET` - so a
+  user changing `sync_frequency_minutes` (or `display_name`) via
+  `PATCH /sync-accounts/{id}` while a sync was still in flight for that
+  account got silently reverted back to whatever the sync's own snapshot
+  had at the start of the run. `Repository.UpdateSyncState` now persists
+  only the fields a sync itself owns (tokens, cursor, status,
+  last-synced/error); `Adapter` uses it exclusively and never touches
+  `display_name`/`sync_frequency_minutes`. The full `Update` (still used
+  by the HTTP handlers for user-initiated changes) is unchanged.
 - **Sync matching/merge**: a Google contact with no `contacts_local_id` tag
   matches an existing local contact only on an exact, unambiguous
   first+last name match (`person.FindByExactName`), otherwise it's created

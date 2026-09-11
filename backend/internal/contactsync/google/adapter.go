@@ -44,7 +44,11 @@ type Config struct {
 }
 
 type accountStateStore interface {
-	Update(context.Context, *contactsync.Account) (*contactsync.Account, error)
+	// UpdateSyncState persists only the fields Sync itself manages (OAuth
+	// tokens, cursor, status, last-synced/error) - never user-editable
+	// settings like display_name/sync_frequency_minutes, which a
+	// long-running sync must not clobber with its own stale snapshot.
+	UpdateSyncState(context.Context, *contactsync.Account) (*contactsync.Account, error)
 }
 
 // recordLinkStore maps a local Person to its remote record on one specific
@@ -471,7 +475,7 @@ func (a *Adapter) Sync(ctx context.Context, account contactsync.Account, job con
 	account.LastSyncedAt = &now
 	account.LastError = nil
 	account.Status = "connected"
-	if _, err := a.accounts.Update(ctx, &account); err != nil {
+	if _, err := a.accounts.UpdateSyncState(ctx, &account); err != nil {
 		return fmt.Errorf("updating sync account state: %w", err)
 	}
 	a.logger.Info("google sync finished", "account_id", account.ID, "remote_records_seen", pulled, "initial_sync", initialSync)
@@ -963,7 +967,7 @@ func (a *Adapter) ensureSession(ctx context.Context, account *contactsync.Accoun
 		account.ExpiresAt = &expiresAt
 	}
 	account.Scope = refreshed.Scope
-	if _, err := a.accounts.Update(ctx, account); err != nil {
+	if _, err := a.accounts.UpdateSyncState(ctx, account); err != nil {
 		return contactsync.AuthSession{}, fmt.Errorf("persisting refreshed google token: %w", err)
 	}
 	return refreshed, nil
@@ -986,7 +990,7 @@ func (a *Adapter) markAccountFailed(ctx context.Context, account *contactsync.Ac
 		account.Status = "reconnect_required"
 	}
 	a.logger.Error("google sync failed", "account_id", account.ID, "provider_account_id", account.ProviderAccountID, "status", account.Status, "error", syncErr)
-	_, _ = a.accounts.Update(ctx, account)
+	_, _ = a.accounts.UpdateSyncState(ctx, account)
 	return syncErr
 }
 

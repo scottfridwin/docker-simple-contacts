@@ -934,5 +934,46 @@ sync token for backward compatibility.
   contacts than fit on one page and asserts the pull completes in a
   small, bounded number of list calls instead of looping.
 
+## Post-implementation decision log (2026-09-11, later)
+
+### R) A long-running sync silently reverted user-edited account settings
+
+Real production incident: the user changed `sync_frequency_minutes` from
+5 to 60 via the UI, but after a redeploy it was back to 5 in the
+database.
+
+**Root cause**: `Adapter.Sync` receives its `Account` by value and holds
+that in-memory snapshot for the entire run - which, per decision Q above,
+could be many hours for a large/rate-limited account. Three places
+persisted sync progress mid-run or at the end
+(`ensureSession`'s periodic OAuth token refresh, `markAccountFailed`,
+and `Sync`'s own success path) and all three called the *same* blanket
+`Repository.Update`, which does `UPDATE sync_accounts SET <every
+column> ...` from whatever is in the in-memory struct - including
+`display_name` and `sync_frequency_minutes`. If a user edited either of
+those via `PATCH /sync-accounts/{id}` while a sync was still in flight
+for that account, the change would persist correctly in the moment, but
+the still-running sync's later write (using its own snapshot from
+*before* the user's edit) would silently overwrite it back to the old
+value - a classic read-modify-write lost update, on the whole row rather
+than just the fields actually being changed.
+
+**Fix**: added `Repository.UpdateSyncState`, which only ever writes
+`access_token, refresh_token, expires_at, scope, sync_cursor, status,
+last_synced_at, last_error` - never `provider`, `display_name`, or
+`sync_frequency_minutes`. `Adapter`'s `accountStateStore` interface now
+requires `UpdateSyncState` instead of `Update`, and all three of its
+internal persistence points use it exclusively. The original `Update`
+is unchanged and still used by the two places that legitimately need to
+write user-editable fields on a short-lived, freshly-loaded snapshot:
+the `PATCH /sync-accounts/{id}` handler and the OAuth reconnect flow.
+
+- Covered by `TestUpdateSyncStateDoesNotClobberUserSettings`
+  (`contactsync` package, integration-tagged): simulates a stale
+  in-flight sync's snapshot persisting its own token refresh *after* a
+  concurrent "user" PATCH-style `Update` changed `display_name`/
+  `sync_frequency_minutes`, and asserts both the user's settings and the
+  sync's own token write all survive.
+
 
 

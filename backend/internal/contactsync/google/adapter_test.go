@@ -486,7 +486,7 @@ func TestMergeRemoteRecordDefersRelationshipReconciliation(t *testing.T) {
 
 type fakeAccountStore struct{}
 
-func (f *fakeAccountStore) Update(_ context.Context, a *contactsync.Account) (*contactsync.Account, error) {
+func (f *fakeAccountStore) UpdateSyncState(_ context.Context, a *contactsync.Account) (*contactsync.Account, error) {
 	return a, nil
 }
 

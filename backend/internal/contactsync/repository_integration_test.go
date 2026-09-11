@@ -176,3 +176,67 @@ func TestJobRepositoryListPendingRetriesFailedJobsWithBackoff(t *testing.T) {
 		}
 	}
 }
+
+// TestUpdateSyncStateDoesNotClobberUserSettings guards a real production
+// incident: a user changed sync_frequency_minutes via PATCH /sync-accounts
+// while a long-running Sync() was still in flight for that account (a
+// large/rate-limited pull can run for hours, holding its own in-memory
+// Account snapshot from before the user's change the whole time). When
+// that in-flight run later persisted its own sync state (token refresh,
+// or the final "sync finished" update), the old blanket Update wrote back
+// its own stale sync_frequency_minutes/display_name too, silently
+// reverting the user's change. UpdateSyncState must never touch those
+// user-editable fields, only sync execution state.
+func TestUpdateSyncStateDoesNotClobberUserSettings(t *testing.T) {
+	pool := newTestPool(t)
+	repo := NewRepository(pool)
+	ctx := context.Background()
+
+	name := "Original Name"
+	created, err := repo.Create(ctx, &Account{
+		Provider:             "google",
+		ProviderAccountID:    "sync-state-test-" + uuid.NewString(),
+		DisplayName:          &name,
+		SyncFrequencyMinutes: 5,
+		Status:               "connected",
+	})
+	if err != nil {
+		t.Fatalf("creating account: %v", err)
+	}
+	t.Cleanup(func() { _, _ = pool.Exec(context.Background(), "DELETE FROM sync_accounts WHERE id = $1", created.ID) })
+
+	// Simulate a long-running Sync() call that loaded its own snapshot
+	// before the user's settings change below.
+	stale := *created
+
+	// The user changes their settings via the API while that sync is
+	// still (conceptually) in flight.
+	newName := "User Renamed This"
+	created.DisplayName = &newName
+	created.SyncFrequencyMinutes = 60
+	if _, err := repo.Update(ctx, created); err != nil {
+		t.Fatalf("simulating user PATCH: %v", err)
+	}
+
+	// The stale in-flight sync now persists its own sync-execution state
+	// using its old snapshot.
+	token := "refreshed-token"
+	stale.AccessToken = &token
+	if _, err := repo.UpdateSyncState(ctx, &stale); err != nil {
+		t.Fatalf("UpdateSyncState: %v", err)
+	}
+
+	got, err := repo.GetByID(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("GetByID: %v", err)
+	}
+	if got.SyncFrequencyMinutes != 60 {
+		t.Errorf("SyncFrequencyMinutes = %d, want 60 (must survive the stale sync's UpdateSyncState call)", got.SyncFrequencyMinutes)
+	}
+	if got.DisplayName == nil || *got.DisplayName != newName {
+		t.Errorf("DisplayName = %v, want %q (must survive the stale sync's UpdateSyncState call)", got.DisplayName, newName)
+	}
+	if got.AccessToken == nil || *got.AccessToken != token {
+		t.Errorf("AccessToken = %v, want %q (UpdateSyncState must still persist its own fields)", got.AccessToken, token)
+	}
+}

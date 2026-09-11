@@ -92,6 +92,35 @@ func (r *Repository) Update(ctx context.Context, account *Account) (*Account, er
 	return scanAccount(r.pool.QueryRow(ctx, q, args...))
 }
 
+// UpdateSyncState persists only the fields a running sync itself manages -
+// OAuth tokens, sync cursor, status, and last-synced/last-error - never
+// provider, display_name, or sync_frequency_minutes. A single Sync() call
+// can hold its own in-memory Account snapshot for a very long time (a
+// large/rate-limited pull can run for hours); if it wrote every column back
+// via the full Update above, it would silently clobber a user-editable
+// setting (e.g. sync_frequency_minutes) changed via PATCH /sync-accounts
+// while that sync was still in flight, reverting it back to whatever the
+// stale snapshot had at the top of the run.
+func (r *Repository) UpdateSyncState(ctx context.Context, account *Account) (*Account, error) {
+	q := `
+		UPDATE sync_accounts
+		SET access_token = $2, refresh_token = $3, expires_at = $4, scope = $5,
+		    sync_cursor = $6, status = $7, last_synced_at = $8, last_error = $9,
+		    updated_at = now()
+		WHERE id = $1`
+	args := []any{
+		account.ID, account.AccessToken, account.RefreshToken, account.ExpiresAt,
+		account.Scope, account.SyncCursor, account.Status, account.LastSyncedAt, account.LastError,
+	}
+	if ownerID, ok := authn.UserID(ctx); ok {
+		q += ` AND owner_id = $10`
+		args = append(args, ownerID)
+	}
+	q += `
+		RETURNING id, owner_id, provider, provider_account_id, display_name, access_token, refresh_token, expires_at, scope, sync_cursor, sync_frequency_minutes, status, last_synced_at, last_error, created_at, updated_at`
+	return scanAccount(r.pool.QueryRow(ctx, q, args...))
+}
+
 // List returns sync accounts for the current account scope.
 func (r *Repository) List(ctx context.Context, limit int) ([]Account, error) {
 	if limit <= 0 {
