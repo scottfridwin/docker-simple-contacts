@@ -207,6 +207,32 @@ func TestRemoteToLocalProducesUpdatableMiddleNames(t *testing.T) {
 	}
 }
 
+// TestMultipleMiddleNamesRoundTripThroughGoogle guards a real data-loss gap:
+// Google's People API has only one middleName string, unlike our ordered
+// middle_names array - exporting used to take only the first local middle
+// name, silently dropping the rest, so rebuilding from Google after losing
+// the local database would have lost every middle name past the first.
+func TestMultipleMiddleNamesRoundTripThroughGoogle(t *testing.T) {
+	record := contactsync.Record{
+		Fields: map[string]contactsync.FieldState{
+			"first_name":   {IsSet: true, Value: "Grace"},
+			"last_name":    {IsSet: true, Value: "Hopper"},
+			"middle_names": {IsSet: true, Value: []string{"Brewster", "Murray"}},
+		},
+	}
+
+	out := toGooglePerson(record, "etag")
+	if len(out.Names) != 1 || out.Names[0].MiddleName != "Brewster Murray" {
+		t.Fatalf("exported MiddleName = %q, want %q", out.Names[0].MiddleName, "Brewster Murray")
+	}
+
+	imported := toProviderRecord(googlePerson{ResourceName: "people/c1", Names: out.Names}, nil)
+	create, _ := remoteToLocal(imported)
+	if len(create.MiddleNames) != 2 || create.MiddleNames[0] != "Brewster" || create.MiddleNames[1] != "Murray" {
+		t.Fatalf("re-imported MiddleNames = %+v, want [Brewster Murray]", create.MiddleNames)
+	}
+}
+
 // TestFieldAwareUpdateIncludesNicknameAndBirthdate guards a real sync gap:
 // nickname and birthdate were mapped on contact creation but never on a
 // later reconcileExisting "remote wins" merge, so editing either field
@@ -228,6 +254,60 @@ func TestFieldAwareUpdateIncludesNicknameAndBirthdate(t *testing.T) {
 	}
 	if !update.BirthdateSet || update.Birthdate == nil || *update.Birthdate != birthdate {
 		t.Fatalf("Birthdate = %v (set=%v), want %q", update.Birthdate, update.BirthdateSet, birthdate)
+	}
+}
+
+// TestPronounsRoundTripsViaReservedCustomField guards the pronouns sync
+// feature: since the People API has no native pronouns concept, pronouns
+// round-trip through a reserved userDefined entry (contacts_pronouns)
+// instead - it must not leak into the user's own custom_fields, and it must
+// be included in fieldAwareUpdate so an edit made directly in Google reaches
+// the local copy on a later sync too.
+func TestPronounsRoundTripsViaReservedCustomField(t *testing.T) {
+	pronouns := "she/her"
+	record := contactsync.Record{
+		Fields: map[string]contactsync.FieldState{
+			"first_name": {IsSet: true, Value: "Ada"},
+			"last_name":  {IsSet: true, Value: "Lovelace"},
+			"pronouns":   {IsSet: true, Value: pronouns},
+		},
+	}
+
+	out := toGooglePerson(record, "etag")
+	var got string
+	for _, item := range out.UserDefined {
+		if item.Key == pronounsUserDefinedKey {
+			got = item.Value
+		}
+		if item.Key == "pronouns" {
+			t.Fatalf("pronouns must use the reserved key %q, not the literal %q", pronounsUserDefinedKey, item.Key)
+		}
+	}
+	if got != pronouns {
+		t.Fatalf("exported pronouns = %q, want %q", got, pronouns)
+	}
+
+	in := googlePerson{
+		ResourceName: "people/c1",
+		Names:        []googleName{{GivenName: "Ada", FamilyName: "Lovelace"}},
+		UserDefined:  out.UserDefined,
+	}
+	imported := toProviderRecord(in, nil)
+	if v := fieldString(imported.Record.Fields, "pronouns"); v != pronouns {
+		t.Fatalf("imported pronouns = %q, want %q", v, pronouns)
+	}
+	if custom := fieldCustomFields(imported.Record.Fields, "custom_fields"); len(custom) != 0 {
+		t.Fatalf("pronouns leaked into custom_fields: %+v", custom)
+	}
+
+	create, _ := remoteToLocal(imported)
+	if create.Pronouns == nil || *create.Pronouns != pronouns {
+		t.Fatalf("remoteToLocal Pronouns = %v, want %q", create.Pronouns, pronouns)
+	}
+
+	update := fieldAwareUpdate(imported.Record.Fields, create)
+	if !update.PronounsSet || update.Pronouns == nil || *update.Pronouns != pronouns {
+		t.Fatalf("fieldAwareUpdate Pronouns = %v (set=%v), want %q", update.Pronouns, update.PronounsSet, pronouns)
 	}
 }
 

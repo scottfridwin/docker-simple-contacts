@@ -421,6 +421,66 @@ func TestScenario_NoOpRemoteMergeDoesNotLoop(t *testing.T) {
 	}
 }
 
+// TestScenario_PronounsSyncBothWays guards the pronouns sync feature: since
+// the People API has no native pronouns concept, pronouns round-trip through
+// a reserved userDefined entry (contacts_pronouns) instead of a normal
+// custom field - it must not show up in CustomFields, and an edit made
+// directly in Google must reach the local copy on a later sync.
+func TestScenario_PronounsSyncBothWays(t *testing.T) {
+	sc := newScenario(t)
+	local := sc.createLocal("Alex", "Rivera")
+	pronouns := "they/them"
+	updated, verrs, err := sc.people.Update(sc.ctx, local.ID, person.UpdateInput{Pronouns: &pronouns, PronounsSet: true})
+	if err != nil || verrs.HasErrors() {
+		t.Fatalf("seeding pronouns: verrs=%v err=%v", verrs, err)
+	}
+
+	job := contactsync.Job{PersonID: local.ID, Kind: contactsync.ChangeKindCreated, Snapshot: updated.Snapshot(nil)}
+	if err := sc.sync(job); err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+
+	all := sc.server.all()
+	if len(all) != 1 {
+		t.Fatalf("expected exactly 1 Google contact, got %d: %+v", len(all), all)
+	}
+	resourceName := all[0].ResourceName
+	remoteFields := map[string]string{}
+	for _, ud := range all[0].UserDefined {
+		remoteFields[ud.Key] = ud.Value
+	}
+	if remoteFields[pronounsUserDefinedKey] != pronouns {
+		t.Fatalf("expected pronouns exported under the reserved key, got %+v", remoteFields)
+	}
+
+	sc.server.mutate(resourceName, time.Now().Add(time.Hour), func(p *googlePerson) {
+		for i := range p.UserDefined {
+			if p.UserDefined[i].Key == pronounsUserDefinedKey {
+				p.UserDefined[i].Value = "she/they"
+			}
+		}
+	})
+
+	if err := sc.sync(contactsync.Job{}); err != nil {
+		t.Fatalf("second sync: %v", err)
+	}
+
+	people, _, err := sc.people.List(sc.ctx, person.ListParams{Page: 1, PageSize: 100})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	merged, ok := findPersonByName(t, people, "Alex", "Rivera")
+	if !ok {
+		t.Fatal("expected Alex Rivera to still exist")
+	}
+	if merged.Pronouns == nil || *merged.Pronouns != "she/they" {
+		t.Errorf("expected the Google-side pronouns edit to be applied locally, got %+v", merged.Pronouns)
+	}
+	if _, leaked := merged.CustomFields[pronounsUserDefinedKey]; leaked {
+		t.Errorf("pronouns leaked into custom_fields: %+v", merged.CustomFields)
+	}
+}
+
 // --- Scenario 4: modify contact in Contacts ---
 
 func TestScenario_ModifyInContacts(t *testing.T) {

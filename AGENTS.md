@@ -134,10 +134,11 @@ docs/design/            authoritative design documents
   name only. `sync_accounts.display_name` (the connected email) is for UI
   labeling only, never for identity matching.
 - **Sync UX rules**: keep sync metadata keys (`google_resource_name`
-  (legacy), `_google_updated_at`, `contacts_local_id`) reserved for system
-  use; do not expose them as generic editable custom fields in list/detail
-  UI. New Google syncs track remote record ids per account via the
-  `sync_record_links` table, not `Person.custom_fields`. `Person.custom_fields`
+  (legacy), `_google_updated_at`, `contacts_local_id`, `contacts_pronouns`)
+  reserved for system use; do not expose them as generic editable custom
+  fields in list/detail UI. New Google syncs track remote record ids per
+  account via the `sync_record_links` table, not `Person.custom_fields`.
+  `Person.custom_fields`
   **is synced with Google bidirectionally** via `userDefined` entries: keys
   are used verbatim as the Google label (no snake_case/humanization), values
   are stringified on export and type-sniffed (number/boolean/string) on
@@ -206,9 +207,20 @@ docs/design/            authoritative design documents
   `birthdate` were mapped on contact creation but missing from
   `fieldAwareUpdate`, so editing either directly in Google after the
   initial sync never reached the local copy on a later "remote wins"
-  merge — both are now included there too. `pronouns` still has no
-  Google-side mapping at all (not exported, not imported, not part of
-  the field mask) - it remains a local-only field.
+  merge — both are now included there too. `pronouns` has no native Google
+  People API field, so it round-trips through a reserved userDefined entry
+  (`contacts_pronouns`, distinct from the user's own `custom_fields`)
+  instead — exported by `toGooglePerson`, imported by `toProviderRecord`,
+  and included in `fieldAwareUpdate` like any other field.
+- Google's People API has only one `middleName` string per name, unlike our
+  ordered `middle_names` array - exporting used to take only the first
+  local middle name, silently dropping the rest, so a local database lost
+  and rebuilt from Google would have lost every middle name past the
+  first. `toGooglePerson` now joins every local middle name into that one
+  string with a space, and `toProviderRecord` splits it back apart on
+  import - which means a single middle name that legitimately contains a
+  space (e.g. "Anne Marie" as one name) will round-trip as two separate
+  entries instead, an inherent limitation of Google's single-string schema.
 - **OAuth verification pages**: unauthenticated users must be able to view a
   public home page describing app purpose, and a public privacy policy page at
   `/privacy`.

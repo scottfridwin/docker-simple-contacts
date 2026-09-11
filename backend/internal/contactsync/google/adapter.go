@@ -28,8 +28,13 @@ import (
 
 const (
 	localIDUserDefinedKey = "contacts_local_id"
-	remoteUpdatedFieldKey = "_google_updated_at"
-	googleIssuer          = "https://accounts.google.com"
+	// pronounsUserDefinedKey stores pronouns as a Google custom field, since
+	// the People API has no native pronouns concept - reserved the same way
+	// localIDUserDefinedKey is, so it's excluded from the user's own
+	// custom_fields and not shown as a normal editable field.
+	pronounsUserDefinedKey = "contacts_pronouns"
+	remoteUpdatedFieldKey  = "_google_updated_at"
+	googleIssuer           = "https://accounts.google.com"
 )
 
 // Config controls OAuth and API endpoints for Google sync.
@@ -981,6 +986,10 @@ func fieldAwareUpdate(fields map[string]contactsync.FieldState, remoteModel pers
 		update.Nickname = remoteModel.Nickname
 		update.NicknameSet = true
 	}
+	if fieldIsSet(fields, "pronouns") {
+		update.Pronouns = remoteModel.Pronouns
+		update.PronounsSet = true
+	}
 	if fieldIsSet(fields, "birthdate") {
 		update.Birthdate = remoteModel.Birthdate
 		update.BirthdateSet = true
@@ -1125,6 +1134,9 @@ func snapshotToRecord(snapshot contactsync.PersonSnapshot) contactsync.Record {
 	if snapshot.Nickname != nil {
 		record.Fields["nickname"] = contactsync.FieldState{IsSet: true, Value: *snapshot.Nickname, UpdatedAt: snapshot.UpdatedAt}
 	}
+	if snapshot.Pronouns != nil {
+		record.Fields["pronouns"] = contactsync.FieldState{IsSet: true, Value: *snapshot.Pronouns, UpdatedAt: snapshot.UpdatedAt}
+	}
 	if snapshot.Birthdate != nil {
 		record.Fields["birthdate"] = contactsync.FieldState{IsSet: true, Value: *snapshot.Birthdate, UpdatedAt: snapshot.UpdatedAt}
 	}
@@ -1162,6 +1174,9 @@ func personToRecord(p person.Person, externalID string) contactsync.Record {
 	}
 	if p.Nickname != nil {
 		record.Fields["nickname"] = contactsync.FieldState{IsSet: true, Value: *p.Nickname, UpdatedAt: p.UpdatedAt}
+	}
+	if p.Pronouns != nil {
+		record.Fields["pronouns"] = contactsync.FieldState{IsSet: true, Value: *p.Pronouns, UpdatedAt: p.UpdatedAt}
 	}
 	if p.Birthdate != nil {
 		record.Fields["birthdate"] = contactsync.FieldState{IsSet: true, Value: *p.Birthdate, UpdatedAt: p.UpdatedAt}
@@ -1202,6 +1217,9 @@ func remoteToLocal(record contactsync.ProviderRecord) (person.CreateInput, *uuid
 	}
 	if nickname := fieldString(record.Record.Fields, "nickname"); nickname != "" {
 		create.Nickname = &nickname
+	}
+	if pronouns := fieldString(record.Record.Fields, "pronouns"); pronouns != "" {
+		create.Pronouns = &pronouns
 	}
 	if birthdate := fieldString(record.Record.Fields, "birthdate"); birthdate != "" {
 		create.Birthdate = &birthdate
@@ -1659,8 +1677,12 @@ func toProviderRecord(in googlePerson, resolver *groupResolver) contactsync.Prov
 	name := selectName(in.Names)
 	fields["first_name"] = contactsync.FieldState{IsSet: name.GivenName != "", Value: name.GivenName, UpdatedAt: updatedAt}
 	middle := []string{}
-	if strings.TrimSpace(name.MiddleName) != "" {
-		middle = []string{name.MiddleName}
+	if trimmed := strings.TrimSpace(name.MiddleName); trimmed != "" {
+		// Google's People API has only one middleName string, unlike our
+		// ordered middle_names array - split on whitespace so multiple local
+		// middle names (joined the same way on export, see toGooglePerson)
+		// survive a round trip instead of collapsing to just the first.
+		middle = strings.Fields(trimmed)
 	}
 	fields["middle_names"] = contactsync.FieldState{IsSet: true, Value: middle, UpdatedAt: updatedAt}
 	fields["last_name"] = contactsync.FieldState{IsSet: name.FamilyName != "", Value: name.FamilyName, UpdatedAt: updatedAt}
@@ -1744,6 +1766,12 @@ func toProviderRecord(in googlePerson, resolver *groupResolver) contactsync.Prov
 			}
 			continue
 		}
+		if item.Key == pronounsUserDefinedKey {
+			if value := strings.TrimSpace(item.Value); value != "" {
+				fields["pronouns"] = contactsync.FieldState{IsSet: true, Value: value, UpdatedAt: updatedAt}
+			}
+			continue
+		}
 		if key := strings.TrimSpace(item.Key); key != "" {
 			customFields[key] = sniffCustomFieldValue(item.Value)
 		}
@@ -1780,7 +1808,11 @@ func toGooglePerson(record contactsync.Record, etag string) googlePerson {
 	}
 	middleName := ""
 	if len(middleNames) > 0 {
-		middleName = middleNames[0]
+		// Google's People API has only one middleName string - join every
+		// local middle name into it (split back apart on import, see
+		// toProviderRecord) instead of exporting just the first and silently
+		// dropping the rest.
+		middleName = strings.Join(middleNames, " ")
 	}
 	phones := normalizeLabeledValues(fieldLabeledValues(record.Fields, "phone_numbers"), 10, 50)
 	phoneValues := make([]googlePhoneNumber, 0, len(phones))
@@ -1823,7 +1855,7 @@ func toGooglePerson(record contactsync.Record, etag string) googlePerson {
 	userDefined := []googleUserDefined{}
 	for key, value := range fieldCustomFields(record.Fields, "custom_fields") {
 		key = strings.TrimSpace(key)
-		if key == "" || key == localIDUserDefinedKey {
+		if key == "" || key == localIDUserDefinedKey || key == pronounsUserDefinedKey {
 			continue
 		}
 		if str, ok := stringifyCustomFieldValue(value); ok {
@@ -1834,6 +1866,9 @@ func toGooglePerson(record contactsync.Record, etag string) googlePerson {
 	localID := fieldString(record.Fields, "local_id")
 	if localID != "" {
 		userDefined = append(userDefined, googleUserDefined{Key: localIDUserDefinedKey, Value: localID})
+	}
+	if pronouns := fieldString(record.Fields, "pronouns"); pronouns != "" {
+		userDefined = append(userDefined, googleUserDefined{Key: pronounsUserDefinedKey, Value: pronouns})
 	}
 	relations := fieldLabeledValues(record.Fields, "relations")
 	relationValues := make([]googleRelation, 0, len(relations))

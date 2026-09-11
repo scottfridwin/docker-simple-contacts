@@ -78,7 +78,8 @@ conflict.
   (`provider_account_id`), never by provider name alone; `display_name` (the
   connected email) is for UI labeling only, not identity matching.
 - Google sync metadata keys (`google_resource_name` (legacy), `_google_updated_at`,
-  `contacts_local_id`) are reserved system fields and should not be exposed as
+  `contacts_local_id`, `contacts_pronouns`) are reserved system fields and
+  should not be exposed as
   normal editable custom fields. Per-account remote record ids live in the
   `sync_record_links` table, not `Person.custom_fields`. `Person.custom_fields`
   **is synced with Google bidirectionally** via `userDefined` entries: keys
@@ -126,9 +127,17 @@ conflict.
   `nickname` and `birthdate` were mapped on contact creation but missing from
   `fieldAwareUpdate`, so editing either directly in Google after the
   initial sync never reached the local copy on a later "remote wins"
-  merge - both are now included there too. `pronouns` still has no
-  Google-side mapping at all (not exported, not imported, not part of
-  the field mask) - it remains a local-only field.
+  merge - both are now included there too. `pronouns` has no native Google
+  People API field, so it round-trips through a reserved userDefined entry
+  (`contacts_pronouns`, distinct from the user's own custom fields) instead -
+  exported by `toGooglePerson`, imported by `toProviderRecord`, and included
+  in `fieldAwareUpdate` like any other field.
+- Google's People API has only one `middleName` string, unlike our ordered
+  `middle_names` array - `toGooglePerson` joins every local middle name
+  into it with a space (was only the first, silently dropping the rest),
+  and `toProviderRecord` splits it back apart on import. A single middle
+  name that legitimately contains a space round-trips as two entries
+  instead - an inherent limitation of Google's single-string schema.
 - Keep public verification pages available without login: home page with app
   purpose and privacy policy at `/privacy`.
 - Sharing: an owner can share an individual Person with another account
