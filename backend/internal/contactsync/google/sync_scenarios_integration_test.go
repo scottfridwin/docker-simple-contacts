@@ -753,7 +753,24 @@ func (s *memLinkStore) Get(_ context.Context, accountID, personID uuid.UUID) (*c
 	return link, nil
 }
 
+func (s *memLinkStore) GetByRemoteID(_ context.Context, accountID uuid.UUID, remoteID string) (*contactsync.RecordLink, error) {
+	for _, link := range s.links {
+		if link.SyncAccountID == accountID && link.RemoteID == remoteID {
+			return link, nil
+		}
+	}
+	return nil, contactsync.ErrLinkNotFound
+}
+
+// Upsert mirrors the real schema's UNIQUE (sync_account_id, remote_id)
+// constraint, so a test can't accidentally link two different persons to
+// the same remote record without noticing.
 func (s *memLinkStore) Upsert(_ context.Context, link *contactsync.RecordLink) error {
+	for _, existing := range s.links {
+		if existing.SyncAccountID == link.SyncAccountID && existing.RemoteID == link.RemoteID && existing.PersonID != link.PersonID {
+			return fmt.Errorf("remote id %s already linked to a different person on this account", link.RemoteID)
+		}
+	}
 	s.links[linkKey(link.SyncAccountID, link.PersonID)] = link
 	return nil
 }

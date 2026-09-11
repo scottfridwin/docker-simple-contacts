@@ -441,6 +441,10 @@ func (noopLinkStore) Get(context.Context, uuid.UUID, uuid.UUID) (*contactsync.Re
 	return nil, errors.New("not found")
 }
 
+func (noopLinkStore) GetByRemoteID(context.Context, uuid.UUID, string) (*contactsync.RecordLink, error) {
+	return nil, errors.New("not found")
+}
+
 func (noopLinkStore) Upsert(context.Context, *contactsync.RecordLink) error {
 	return nil
 }
@@ -481,6 +485,86 @@ func TestMergeRemoteRecordDefersRelationshipReconciliation(t *testing.T) {
 	adapter.reconcileRelationships(context.Background(), pending[0].PersonID, pending[0].Fields)
 	if svc.replacedPersonID != localID || len(svc.replacedInputs) != 1 {
 		t.Fatalf("expected reconciliation to run once triggered, got personID=%v inputs=%+v", svc.replacedPersonID, svc.replacedInputs)
+	}
+}
+
+// fakeLinkStore is a minimal recordLinkStore fake backed by a plain map,
+// keyed by remote id, for tests that need GetByRemoteID to return a real
+// link.
+type fakeLinkStore struct {
+	byRemoteID map[string]*contactsync.RecordLink
+}
+
+func (s *fakeLinkStore) Get(_ context.Context, accountID, personID uuid.UUID) (*contactsync.RecordLink, error) {
+	for _, link := range s.byRemoteID {
+		if link.SyncAccountID == accountID && link.PersonID == personID {
+			return link, nil
+		}
+	}
+	return nil, contactsync.ErrLinkNotFound
+}
+
+func (s *fakeLinkStore) GetByRemoteID(_ context.Context, accountID uuid.UUID, remoteID string) (*contactsync.RecordLink, error) {
+	link, ok := s.byRemoteID[remoteID]
+	if !ok || link.SyncAccountID != accountID {
+		return nil, contactsync.ErrLinkNotFound
+	}
+	return link, nil
+}
+
+func (s *fakeLinkStore) Upsert(_ context.Context, link *contactsync.RecordLink) error {
+	if s.byRemoteID == nil {
+		s.byRemoteID = map[string]*contactsync.RecordLink{}
+	}
+	s.byRemoteID[link.RemoteID] = link
+	return nil
+}
+
+// TestMergeRemoteRecordReusesExistingLinkWhenTagIsStale guards a real
+// production incident: a Google contact's own contacts_local_id tag pointed
+// at a Person that no longer existed, even though this exact remote record
+// was already correctly linked in our own link table (e.g. via an earlier
+// exact-name match). Trusting the stale tag instead of the link table
+// recreated a duplicate Person on every sync, since the doomed recreate's
+// own link write always lost to the existing (account, remote_id) row.
+func TestMergeRemoteRecordReusesExistingLinkWhenTagIsStale(t *testing.T) {
+	accountID := uuid.New()
+	existingID := uuid.New()
+	now := time.Now().UTC()
+	existing := &person.Person{ID: existingID, FirstName: "Mike", LastName: "Abel", UpdatedAt: now}
+
+	links := &fakeLinkStore{byRemoteID: map[string]*contactsync.RecordLink{
+		"people/c1": {SyncAccountID: accountID, PersonID: existingID, RemoteID: "people/c1"},
+	}}
+	svc := &relPersonService{stubPersonService: stubPersonService{t: t}, getResult: existing}
+	adapter := &Adapter{people: svc, links: links, logger: slog.Default()}
+
+	staleLocalID := uuid.New() // does not correspond to any existing person
+	remote := contactsync.ProviderRecord{
+		Record: contactsync.Record{
+			ExternalID: "people/c1",
+			Fields: map[string]contactsync.FieldState{
+				"first_name":         {IsSet: true, Value: "Mike", UpdatedAt: now},
+				"last_name":          {IsSet: true, Value: "Abel", UpdatedAt: now},
+				"local_id":           {IsSet: true, Value: staleLocalID.String()},
+				"_google_updated_at": {IsSet: true, Value: now.Format(time.RFC3339Nano)},
+			},
+		},
+	}
+
+	var pending []pendingRelationship
+	if err := adapter.mergeRemoteRecord(context.Background(), accountID, contactsync.AuthSession{}, remote, &pending); err != nil {
+		t.Fatalf("mergeRemoteRecord: %v", err)
+	}
+
+	// A regression would call people.Create (stubPersonService.Create fails
+	// the test) instead of reusing existingID via the link table.
+	link, err := links.GetByRemoteID(context.Background(), accountID, "people/c1")
+	if err != nil {
+		t.Fatalf("GetByRemoteID: %v", err)
+	}
+	if link.PersonID != existingID {
+		t.Fatalf("link.PersonID = %v, want %v (a new duplicate person was linked instead)", link.PersonID, existingID)
 	}
 }
 

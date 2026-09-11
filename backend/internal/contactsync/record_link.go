@@ -50,6 +50,23 @@ func (r *RecordLinkRepository) Get(ctx context.Context, syncAccountID, personID 
 	return link, err
 }
 
+// GetByRemoteID returns the person already linked to a given remote record on
+// a specific sync account, if any. Used to recognize a remote record that's
+// already linked (e.g. via an earlier name match) even when its own
+// contacts_local_id tag is stale or missing, so it isn't re-created as a
+// duplicate.
+func (r *RecordLinkRepository) GetByRemoteID(ctx context.Context, syncAccountID uuid.UUID, remoteID string) (*RecordLink, error) {
+	const q = `
+		SELECT id, sync_account_id, person_id, remote_id, remote_updated_at, created_at, updated_at
+		FROM sync_record_links
+		WHERE sync_account_id = $1 AND remote_id = $2`
+	link, err := scanRecordLink(r.pool.QueryRow(ctx, q, syncAccountID, remoteID))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrLinkNotFound
+	}
+	return link, err
+}
+
 // Upsert creates or updates the remote mapping for a person on a sync account.
 func (r *RecordLinkRepository) Upsert(ctx context.Context, link *RecordLink) error {
 	const q = `

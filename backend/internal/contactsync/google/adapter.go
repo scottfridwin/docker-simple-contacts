@@ -63,6 +63,7 @@ type accountStateStore interface {
 // several accounts of the same provider) without colliding on a shared field.
 type recordLinkStore interface {
 	Get(ctx context.Context, syncAccountID, personID uuid.UUID) (*contactsync.RecordLink, error)
+	GetByRemoteID(ctx context.Context, syncAccountID uuid.UUID, remoteID string) (*contactsync.RecordLink, error)
 	Upsert(ctx context.Context, link *contactsync.RecordLink) error
 }
 
@@ -504,6 +505,9 @@ func (a *Adapter) Sync(ctx context.Context, account contactsync.Account, job con
 // remoteIDFor returns the remote resource name already linked to a person on
 // this specific sync account, or "" if none is known yet.
 func (a *Adapter) remoteIDFor(ctx context.Context, accountID, personID uuid.UUID) string {
+	if a.links == nil {
+		return ""
+	}
 	link, err := a.links.Get(ctx, accountID, personID)
 	if err != nil {
 		return ""
@@ -511,17 +515,36 @@ func (a *Adapter) remoteIDFor(ctx context.Context, accountID, personID uuid.UUID
 	return link.RemoteID
 }
 
+// personIDForRemote returns the person already linked to a remote record on
+// this specific sync account, if any. This catches a remote record that's
+// already linked in our own link table (typically via an earlier exact-name
+// match) even when its own contacts_local_id tag is stale or missing -
+// without this check, such a record would otherwise look "unlinked" and get
+// recreated as a duplicate Person on every sync.
+func (a *Adapter) personIDForRemote(ctx context.Context, accountID uuid.UUID, remoteID string) (uuid.UUID, bool) {
+	if a.links == nil {
+		return uuid.Nil, false
+	}
+	link, err := a.links.GetByRemoteID(ctx, accountID, remoteID)
+	if err != nil {
+		return uuid.Nil, false
+	}
+	return link.PersonID, true
+}
+
 // linkRecord records (or updates) which remote resource a person maps to on
 // this specific sync account.
 func (a *Adapter) linkRecord(ctx context.Context, accountID, personID uuid.UUID, remoteID string) {
-	if personID == uuid.Nil || strings.TrimSpace(remoteID) == "" {
+	if a.links == nil || personID == uuid.Nil || strings.TrimSpace(remoteID) == "" {
 		return
 	}
-	_ = a.links.Upsert(ctx, &contactsync.RecordLink{
+	if err := a.links.Upsert(ctx, &contactsync.RecordLink{
 		SyncAccountID: accountID,
 		PersonID:      personID,
 		RemoteID:      remoteID,
-	})
+	}); err != nil {
+		a.logger.Error("google sync linkRecord: failed to persist remote link", "account_id", accountID, "person_id", personID, "remote_id", remoteID, "error", err)
+	}
 }
 
 // pendingRelationship defers relationship reconciliation for a person until
@@ -782,6 +805,22 @@ func (a *Adapter) findUnlinkedMatch(ctx context.Context, accountID uuid.UUID, re
 func (a *Adapter) mergeRemoteRecord(ctx context.Context, accountID uuid.UUID, session contactsync.AuthSession, remote contactsync.ProviderRecord, pending *[]pendingRelationship) error {
 	remoteModel, localID := remoteToLocal(remote)
 	a.logger.Info("google sync mergeRemoteRecord", "account_id", accountID, "external_id", remote.Record.ExternalID, "has_local_id_tag", localID != nil, "tombstone", remote.Record.Tombstone.Deleted)
+
+	// Our own link table is authoritative over the remote record's own
+	// contacts_local_id tag: that tag can go stale (e.g. pointing at a
+	// Person that was later deleted, or never corrected after this record
+	// was linked by name instead of by tag) even though this exact remote
+	// record is already linked here. Trusting the tag in that case
+	// recreates a brand new Person - and does so again on every later sync,
+	// since the doomed recreate's own link write always loses to the
+	// existing (account_id, remote_id) row on a unique-constraint conflict.
+	if existingID, ok := a.personIDForRemote(ctx, accountID, remote.Record.ExternalID); ok {
+		if existing, err := a.people.Get(ctx, existingID); err == nil {
+			a.logger.Info("google sync mergeRemoteRecord: matched existing local person by remote link", "account_id", accountID, "external_id", remote.Record.ExternalID, "person_id", existing.ID, "tagged_local_id", localID)
+			return a.reconcileExisting(ctx, accountID, session, existing, remoteModel, remote, pending)
+		}
+	}
+
 	if localID == nil {
 		if remote.Record.Tombstone.Deleted {
 			// A tombstone for a contact we never linked (e.g. deleted before
