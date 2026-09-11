@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	"github.com/scottfridlund/contacts/backend/internal/ratelimit"
 )
 
 type contextKey string
@@ -75,6 +77,25 @@ func RequestIDFromContext(ctx context.Context) string {
 		return id
 	}
 	return ""
+}
+
+// clientIP extracts the caller's address for rate limiting.
+func clientIP(r *http.Request) string {
+	return ratelimit.ClientIP(r)
+}
+
+// rateLimit rejects requests once the caller's IP has exceeded lim's
+// allowance, returning 429 instead of invoking next.
+func rateLimit(lim *ratelimit.Limiter) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if !lim.Allow(clientIP(r)) {
+				writeError(w, http.StatusTooManyRequests, "rate_limited", "too many requests, please slow down", nil)
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
 }
 
 type statusRecorder struct {

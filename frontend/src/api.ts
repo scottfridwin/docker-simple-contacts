@@ -1,7 +1,13 @@
 import type {
   CreatePersonInput,
+  GoogleOAuthBeginResponse,
   Person,
   PersonListResponse,
+  Relationship,
+  RelationType,
+  Share,
+  SyncAccount,
+  SyncAccountListResponse,
   UpdatePersonInput,
   ValidationDetail,
 } from './types';
@@ -21,6 +27,24 @@ export class ApiRequestError extends Error {
     this.code = code;
     this.details = details;
   }
+}
+
+/**
+ * Extracts a user-facing message from a caught error, preferring the
+ * specific per-field validation reason (e.g. "no account found for that
+ * email") over the generic "request validation failed" envelope message.
+ */
+export function apiErrorMessage(err: unknown, fallback: string): string {
+  if (err instanceof ApiRequestError) {
+    if (err.details && err.details.length > 0) {
+      return err.details.map((d) => d.message).join('; ');
+    }
+    return err.message;
+  }
+  if (err instanceof Error) {
+    return err.message;
+  }
+  return fallback;
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -64,6 +88,7 @@ export interface ListPersonsParams {
   order?: 'asc' | 'desc';
   firstName?: string;
   lastName?: string;
+  favorite?: boolean;
 }
 
 export function listPersons(params: ListPersonsParams = {}): Promise<PersonListResponse> {
@@ -74,6 +99,7 @@ export function listPersons(params: ListPersonsParams = {}): Promise<PersonListR
   if (params.order) query.set('order', params.order);
   if (params.firstName) query.set('first_name', params.firstName);
   if (params.lastName) query.set('last_name', params.lastName);
+  if (params.favorite !== undefined) query.set('favorite', String(params.favorite));
   const qs = query.toString();
   return request<PersonListResponse>(`/persons${qs ? `?${qs}` : ''}`);
 }
@@ -116,4 +142,79 @@ export function restorePerson(id: string): Promise<void> {
 
 export function permanentlyDeletePerson(id: string): Promise<void> {
   return request<void>(`/persons/${id}/permanent`, { method: 'DELETE' });
+}
+
+export function listRelationships(personId: string): Promise<{ data: Relationship[] }> {
+  return request<{ data: Relationship[] }>(`/persons/${personId}/relationships`);
+}
+
+export interface CreateRelationshipInput {
+  type: RelationType;
+  related_person_id?: string;
+  related_person_name?: string;
+}
+
+export function createRelationship(
+  personId: string,
+  input: CreateRelationshipInput,
+): Promise<Relationship> {
+  return request<Relationship>(`/persons/${personId}/relationships`, {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
+}
+
+export function deleteRelationship(personId: string, relationshipId: string): Promise<void> {
+  return request<void>(`/persons/${personId}/relationships/${relationshipId}`, {
+    method: 'DELETE',
+  });
+}
+
+export function listShares(personId: string): Promise<{ data: Share[] }> {
+  return request<{ data: Share[] }>(`/persons/${personId}/shares`);
+}
+
+export function createShare(personId: string, email: string): Promise<Share> {
+  return request<Share>(`/persons/${personId}/shares`, {
+    method: 'POST',
+    body: JSON.stringify({ email }),
+  });
+}
+
+export function deleteShare(personId: string, shareId: string): Promise<void> {
+  return request<void>(`/persons/${personId}/shares/${shareId}`, { method: 'DELETE' });
+}
+
+/** Lets the current (recipient) account remove its own access to a contact shared with it. */
+export function leaveShare(personId: string): Promise<void> {
+  return request<void>(`/persons/${personId}/shares/mine`, { method: 'DELETE' });
+}
+
+export function listSyncAccounts(): Promise<SyncAccountListResponse> {
+  return request<SyncAccountListResponse>('/sync-accounts');
+}
+
+export function updateSyncAccount(id: string, input: Partial<SyncAccount>): Promise<SyncAccount> {
+  return request<SyncAccount>(`/sync-accounts/${id}`, {
+    method: 'PATCH',
+    body: JSON.stringify(input),
+  });
+}
+
+export function deleteSyncAccount(id: string): Promise<void> {
+  return request<void>(`/sync-accounts/${id}`, { method: 'DELETE' });
+}
+
+/** Triggers an on-demand sync for one account; the sync itself runs in the background. */
+export function syncAccountNow(id: string): Promise<void> {
+  return request<void>(`/sync-accounts/${id}/sync`, { method: 'POST' });
+}
+
+export function beginGoogleSync(redirectUri?: string): Promise<GoogleOAuthBeginResponse> {
+  const query = new URLSearchParams();
+  if (redirectUri) {
+    query.set('redirect_uri', redirectUri);
+  }
+  const qs = query.toString();
+  return request<GoogleOAuthBeginResponse>(`/sync/google/begin${qs ? `?${qs}` : ''}`);
 }

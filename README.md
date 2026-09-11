@@ -13,9 +13,9 @@ deployment artifact is a set of container images.
 ```mermaid
 flowchart LR
   U[Browser / PWA] -->|/api/v1| RP[Reverse proxy]
-  RP --> API[Go API (net/http + chi)]
+  RP --> API["Go API (net/http + chi)"]
   API --> DB[(PostgreSQL)]
-  RP --> FE[Static PWA (nginx)]
+  RP --> FE["Static PWA (nginx)"]
 ```
 
 - **Backend** — Go (`net/http` + [chi] router), [pgx] for PostgreSQL access,
@@ -113,6 +113,12 @@ The backend is configured entirely through environment variables.
 | `AUTHENTIK_CLIENT_SECRET_FILE` | —    | Docker secret file for the OAuth client secret.         |
 | `AUTHENTIK_CLIENT_SECRET` | —        | Inline OAuth client secret fallback.                    |
 | `AUTHENTIK_REDIRECT_URL` | —         | Backend callback URL (`/auth/callback`).                |
+| `GOOGLE_CLIENT_ID`   | —           | Google OAuth client ID for contact sync.                 |
+| `GOOGLE_CLIENT_ID_FILE` | —        | Docker secret file for Google OAuth client ID.           |
+| `GOOGLE_CLIENT_SECRET` | —         | Google OAuth client secret for contact sync.             |
+| `GOOGLE_CLIENT_SECRET_FILE` | —    | Docker secret file for Google OAuth client secret.       |
+| `GOOGLE_REDIRECT_URL` | —          | Backend Google sync callback URL (`/api/v1/sync/google/callback`). |
+| `GOOGLE_SYNC_DRY_RUN` | `false`     | When `true`, suppresses every write to Google (create/update/delete contacts, contact group create/modify) - reads are unaffected. For testing sync against a real account with zero risk of mutating it. |
 | `SESSION_SECRET_FILE`   | —           | Docker secret file containing a 32+ byte session key.   |
 | `SESSION_SECRET`        | —           | Inline session key fallback.                            |
 | `CONTACTS_VERSION`     | `latest`    | Tag used for both published application images.         |
@@ -131,6 +137,11 @@ The backend is configured entirely through environment variables.
 | `APP_PIDS_LIMIT`       | `128`       | PID limit for the backend API.                          |
 | `FRONTEND_MEM_LIMIT`   | `128m`      | Memory limit for the frontend nginx container.          |
 | `FRONTEND_PIDS_LIMIT`  | `64`        | PID limit for the frontend nginx container.             |
+
+Google OAuth requests the `contacts`, `openid`, and `email` scopes. The
+`openid`/`email` scopes are used only to identify which Google account is
+connected (so more than one can be distinguished in the UI); they are not
+used to read any other profile data.
 
 Frontend build-time variable:
 
@@ -161,30 +172,141 @@ A `Person` has:
 - `id` (server-generated UUID), `first_name`, `last_name` (required)
 - `middle_names` (optional ordered array of strings)
 - `display_name` (optional; derived from the name parts when blank)
+- `nickname`, `pronouns` (optional strings)
+- `birthdate` (optional ISO-8601 date string, `YYYY-MM-DD`)
+- `emails` (optional array of labeled entries, max 10: `{label, value}`, value
+  must be a valid email address)
+- `phone_numbers` (optional array of labeled entries, max 10: `{label,
+  value}`, e.g. `{"label": "mobile", "value": "+1-555-0100"}`)
+- `addresses` (optional array of structured entries, max 10: `{label, street,
+  city, region, postal_code, country}`)
+- `organization` (optional single object: `{name, title, department}`)
+- `notes` (optional free-text string, max 4096 chars)
 - `custom_fields` (JSONB map)
+- `labels` (optional array of freeform tag strings, max 25, 64 chars each -
+  a CATEGORIES/tag-style feature, not a shared/renameable entity) - syncs
+  bidirectionally with Google Contacts as contact group ("Label")
+  membership (see the Google sync section below)
+- `is_favorite` (boolean, default false) - starred contacts are shown in an
+  always-visible Favorites section in the UI, separate from the main list's
+  page/sort/search
+- `is_owner` (read-only boolean) - `false` when the Person is shared with you
+  by another account rather than owned by you
+- `owner_display_name` (read-only, optional) - set only when `is_owner` is
+  `false`, showing who shared the contact
 - `created_at`, `updated_at`, `deleted_at` (soft delete)
 
-**Custom fields policy:** lowercase `snake_case` keys; scalar values of type
-string, number, boolean, or date; max 64 fields; key max 64 chars; string value
-max 1024 chars. JSON has no date type, so dates are ISO-8601 strings
-(`YYYY-MM-DD` or RFC 3339). `null` values are rejected — omit a field to remove
-it.
+**Custom fields policy:** any non-empty, printable key (case-sensitive, no
+format requirement) up to 64 chars; scalar values of type string, number, or
+boolean; max 64 fields; string value max 1024 chars. `null` values are
+rejected — omit a field to remove it. Custom fields sync bidirectionally with
+Google Contacts (see the Google sync section below).
+
+**Relationships:** a `Person` can be related to another `Person` (or, if the
+other person isn't in your contacts, just a free-text name) via one of five
+fixed types: `parent`, `child`, `spouse`, `sibling`, `partner` (no custom
+types). A single relationship is stored from the creating person's
+perspective; the reverse side is computed automatically (e.g. "A is Parent of
+B" also shows as "B is Child of A" without a second stored row - Spouse/
+Sibling/Partner are symmetric). Manage relationships via `GET/POST
+/persons/{id}/relationships` and `DELETE /persons/{id}/relationships/{relationshipId}`
+(there is no update endpoint - delete and recreate to change a relationship's
+type). Google sync only stores a relation as a free-text name with no link to
+a real record; on import we link to an existing contact only when its display
+name matches exactly and unambiguously, otherwise the relationship is kept as
+name-only so the information isn't lost.
 
 **Delete behavior:** soft delete with recycle-bin semantics. Deleted records are
 excluded from reads and permanently purged after `PURGE_AFTER_DAYS` (default 30)
 by a background job.
+
+**Sharing:** an owner can share an individual contact with another account by
+exact email match (the recipient must have logged in at least once). The
+recipient gets view and edit access to the same record (not a copy) - it
+appears merged into their own list with a "Shared by ..." badge, and is
+included in their own Google sync export. Deleting, restoring, managing
+relationships, and managing shares on that Person remain owner-only actions.
+A recipient can remove their own access at any time without the owner's
+involvement. A single contact can be shared with at most 50 accounts, and can
+have at most 50 relationships recorded from its own perspective. Manage
+shares via `GET/POST /persons/{id}/shares`, `DELETE
+/persons/{id}/shares/{shareId}` (owner-only), and
+`DELETE /persons/{id}/shares/mine` (recipient self-removal).
 
 ## API
 
 - Base path: `/api/v1`
 - Endpoints: `POST/GET /persons`, `GET/PATCH/DELETE /persons/{id}`, `GET /persons/deleted`,
   `POST /persons/{id}/restore`, and `DELETE /persons/{id}/permanent`
-- Sync account management: `GET/POST /sync-accounts`, `GET/PATCH/DELETE /sync-accounts/{id}`
-- List defaults: page size 25 (max 100), default sort `display_name desc`,
-  filters `first_name` and `last_name`.
+- Relationships: `GET/POST /persons/{id}/relationships`, `DELETE
+  /persons/{id}/relationships/{relationshipId}`
+- Sharing: `GET/POST /persons/{id}/shares`, `DELETE /persons/{id}/shares/{shareId}`
+  (owner-only), `DELETE /persons/{id}/shares/mine` (recipient self-removal)
+- Rate limiting: share creation and login are limited per client IP (20/minute
+  each) to slow down abuse; over the limit returns `429`.
+- Sync account management: `GET/POST /sync-accounts`, `GET/PATCH/DELETE /sync-accounts/{id}`,
+  `POST /sync-accounts/{id}/sync` (manual override: resets the cursor and
+  triggers a full resync in the background; the UI's "Sync now" button
+  uses this)
+- Google sync OAuth: `GET /sync/google/begin`, `GET /sync/google/callback`
+- Multiple Google accounts can be connected at once (via the sync drawer's
+  "Add Google account" action); each connected account mirrors the full
+  contact list both ways. Accounts are identified by the Google account's
+  stable subject id and labeled in the UI with the connected email.
+- `custom_fields` sync bidirectionally with Google Contacts as `userDefined`
+  entries: the key is used verbatim as the Google label, values are
+  stringified on export and type-sniffed (number/boolean/string) back on
+  import. There's no distinction between a field added locally and one
+  added directly in Google Contacts - both are treated the same, and a
+  field added in any one connected Google account propagates to every
+  other Google account (and the local record) that Person is linked to.
+- `labels` sync bidirectionally with Google's own "Labels" (the
+  `contactGroups` resource): a local label creates/reuses a same-named
+  Google contact group and adds the contact to it; a group a contact
+  belongs to in Google (other than system groups like `myContacts`)
+  becomes a label locally. Starring a contact in Google Contacts (the
+  `starred` system group) maps to `is_favorite`, and vice versa - no other
+  system group is ever imported as a label. Removing a label only removes
+  the group membership; the underlying Google group itself is never
+  deleted.
+- Frontend sync panel: connect Google and review sync status from the main app UI
+- Public privacy policy: `GET /privacy`
+- Public homepage purpose page: `GET /` remains readable without authentication and
+  explains what the app does (required for Google OAuth verification)
+- List defaults: page size 25 (max 100), default sort `last_name, first_name asc`,
+  filters `first_name`, `last_name`, and `favorite` (boolean).
 - The recycle bin lists soft-deleted contacts and supports restoring or permanently
   deleting them before the retention purge.
 - OpenAPI specification: [api/openapi.yaml](api/openapi.yaml) (validated in CI).
+
+Google callback behavior:
+- Browser callback requests receive a human-friendly completion page and popup
+  close flow.
+- API clients requesting JSON receive JSON account data.
+
+### Diagnosing Google sync issues
+
+The backend logs sync activity as structured JSON to stdout
+(`docker logs <backend-container>` / `docker compose logs app`). Look for:
+
+- `"msg":"google sync starting"` / `"msg":"google sync finished"` — one pair
+  per sync attempt, with `account_id` and (on finish) `remote_records_seen`.
+  If `remote_records_seen` is `0`, the Google account genuinely has nothing
+  new under "My Contacts" to import (a different Google account/browser tab
+  is often the cause — Google's People API only reads "My Contacts", not
+  "Other contacts").
+- `"msg":"google sync fetched remote page"` — logged per page fetched from
+  Google, with the `records` count returned by that page.
+- `"msg":"google sync exported local contacts"` — logged once, only during
+  the very first sync for an account, with the number of local contacts
+  pushed up to Google.
+- `"msg":"google sync failed"` (error level) — includes the underlying error;
+  the same message is also shown as "Last error" under the account in the
+  sync drawer.
+- `"msg":"reconciling due sync account"` — logged each time the periodic
+  reconciliation loop decides an account's configured frequency has elapsed
+  and triggers another sync; if you never see this after the initial connect,
+  periodic sync isn't running.
 
 ## Development commands
 

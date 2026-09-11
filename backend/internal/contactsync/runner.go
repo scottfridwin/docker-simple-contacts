@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/google/uuid"
@@ -13,6 +14,9 @@ import (
 
 type accountStore interface {
 	List(context.Context, int) ([]Account, error)
+	ListDue(context.Context, time.Time) ([]Account, error)
+	ListLinkedToPerson(context.Context, uuid.UUID) ([]Account, error)
+	ListSharedWithAccountsForPerson(context.Context, uuid.UUID) ([]Account, error)
 }
 
 type jobQueue interface {
@@ -32,14 +36,21 @@ type Runner struct {
 	jobs      jobQueue
 	processor Processor
 	batchSize int
+	logger    *slog.Logger
 }
 
-// NewRunner constructs a Runner.
-func NewRunner(accounts accountStore, jobs jobQueue, processor Processor) *Runner {
-	return &Runner{accounts: accounts, jobs: jobs, processor: processor, batchSize: 50}
+// NewRunner constructs a Runner. A nil logger falls back to slog.Default().
+func NewRunner(accounts accountStore, jobs jobQueue, processor Processor, logger *slog.Logger) *Runner {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	return &Runner{accounts: accounts, jobs: jobs, processor: processor, batchSize: 50, logger: logger}
 }
 
-// RunOnce processes one batch of pending jobs.
+// RunOnce processes one batch of pending jobs. A single job failing must not
+// prevent the rest of the batch from being attempted in this pass - it used
+// to return on the first error, silently starving every other pending job
+// (possibly for entirely unrelated Persons/accounts) until the next tick.
 func (r *Runner) RunOnce(ctx context.Context) (int, error) {
 	if r == nil || r.jobs == nil || r.accounts == nil || r.processor == nil {
 		return 0, nil
@@ -49,16 +60,22 @@ func (r *Runner) RunOnce(ctx context.Context) (int, error) {
 		return 0, fmt.Errorf("loading pending sync jobs: %w", err)
 	}
 	processed := 0
+	var errs []error
 	for _, job := range jobs {
 		if err := r.runJob(ctx, job); err != nil {
-			return processed, err
+			r.logger.Error("processing sync job failed", "job_id", job.ID, "error", err)
+			errs = append(errs, err)
+			continue
 		}
 		processed++
 	}
-	return processed, nil
+	return processed, errors.Join(errs...)
 }
 
-// RunLoop keeps executing sync jobs until the context is canceled.
+// RunLoop keeps executing sync jobs until the context is canceled. A job or
+// account failure is logged but never stops the loop - previously any single
+// processing error caused RunLoop to return, which permanently killed all
+// background sync (both job-triggered and periodic) until the app restarted.
 func (r *Runner) RunLoop(ctx context.Context, interval time.Duration) error {
 	if interval <= 0 {
 		interval = 30 * time.Second
@@ -67,9 +84,7 @@ func (r *Runner) RunLoop(ctx context.Context, interval time.Duration) error {
 	defer ticker.Stop()
 
 	for {
-		if _, err := r.RunOnce(ctx); err != nil && !errors.Is(err, context.Canceled) {
-			return err
-		}
+		r.tick(ctx)
 		select {
 		case <-ctx.Done():
 			return nil
@@ -78,33 +93,167 @@ func (r *Runner) RunLoop(ctx context.Context, interval time.Duration) error {
 	}
 }
 
-func (r *Runner) runJob(ctx context.Context, job Job) error {
-	accountCtx := ctx
-	if job.OwnerID != nil && *job.OwnerID != uuid.Nil {
-		accountCtx = authn.WithUserID(ctx, *job.OwnerID)
+// tick runs one iteration of job processing and due-account reconciliation,
+// recovering from any panic so this goroutine (and therefore the whole
+// process, since nothing else supervises it) never dies from an unexpected
+// panic deep in a provider adapter.
+func (r *Runner) tick(ctx context.Context) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			r.logger.Error("recovered from panic in sync loop", "panic", rec)
+		}
+	}()
+	if _, err := r.RunOnce(ctx); err != nil && !errors.Is(err, context.Canceled) {
+		r.logger.Error("sync job processing failed", "error", err)
 	}
-	accounts, err := r.accounts.List(accountCtx, r.batchSize)
+	r.runDueAccounts(ctx)
+}
+
+// runDueAccounts reconciles connected accounts whose configured sync
+// frequency has elapsed, independent of any queued local-change job. Without
+// this, a connected account only ever pulls remote changes once (right after
+// connecting) and never again unless a local contact happens to change.
+func (r *Runner) runDueAccounts(ctx context.Context) {
+	if r == nil || r.accounts == nil || r.processor == nil {
+		return
+	}
+	now := time.Now()
+	accounts, err := r.accounts.ListDue(ctx, now)
+	if err != nil {
+		r.logger.Error("listing due sync accounts failed", "error", err)
+		return
+	}
+	for _, account := range accounts {
+		freq := time.Duration(account.SyncFrequencyMinutes) * time.Minute
+		if freq <= 0 {
+			freq = 5 * time.Minute
+		}
+		if account.LastSyncedAt != nil && now.Sub(*account.LastSyncedAt) < freq {
+			continue
+		}
+		accountCtx := ctx
+		if account.OwnerID != nil && *account.OwnerID != uuid.Nil {
+			accountCtx = authn.WithUserID(ctx, *account.OwnerID)
+		}
+		r.logger.Info("reconciling due sync account", "account_id", account.ID, "provider", account.Provider)
+		if err := r.safeProcess(accountCtx, account, Job{}); err != nil {
+			r.logger.Error("periodic sync failed", "account_id", account.ID, "provider", account.Provider, "error", err)
+		}
+	}
+}
+
+// safeProcess invokes the processor, recovering from any panic and
+// converting it into a regular error. A single malformed record or
+// unexpected provider response must never crash the whole sync loop.
+func (r *Runner) safeProcess(ctx context.Context, account Account, job Job) (err error) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			err = fmt.Errorf("panic processing sync for account %s: %v", account.ID, rec)
+		}
+	}()
+	return r.processor.Process(ctx, account, job)
+}
+
+func (r *Runner) runJob(ctx context.Context, job Job) error {
+	ownerCtx := ctx
+	if job.OwnerID != nil && *job.OwnerID != uuid.Nil {
+		ownerCtx = authn.WithUserID(ctx, *job.OwnerID)
+	}
+	accounts, err := r.accounts.List(ownerCtx, r.batchSize)
 	if err != nil {
 		return fmt.Errorf("loading sync accounts for job %s: %w", job.ID, err)
 	}
+	// Also fan out to every account already mirroring this record under a
+	// different owner (e.g. a contact shared with another account, which
+	// syncs it to its own separate Google connection), not just the
+	// accounts owned by whoever triggered this change.
+	linked, err := r.accounts.ListLinkedToPerson(ctx, job.PersonID)
+	if err != nil {
+		return fmt.Errorf("loading linked sync accounts for job %s: %w", job.ID, err)
+	}
+	// And fan out to every account owned by someone this person is currently
+	// shared with, even if they've never synced this particular record
+	// before - otherwise an edit only ever reaches a share recipient's own
+	// connected account once something else (e.g. a future full resync)
+	// happens to link it first.
+	shared, err := r.accounts.ListSharedWithAccountsForPerson(ctx, job.PersonID)
+	if err != nil {
+		return fmt.Errorf("loading shared-with sync accounts for job %s: %w", job.ID, err)
+	}
+	accounts = mergeAccountsByID(accounts, linked)
+	accounts = mergeAccountsByID(accounts, shared)
+	if job.OriginAccountID != nil {
+		// This change was itself pulled in from job.OriginAccountID - it
+		// must not be pushed straight back to that same account, or every
+		// write there looks like a newer remote change on the next pull,
+		// creating a self-sustaining ping-pong loop.
+		accounts = excludeAccountByID(accounts, *job.OriginAccountID)
+	}
 	if len(accounts) == 0 {
-		if err := r.jobs.MarkDone(accountCtx, job.ID); err != nil {
+		if err := r.jobs.MarkDone(ownerCtx, job.ID); err != nil {
 			return fmt.Errorf("marking job %s done: %w", job.ID, err)
 		}
 		return nil
 	}
+	// Every account in the fan-out gets a chance regardless of an earlier
+	// one failing - this used to return on the first failing account,
+	// silently skipping every account listed after it (including other
+	// share recipients who had nothing to do with the failure).
+	var errs []error
 	for _, account := range accounts {
-		if err := r.processor.Process(accountCtx, account, job); err != nil {
-			if markErr := r.jobs.MarkFailed(accountCtx, job.ID, err.Error()); markErr != nil {
-				return fmt.Errorf("marking job %s failed: %w", job.ID, markErr)
-			}
-			return fmt.Errorf("processing job %s for provider %s: %w", job.ID, account.Provider, err)
+		// Each account must be processed under its own owner's context (not
+		// necessarily the triggering job's owner), so owner-scoped lookups
+		// inside the provider adapter resolve against the right account.
+		acctCtx := ownerCtx
+		if account.OwnerID != nil && *account.OwnerID != uuid.Nil {
+			acctCtx = authn.WithUserID(ctx, *account.OwnerID)
+		}
+		if err := r.safeProcess(acctCtx, account, job); err != nil {
+			errs = append(errs, fmt.Errorf("provider %s (account %s): %w", account.Provider, account.ID, err))
 		}
 	}
-	if err := r.jobs.MarkDone(accountCtx, job.ID); err != nil {
+	if len(errs) > 0 {
+		combined := errors.Join(errs...)
+		if markErr := r.jobs.MarkFailed(ownerCtx, job.ID, combined.Error()); markErr != nil {
+			return fmt.Errorf("marking job %s failed: %w", job.ID, markErr)
+		}
+		return fmt.Errorf("processing job %s: %w", job.ID, combined)
+	}
+	if err := r.jobs.MarkDone(ownerCtx, job.ID); err != nil {
 		return fmt.Errorf("marking job %s done: %w", job.ID, err)
 	}
 	return nil
+}
+
+// mergeAccountsByID unions two account slices, deduplicated by ID, preserving
+// the order accounts are first seen.
+func mergeAccountsByID(primary, extra []Account) []Account {
+	out := make([]Account, 0, len(primary)+len(extra))
+	seen := make(map[uuid.UUID]bool, len(primary)+len(extra))
+	for _, a := range primary {
+		if !seen[a.ID] {
+			seen[a.ID] = true
+			out = append(out, a)
+		}
+	}
+	for _, a := range extra {
+		if !seen[a.ID] {
+			seen[a.ID] = true
+			out = append(out, a)
+		}
+	}
+	return out
+}
+
+// excludeAccountByID returns accounts with the given id removed.
+func excludeAccountByID(accounts []Account, id uuid.UUID) []Account {
+	out := make([]Account, 0, len(accounts))
+	for _, a := range accounts {
+		if a.ID != id {
+			out = append(out, a)
+		}
+	}
+	return out
 }
 
 // NoopProcessor is a placeholder processor used until provider adapters are

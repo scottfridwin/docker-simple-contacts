@@ -28,8 +28,9 @@ Provider adapters own provider-specific concerns:
 
 The first iteration of sync should support:
 
-- one connected external account per provider adapter, with a clear reauthorize
-  path when credentials expire
+- multiple connected external accounts, including multiple accounts of the
+  same provider (e.g. two Google accounts), with a clear reauthorize path when
+  credentials expire
 - bi-directional record sync
 - last-write-wins conflict handling at the record field level
 - automatic sync after a local person save, limited to the changed record
@@ -40,8 +41,10 @@ The first iteration of sync should support:
 
 The first iteration should not require:
 
-- a polished multi-account UI
-- simultaneous active syncing to multiple providers
+- per-contact routing to a specific account (every connected account mirrors
+  the full contact list both ways; see the multi-account model below)
+- simultaneous active syncing to multiple *providers* in one release (multiple
+  accounts of the *same* provider are supported)
 - background queue retries beyond simple retryable failures
 - webhook/push sync from providers
 - group, photo, label, or relationship sync
@@ -118,3 +121,148 @@ The sync core should also define a normalized record model with:
 - A person update can trigger a record-scoped sync request.
 - Sync state can track provider cursors and reconnect status.
 - The merge logic can preserve non-overlapping local and remote edits.
+
+## Implemented baseline (2026-09-08)
+
+- First production adapter: Google Contacts.
+- OAuth endpoints: `GET /api/v1/sync/google/begin` and
+   `GET /api/v1/sync/google/callback`.
+- New sync account default interval: 5 minutes.
+- UI minimum sync interval: 5 minutes.
+
+### Callback response behavior
+
+- Browser callback requests return an HTML completion page and try to notify the
+   opener window (`postMessage`) before auto-closing.
+- Programmatic/API callback clients requesting JSON continue to receive JSON.
+
+### Reserved sync metadata keys (legacy)
+
+Earlier versions of the Google adapter stored `google_resource_name` in
+`Person.custom_fields` to remember the linked remote contact. As of the
+multi-account change below, this is replaced by the `sync_record_links` table
+and is no longer written. Contacts synced before that change may still carry
+the old key; the frontend continues to hide it from generic custom-field
+editing as a defensive/backward-compatible measure:
+
+- `google_resource_name` (legacy, no longer written)
+- `_google_updated_at` (never a Person field; derived from Google's own
+  per-contact metadata)
+- `contacts_local_id` (never a Person field; a Google-side userDefined field
+  that stores our local person id on that specific remote contact)
+
+UI guidance:
+- Do not expose `google_resource_name` as a generic editable custom field if
+  present on legacy data.
+
+## Multi-account support (2026-09-09)
+
+### Decisions
+
+- **Routing model**: mirror-all. Every connected account (including multiple
+  accounts of the same provider) syncs the entire local contact list, both
+  directions. There is no per-contact assignment to a specific account.
+- **Account identity**: each Google sync account is identified by the OAuth
+  ID token subject (`sub`), verified against Google's OIDC issuer
+  (`https://accounts.google.com`) using the same `go-oidc` library already
+  used for Authentik. This requires the `openid` and `email` scopes in
+  addition to `https://www.googleapis.com/auth/contacts`.
+- **Display identity**: the verified email claim is stored as
+  `sync_accounts.display_name` purely for UI labeling (e.g. distinguishing
+  "alice@example.com" from "bob@example.com"). It is never used for identity
+  matching, since email addresses can change; `provider_account_id` (the
+  subject) is the durable key.
+- **Connecting an account**: `GET /api/v1/sync/google/begin` requests
+  `prompt=consent select_account`, so Google always shows the account chooser,
+  letting a user pick a different Google account without first signing out of
+  Google. The callback matches existing accounts by `(provider,
+  provider_account_id)`, not by provider alone, so connecting a second Google
+  account creates a new row instead of overwriting the first.
+- **Per-account remote-record mapping**: a Person can be linked to a different
+  remote contact per connected account. A single `Person.custom_fields` value
+  cannot hold more than one remote id, so a dedicated `sync_record_links`
+  table (`sync_account_id`, `person_id`, `remote_id`, unique per pair) replaces
+  the old flat `google_resource_name` custom field for outgoing sync. Remote
+  contacts already carry a `local_id` userDefined field pointing back to the
+  local person, so remote-to-local matching remains per-account safe without
+  any additional schema.
+- **Disconnecting**: `DELETE /api/v1/sync-accounts/{id}` removes one account;
+  `sync_record_links` rows for that account cascade-delete automatically.
+
+### Why a mapping table instead of Person.custom_fields
+
+Storing the remote id on `Person.custom_fields.google_resource_name` only
+supports one linked account per contact. With mirror-all routing, the same
+contact is expected to be linked to every connected Google account
+simultaneously, so a shared single-value field would cause the adapter to
+lose track of one account's remote id every time it wrote the other account's
+id, leading to duplicate contact creation on every sync cycle. The
+`sync_record_links` table keys the mapping by `(sync_account_id, person_id)`
+so each account keeps its own record independently.
+
+## Periodic reconciliation fix (2026-09-09)
+
+`Repository.ListDue` (accounts whose `sync_frequency_minutes` interval has
+elapsed) existed but was never called anywhere. In practice this meant a
+connected account only ever pulled remote changes once, immediately after
+connecting; new contacts added on the provider side afterward were never
+imported unless a local edit happened to enqueue an unrelated sync job. Fixed
+by having `Runner.RunLoop` call a new `runDueAccounts` step on every tick,
+which checks each connected account's own `sync_frequency_minutes` against its
+`last_synced_at` and calls the adapter with an empty `Job{}` (pull-only, no
+local mutation to push) when due. One account's failure does not stop
+reconciliation of the others.
+
+## Background loop resilience + logging fix (2026-09-09)
+
+`Runner.RunLoop` previously returned as soon as any single job failed to
+process (`RunOnce` propagated the error), and `runSyncLoop` in `main.go` only
+logged that failure once and let the goroutine exit — permanently stopping
+*all* background sync (both job-triggered and the periodic reconciliation
+above) until the process restarted, with only one easy-to-miss log line as a
+clue. `RunLoop` now logs job/account failures via a `*slog.Logger` (threaded
+through `NewRunner`) and keeps ticking regardless.
+
+The Google adapter also gained a logger (threaded through `NewAdapter`) and
+now logs sync start/finish, per-page remote record counts, export counts, and
+failures — previously only the OAuth-callback-triggered sync logged anything;
+job- and periodic-triggered syncs (the common case after the first connect)
+were completely silent even on failure. See the README "Diagnosing Google
+sync issues" section for the exact log lines to look for.
+
+## Matching and merge fixes (2026-09-10)
+
+Found via a new automated test harness
+(`backend/internal/contactsync/google/sync_scenarios_integration_test.go` +
+`fake_server_test.go`, see
+[docs/testing/google-sync-test-scenarios.md](../testing/google-sync-test-scenarios.md))
+that exercises the real `Adapter.Sync()` against a real Postgres-backed
+`person.Service` and a fake in-memory Google People API.
+
+- **Tombstone-vs-edit 404 (bug fix)**: pushing a local edit newer than
+  Google's own delete of the same contact used to PATCH the already-deleted
+  resourceName, which 404s and aborted the *whole account's* sync run, not
+  just that record. Fixed: on that specific 404, `reconcileExisting`
+  recreates the contact under a new resourceName instead, the same recovery
+  already used for an unmapped tombstone.
+- **Exact-name matching**: a Google contact with no `contacts_local_id` tag
+  now first tries an exact first+last name match against existing,
+  not-yet-linked local contacts (`person.FindByExactName`) before creating a
+  duplicate. Ambiguous (more than one match) or absent matches still fall
+  back to creating a new Person, same as before. This is a plain exact,
+  case-sensitive string match — no fuzzy/similarity logic — matching the
+  precedent already used for resolving relationship names.
+- **Per-field merge on the remote-wins path**: `fieldAwareUpdate` only
+  applies a field from Google's payload when Google's own data actually
+  reported it (`FieldState.IsSet`), instead of unconditionally overwriting
+  every locally-tracked field whenever the record as a whole was newer on
+  Google's side. This stops a field Google's copy never had any data in
+  (e.g. no biography at all) from silently wiping out a local edit to that
+  same field. Two edits to the *same* field still resolve via the
+  whole-record timestamp — true field-level merge would need a per-field
+  modification timestamp or a 3-way baseline, which neither Postgres
+  (`persons.updated_at` is one timestamp per row) nor the Google People API
+  (`metadata.updateTime` is one timestamp per contact) currently provide.
+  Implementing that baseline (e.g. a synced-field snapshot on
+  `sync_record_links`) is a bigger follow-up, not attempted here.
+

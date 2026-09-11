@@ -12,31 +12,53 @@ import (
 
 // Person is the single domain entity supported in v1.
 type Person struct {
-	ID           uuid.UUID      `json:"id"`
-	FirstName    string         `json:"first_name"`
-	MiddleNames  []string       `json:"middle_names"`
-	LastName     string         `json:"last_name"`
-	DisplayName  string         `json:"display_name"`
-	Nickname     *string        `json:"nickname,omitempty"`
-	Pronouns     *string        `json:"pronouns,omitempty"`
-	Birthdate    *string        `json:"birthdate,omitempty"`
-	PhoneNumbers []string       `json:"phone_numbers"`
-	CustomFields map[string]any `json:"custom_fields"`
-	CreatedAt    time.Time      `json:"created_at"`
-	UpdatedAt    time.Time      `json:"updated_at"`
-	DeletedAt    *time.Time     `json:"deleted_at,omitempty"`
+	ID           uuid.UUID                  `json:"id"`
+	FirstName    string                     `json:"first_name"`
+	MiddleNames  []string                   `json:"middle_names"`
+	LastName     string                     `json:"last_name"`
+	DisplayName  string                     `json:"display_name"`
+	Nickname     *string                    `json:"nickname,omitempty"`
+	Pronouns     *string                    `json:"pronouns,omitempty"`
+	Birthdate    *string                    `json:"birthdate,omitempty"`
+	Emails       []contactsync.LabeledValue `json:"emails"`
+	PhoneNumbers []contactsync.LabeledValue `json:"phone_numbers"`
+	Addresses    []contactsync.Address      `json:"addresses"`
+	Organization *contactsync.Organization  `json:"organization,omitempty"`
+	Notes        *string                    `json:"notes,omitempty"`
+	CustomFields map[string]any             `json:"custom_fields"`
+	Labels       []string                   `json:"labels"`
+	IsFavorite   bool                       `json:"is_favorite"`
+	CreatedAt    time.Time                  `json:"created_at"`
+	UpdatedAt    time.Time                  `json:"updated_at"`
+	DeletedAt    *time.Time                 `json:"deleted_at,omitempty"`
+
+	// OwnerID is never serialized; it's only used internally to compute
+	// IsOwner/OwnerDisplayName for the current viewer.
+	OwnerID *uuid.UUID `json:"-"`
+	// IsOwner is false when this Person was returned because it's shared
+	// with (not owned by) the current account.
+	IsOwner bool `json:"is_owner"`
+	// OwnerDisplayName is set only when IsOwner is false, so the UI can
+	// show "Shared by <name>".
+	OwnerDisplayName *string `json:"owner_display_name,omitempty"`
 }
 
 // CreateInput is the payload accepted when creating a Person.
 type CreateInput struct {
-	FirstName    string         `json:"first_name"`
-	MiddleNames  []string       `json:"middle_names"`
-	LastName     string         `json:"last_name"`
-	Nickname     *string        `json:"nickname"`
-	Pronouns     *string        `json:"pronouns"`
-	Birthdate    *string        `json:"birthdate"`
-	PhoneNumbers []string       `json:"phone_numbers"`
-	CustomFields map[string]any `json:"custom_fields"`
+	FirstName    string                     `json:"first_name"`
+	MiddleNames  []string                   `json:"middle_names"`
+	LastName     string                     `json:"last_name"`
+	Nickname     *string                    `json:"nickname"`
+	Pronouns     *string                    `json:"pronouns"`
+	Birthdate    *string                    `json:"birthdate"`
+	Emails       []contactsync.LabeledValue `json:"emails"`
+	PhoneNumbers []contactsync.LabeledValue `json:"phone_numbers"`
+	Addresses    []contactsync.Address      `json:"addresses"`
+	Organization *contactsync.Organization  `json:"organization"`
+	Notes        *string                    `json:"notes"`
+	CustomFields map[string]any             `json:"custom_fields"`
+	Labels       []string                   `json:"labels"`
+	IsFavorite   bool                       `json:"is_favorite"`
 }
 
 // UpdateInput is the payload accepted when patching a Person. Pointer fields and
@@ -48,8 +70,14 @@ type UpdateInput struct {
 	Nickname     *string
 	Pronouns     *string
 	Birthdate    *string
-	PhoneNumbers *[]string
+	Emails       *[]contactsync.LabeledValue
+	PhoneNumbers *[]contactsync.LabeledValue
+	Addresses    *[]contactsync.Address
+	Organization *contactsync.Organization
+	Notes        *string
 	CustomFields map[string]any
+	Labels       *[]string
+	IsFavorite   *bool
 
 	FirstNameSet    bool
 	MiddleNamesSet  bool
@@ -57,8 +85,14 @@ type UpdateInput struct {
 	NicknameSet     bool
 	PronounsSet     bool
 	BirthdateSet    bool
+	EmailsSet       bool
 	PhoneNumbersSet bool
+	AddressesSet    bool
+	OrganizationSet bool
+	NotesSet        bool
 	CustomFieldsSet bool
+	LabelsSet       bool
+	IsFavoriteSet   bool
 }
 
 // ListParams controls list filtering, sorting, and pagination.
@@ -69,6 +103,7 @@ type ListParams struct {
 	SortDesc  bool
 	FirstName string
 	LastName  string
+	Favorite  *bool
 }
 
 // DeriveDisplayName builds a display name from the name parts when the caller
@@ -101,8 +136,14 @@ func (p Person) Snapshot(ownerID *uuid.UUID) contactsync.PersonSnapshot {
 		Nickname:     p.Nickname,
 		Pronouns:     p.Pronouns,
 		Birthdate:    p.Birthdate,
-		PhoneNumbers: append([]string(nil), p.PhoneNumbers...),
+		Emails:       append([]contactsync.LabeledValue(nil), p.Emails...),
+		PhoneNumbers: append([]contactsync.LabeledValue(nil), p.PhoneNumbers...),
+		Addresses:    append([]contactsync.Address(nil), p.Addresses...),
+		Organization: p.Organization,
+		Notes:        p.Notes,
 		CustomFields: cloneMap(p.CustomFields),
+		Labels:       append([]string(nil), p.Labels...),
+		IsFavorite:   p.IsFavorite,
 		DeletedAt:    p.DeletedAt,
 		CreatedAt:    p.CreatedAt,
 		UpdatedAt:    p.UpdatedAt,

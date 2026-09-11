@@ -13,17 +13,25 @@ const (
 	JobStatusDone    = "done"
 )
 
+// MaxJobAttempts caps automatic retries for a failed sync job. Once a job
+// has failed this many times it is left in "failed" status permanently (a
+// dead letter, visible via last_error) instead of retried forever.
+const MaxJobAttempts = 5
+
 // Job represents one queued sync operation for a local record.
 type Job struct {
-	ID          uuid.UUID
-	OwnerID     *uuid.UUID
-	PersonID    uuid.UUID
-	Kind        ChangeKind
-	Snapshot    PersonSnapshot
-	Status      string
-	Attempts    int
-	LastError   *string
-	ProcessedAt *time.Time
-	CreatedAt   time.Time
-	UpdatedAt   time.Time
+	ID       uuid.UUID
+	OwnerID  *uuid.UUID
+	PersonID uuid.UUID
+	Kind     ChangeKind
+	Snapshot PersonSnapshot
+	// OriginAccountID, when set, is excluded from this job's own fan-out -
+	// see PersonChange.OriginAccountID.
+	OriginAccountID *uuid.UUID
+	Status          string
+	Attempts        int
+	LastError       *string
+	ProcessedAt     *time.Time
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
 }

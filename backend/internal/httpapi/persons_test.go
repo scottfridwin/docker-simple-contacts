@@ -9,17 +9,37 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 
+	"github.com/scottfridlund/contacts/backend/internal/authn"
 	"github.com/scottfridlund/contacts/backend/internal/person"
 )
 
 // fakeStore is an in-memory person store for endpoint tests.
 type fakeStore struct {
-	items map[uuid.UUID]*person.Person
+	items         map[uuid.UUID]*person.Person
+	relationships []fakeRelationship
+	shares        []fakeShare
+}
+
+type fakeShare struct {
+	id          uuid.UUID
+	personID    uuid.UUID
+	email       string
+	displayName string
+	recipientID uuid.UUID
+}
+
+type fakeRelationship struct {
+	id              uuid.UUID
+	personID        uuid.UUID
+	relatedPersonID *uuid.UUID
+	relatedName     *string
+	relType         person.RelationType
 }
 
 type errorStore struct {
@@ -28,6 +48,12 @@ type errorStore struct {
 }
 
 func (s *errorStore) GetByID(context.Context, uuid.UUID) (*person.Person, error) {
+	return nil, s.err
+}
+func (s *errorStore) GetAccessible(context.Context, uuid.UUID) (*person.Person, error) {
+	return nil, s.err
+}
+func (s *errorStore) Create(context.Context, *person.Person) (*person.Person, error) {
 	return nil, s.err
 }
 func (s *errorStore) List(context.Context, person.ListParams) ([]person.Person, int, error) {
@@ -67,6 +93,60 @@ func (f *fakeStore) GetByID(_ context.Context, id uuid.UUID) (*person.Person, er
 	}
 	out := *p
 	return &out, nil
+}
+
+func (f *fakeStore) GetAccessible(ctx context.Context, id uuid.UUID) (*person.Person, error) {
+	return f.GetByID(ctx, id)
+}
+
+func (f *fakeStore) CreateShare(_ context.Context, personID uuid.UUID, email string) (*person.Share, error) {
+	email = strings.ToLower(strings.TrimSpace(email))
+	if email == "notfound@example.com" {
+		return nil, person.ErrShareUserNotFound
+	}
+	for _, s := range f.shares {
+		if s.personID == personID && s.email == email {
+			return nil, person.ErrShareExists
+		}
+	}
+	id := uuid.New()
+	recipientID := uuid.NewSHA1(uuid.NameSpaceOID, []byte(email))
+	f.shares = append(f.shares, fakeShare{id: id, personID: personID, email: email, displayName: email, recipientID: recipientID})
+	return &person.Share{ID: id, PersonID: personID, SharedWithUserID: recipientID, SharedWithEmail: email, SharedWithDisplayName: email, CreatedAt: time.Now()}, nil
+}
+
+func (f *fakeStore) ListShares(_ context.Context, personID uuid.UUID) ([]person.Share, error) {
+	var out []person.Share
+	for _, s := range f.shares {
+		if s.personID == personID {
+			out = append(out, person.Share{ID: s.id, PersonID: s.personID, SharedWithEmail: s.email, SharedWithDisplayName: s.displayName})
+		}
+	}
+	return out, nil
+}
+
+func (f *fakeStore) DeleteShare(_ context.Context, personID, shareID uuid.UUID) error {
+	for i, s := range f.shares {
+		if s.id == shareID && s.personID == personID {
+			f.shares = append(f.shares[:i], f.shares[i+1:]...)
+			return nil
+		}
+	}
+	return person.ErrNotFound
+}
+
+func (f *fakeStore) DeleteShareByRecipient(ctx context.Context, personID uuid.UUID) error {
+	recipientID, ok := authn.UserID(ctx)
+	if !ok {
+		return person.ErrNotFound
+	}
+	for i, s := range f.shares {
+		if s.personID == personID && s.recipientID == recipientID {
+			f.shares = append(f.shares[:i], f.shares[i+1:]...)
+			return nil
+		}
+	}
+	return person.ErrNotFound
 }
 
 func (f *fakeStore) GetDeletedByID(_ context.Context, id uuid.UUID) (*person.Person, error) {
@@ -141,15 +221,138 @@ func (f *fakeStore) HardDelete(_ context.Context, id uuid.UUID) error {
 	return nil
 }
 
-func (f *fakeStore) PurgeExpired(_ context.Context, _ time.Duration) (int64, error) { return 0, nil }
+func (f *fakeStore) PurgeExpired(_ context.Context, _ time.Duration) ([]person.Person, error) {
+	return nil, nil
+}
 
 func (f *fakeStore) Ping(_ context.Context) error { return nil }
+
+func (f *fakeStore) CreateRelationship(_ context.Context, personID uuid.UUID, in person.RelationshipInput) (*person.RelationshipView, error) {
+	if in.RelatedPersonID != nil {
+		if _, ok := f.items[*in.RelatedPersonID]; !ok {
+			return nil, person.ErrRelatedPersonNotFound
+		}
+	}
+	for _, existing := range f.relationships {
+		if existing.personID == personID && in.RelatedPersonID != nil && existing.relatedPersonID != nil &&
+			*existing.relatedPersonID == *in.RelatedPersonID && existing.relType == in.Type {
+			return nil, person.ErrRelationshipExists
+		}
+	}
+	id := uuid.New()
+	f.relationships = append(f.relationships, fakeRelationship{
+		id: id, personID: personID, relatedPersonID: in.RelatedPersonID, relatedName: in.RelatedPersonName, relType: in.Type,
+	})
+	name := ""
+	if in.RelatedPersonName != nil {
+		name = *in.RelatedPersonName
+	}
+	if in.RelatedPersonID != nil {
+		if p, ok := f.items[*in.RelatedPersonID]; ok {
+			name = p.DisplayName
+		}
+	}
+	return &person.RelationshipView{ID: id, Type: in.Type, RelatedPersonID: in.RelatedPersonID, RelatedPersonName: name}, nil
+}
+
+func (f *fakeStore) ListRelationships(_ context.Context, personID uuid.UUID) ([]person.RelationshipView, error) {
+	var views []person.RelationshipView
+	for _, rel := range f.relationships {
+		switch {
+		case rel.personID == personID:
+			name := ""
+			if rel.relatedName != nil {
+				name = *rel.relatedName
+			}
+			if rel.relatedPersonID != nil {
+				if p, ok := f.items[*rel.relatedPersonID]; ok {
+					name = p.DisplayName
+				}
+			}
+			views = append(views, person.RelationshipView{ID: rel.id, Type: rel.relType, RelatedPersonID: rel.relatedPersonID, RelatedPersonName: name})
+		case rel.relatedPersonID != nil && *rel.relatedPersonID == personID:
+			name := ""
+			if p, ok := f.items[rel.personID]; ok {
+				name = p.DisplayName
+			}
+			id := rel.personID
+			views = append(views, person.RelationshipView{ID: rel.id, Type: rel.relType.Inverse(), RelatedPersonID: &id, RelatedPersonName: name})
+		}
+	}
+	return views, nil
+}
+
+func (f *fakeStore) ListIncomingRelationships(_ context.Context, personID uuid.UUID) ([]person.RelationshipView, error) {
+	var views []person.RelationshipView
+	for _, rel := range f.relationships {
+		if rel.relatedPersonID == nil || *rel.relatedPersonID != personID {
+			continue
+		}
+		name := ""
+		if p, ok := f.items[rel.personID]; ok {
+			name = p.DisplayName
+		}
+		id := rel.personID
+		views = append(views, person.RelationshipView{ID: rel.id, Type: rel.relType.Inverse(), RelatedPersonID: &id, RelatedPersonName: name})
+	}
+	return views, nil
+}
+
+func (f *fakeStore) DeleteRelationship(_ context.Context, personID, relationshipID uuid.UUID) error {
+	for i, rel := range f.relationships {
+		if rel.id != relationshipID {
+			continue
+		}
+		if rel.personID != personID && (rel.relatedPersonID == nil || *rel.relatedPersonID != personID) {
+			continue
+		}
+		f.relationships = append(f.relationships[:i], f.relationships[i+1:]...)
+		return nil
+	}
+	return person.ErrNotFound
+}
+
+func (f *fakeStore) ReplaceRelationships(_ context.Context, personID uuid.UUID, desired []person.RelationshipInput) error {
+	kept := f.relationships[:0]
+	for _, rel := range f.relationships {
+		if rel.personID != personID {
+			kept = append(kept, rel)
+		}
+	}
+	f.relationships = kept
+	for _, in := range desired {
+		f.relationships = append(f.relationships, fakeRelationship{
+			id: uuid.New(), personID: personID, relatedPersonID: in.RelatedPersonID, relatedName: in.RelatedPersonName, relType: in.Type,
+		})
+	}
+	return nil
+}
+
+func (f *fakeStore) FindByDisplayName(_ context.Context, name string) ([]person.Person, error) {
+	var out []person.Person
+	for _, p := range f.items {
+		if p.DisplayName == name && p.DeletedAt == nil {
+			out = append(out, *p)
+		}
+	}
+	return out, nil
+}
+
+func (f *fakeStore) FindByExactName(_ context.Context, firstName, lastName string) ([]person.Person, error) {
+	var out []person.Person
+	for _, p := range f.items {
+		if p.FirstName == firstName && p.LastName == lastName && p.DeletedAt == nil {
+			out = append(out, *p)
+		}
+	}
+	return out, nil
+}
 
 func testRouter() (http.Handler, *fakeStore) {
 	store := newFakeStore()
 	svc := person.NewService(store)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	return NewRouter(logger, svc, store, nil, []string{"http://localhost:5173"}), store
+	return NewRouter(logger, svc, store, nil, nil, []string{"http://localhost:5173"}), store
 }
 
 func doJSON(t *testing.T, h http.Handler, method, path string, body interface{}) *httptest.ResponseRecorder {
@@ -235,6 +438,42 @@ func TestGetPersonInvalidID(t *testing.T) {
 	}
 }
 
+// TestMutatingEndpointsRejectInvalidID guards the parseID guard clause on
+// every mutating single-person route, not just GET.
+func TestMutatingEndpointsRejectInvalidID(t *testing.T) {
+	h, _ := testRouter()
+	for _, tc := range []struct {
+		method, path string
+	}{
+		{http.MethodPatch, "/api/v1/persons/not-a-uuid"},
+		{http.MethodDelete, "/api/v1/persons/not-a-uuid"},
+		{http.MethodPost, "/api/v1/persons/not-a-uuid/restore"},
+		{http.MethodDelete, "/api/v1/persons/not-a-uuid/permanent"},
+	} {
+		rec := doJSON(t, h, tc.method, tc.path, map[string]any{"nickname": "N"})
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("%s %s = %d, want 400", tc.method, tc.path, rec.Code)
+		}
+	}
+}
+
+func TestGetPersonSuccess(t *testing.T) {
+	h, _ := testRouter()
+	rec := doJSON(t, h, http.MethodPost, "/api/v1/persons", map[string]any{"first_name": "A", "last_name": "B"})
+	var created person.Person
+	_ = json.Unmarshal(rec.Body.Bytes(), &created)
+
+	rec = doJSON(t, h, http.MethodGet, "/api/v1/persons/"+created.ID.String(), nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+	var got person.Person
+	_ = json.Unmarshal(rec.Body.Bytes(), &got)
+	if got.ID != created.ID {
+		t.Errorf("got = %+v", got)
+	}
+}
+
 func TestFullCRUDFlow(t *testing.T) {
 	h, _ := testRouter()
 
@@ -295,7 +534,7 @@ func TestPatchNewFields(t *testing.T) {
 		"nickname":      "Ace",
 		"pronouns":      "they/them",
 		"birthdate":     "1990-06-15",
-		"phone_numbers": []string{"+1-555-0100"},
+		"phone_numbers": []map[string]string{{"label": "mobile", "value": "+1-555-0100"}},
 	})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
@@ -322,7 +561,7 @@ func TestPatchInvalidCustomField(t *testing.T) {
 	h, store := testRouter()
 	p, _, _ := person.NewService(store).Create(context.Background(), person.CreateInput{FirstName: "A", LastName: "B"})
 	rec := doJSON(t, h, http.MethodPatch, "/api/v1/persons/"+p.ID.String(), map[string]any{
-		"custom_fields": map[string]any{"Bad-Key": "x"},
+		"custom_fields": map[string]any{"   ": "x"},
 	})
 	if rec.Code != http.StatusUnprocessableEntity {
 		t.Errorf("status = %d, want 422", rec.Code)
@@ -377,6 +616,11 @@ func TestListWithParams(t *testing.T) {
 	if list.PageSize != 100 {
 		t.Errorf("PageSize = %d, want capped at 100", list.PageSize)
 	}
+
+	rec = doJSON(t, h, http.MethodGet, "/api/v1/persons?order=desc", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("order=desc status = %d", rec.Code)
+	}
 }
 
 func TestNotFoundAndMethodNotAllowed(t *testing.T) {
@@ -428,7 +672,11 @@ func TestDecodeUpdateFields(t *testing.T) {
 	cases := []string{
 		`{"first_name":"A"}`, `{"last_name":"B"}`, `{"middle_names":["M"]}`,
 		`{"nickname":"N"}`, `{"pronouns":"they"}`, `{"birthdate":"2020-01-01"}`,
-		`{"phone_numbers":["555"]}`, `{"custom_fields":{"x":"y"}}`,
+		`{"phone_numbers":[{"label":"mobile","value":"555"}]}`,
+		`{"emails":[{"label":"home","value":"a@example.com"}]}`,
+		`{"addresses":[{"label":"home","city":"Springfield"}]}`,
+		`{"organization":{"name":"Acme","title":"Engineer"}}`, `{"organization":null}`,
+		`{"notes":"hello"}`, `{"custom_fields":{"x":"y"}}`, `{"is_favorite":true}`,
 	}
 	for _, body := range cases {
 		req := httptest.NewRequest(http.MethodPatch, "/", bytes.NewBufferString(body))
@@ -442,7 +690,9 @@ func TestDecodeUpdateRejectsMalformedFields(t *testing.T) {
 	cases := []string{
 		`{"first_name":1}`, `{"last_name":1}`, `{"middle_names":"x"}`,
 		`{"nickname":1}`, `{"pronouns":1}`, `{"birthdate":1}`,
-		`{"phone_numbers":"x"}`, `{"custom_fields":"x"}`, `{"unknown":true}`,
+		`{"phone_numbers":"x"}`, `{"phone_numbers":["555"]}`,
+		`{"emails":"x"}`, `{"addresses":"x"}`, `{"organization":"x"}`, `{"notes":1}`,
+		`{"custom_fields":"x"}`, `{"is_favorite":"x"}`, `{"unknown":true}`,
 	}
 
 	for _, body := range cases {
@@ -452,6 +702,45 @@ func TestDecodeUpdateRejectsMalformedFields(t *testing.T) {
 		}
 	}
 
+}
+
+// TestDecodeUpdateRejectsNonObjectBody guards the top-level json.Unmarshal
+// failure branch: a syntactically valid JSON value that isn't an object
+// (e.g. an array), separate from the well-formed-object-but-bad-field-value
+// cases above.
+func TestDecodeUpdateRejectsNonObjectBody(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPatch, "/", bytes.NewBufferString(`[1,2,3]`))
+	if _, err := decodeUpdate(httptest.NewRecorder(), req); err == nil {
+		t.Error("decodeUpdate([1,2,3]) unexpectedly succeeded")
+	}
+}
+
+// TestParseListParamsDefaultsToLastNameAscending guards the default sort
+// fix: the contact list should default to "Last Name, First Name" ascending
+// instead of display_name descending.
+func TestParseListParamsDefaultsToLastNameAscending(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/persons", nil)
+	params := parseListParams(req)
+	if params.SortField != "last_name" {
+		t.Errorf("SortField = %q, want last_name", params.SortField)
+	}
+	if params.SortDesc {
+		t.Error("SortDesc = true, want ascending by default")
+	}
+}
+
+func TestParseListParamsParsesFavoriteFilter(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/persons?favorite=true", nil)
+	params := parseListParams(req)
+	if params.Favorite == nil || !*params.Favorite {
+		t.Errorf("Favorite = %v, want true", params.Favorite)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/persons", nil)
+	params = parseListParams(req)
+	if params.Favorite != nil {
+		t.Errorf("Favorite = %v, want nil when not specified", params.Favorite)
+	}
 }
 
 func TestDecodeJSONRejectsTrailingPayload(t *testing.T) {
@@ -494,7 +783,7 @@ func TestPermanentDeleteDeletedPerson(t *testing.T) {
 func TestHandlersReturnInternalErrors(t *testing.T) {
 	store := &errorStore{fakeStore: newFakeStore(), err: errors.New("database unavailable")}
 	svc := person.NewService(store)
-	h := NewRouter(slog.Default(), svc, store, nil, nil)
+	h := NewRouter(slog.Default(), svc, store, nil, nil, nil)
 	id := uuid.NewString()
 	for _, tc := range []struct {
 		method, path string
@@ -503,10 +792,14 @@ func TestHandlersReturnInternalErrors(t *testing.T) {
 		{http.MethodGet, "/api/v1/persons/" + id, nil},
 		{http.MethodGet, "/api/v1/persons", nil},
 		{http.MethodGet, "/api/v1/persons/deleted", nil},
+		{http.MethodPost, "/api/v1/persons", map[string]any{"first_name": "A", "last_name": "B"}},
 		{http.MethodPatch, "/api/v1/persons/" + id, map[string]any{"nickname": "N"}},
 		{http.MethodDelete, "/api/v1/persons/" + id, nil},
 		{http.MethodPost, "/api/v1/persons/" + id + "/restore", nil},
 		{http.MethodDelete, "/api/v1/persons/" + id + "/permanent", nil},
+		{http.MethodGet, "/api/v1/persons/" + id + "/shares", nil},
+		{http.MethodPost, "/api/v1/persons/" + id + "/shares", map[string]any{"email": "friend@example.com"}},
+		{http.MethodDelete, "/api/v1/persons/" + id + "/shares/" + id, nil},
 	} {
 		rec := doJSON(t, h, tc.method, tc.path, tc.body)
 		if rec.Code != http.StatusInternalServerError {

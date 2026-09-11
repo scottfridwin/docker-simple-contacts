@@ -16,6 +16,7 @@ type Capabilities struct {
 // AuthSession stores the provider-managed credential state for a sync account.
 type AuthSession struct {
 	ProviderAccountID string
+	DisplayName       string
 	AccessToken       string
 	RefreshToken      string
 	ExpiresAt         time.Time

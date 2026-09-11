@@ -1,9 +1,11 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -11,11 +13,14 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
+	"github.com/scottfridlund/contacts/backend/internal/authn"
 	"github.com/scottfridlund/contacts/backend/internal/contactsync"
 )
 
 type syncAccountHandler struct {
-	repo syncAccountStore
+	repo    syncAccountStore
+	adapter contactsync.Adapter
+	logger  *slog.Logger
 }
 
 type syncAccountListResponse struct {
@@ -160,6 +165,54 @@ func (h *syncAccountHandler) delete(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal_error", "failed to delete sync account", nil)
 		return
 	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// syncNow triggers a full resync for one account in the background and
+// returns immediately, since a sync (especially a large/rate-limited pull)
+// can run far longer than a browser or proxy is willing to wait on a
+// request. The frontend polls sync account status to observe the result.
+// Adapter.Sync's own in-process guard makes this safe to call even while a
+// scheduled or already-triggered sync is still running for the account.
+//
+// This is a manual override, not a lightweight refresh: it resets the
+// account's sync cursor so Adapter.Sync treats it as a brand new initial
+// sync, re-pulling every remote record from scratch (instead of only
+// what's changed since the last cursor) and re-running the full local
+// export pass - fully realigning the local and remote data instead of
+// relying on incremental change tracking, which can miss edge cases (see
+// e.g. the ambiguous/stale contacts_local_id tag scenarios).
+func (h *syncAccountHandler) syncNow(w http.ResponseWriter, r *http.Request) {
+	id, ok := parseSyncAccountID(w, r)
+	if !ok {
+		return
+	}
+	if h.adapter == nil {
+		writeError(w, http.StatusServiceUnavailable, "sync_not_configured", "google sync is not configured", nil)
+		return
+	}
+	account, err := h.repo.GetByID(r.Context(), id)
+	if errors.Is(err, contactsync.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "not_found", "sync account not found", nil)
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", "failed to fetch sync account", nil)
+		return
+	}
+	account.SyncCursor = ""
+	// Deliberately unbounded: a large/rate-limited sync can legitimately
+	// outlive the originating HTTP request by a wide margin, and must not be
+	// canceled just because the client's request context ended.
+	go func(account contactsync.Account) { //nolint:gosec // intentional: see comment above
+		ctx := context.Background()
+		if account.OwnerID != nil {
+			ctx = authn.WithUserID(ctx, *account.OwnerID)
+		}
+		if err := h.adapter.Sync(ctx, account, contactsync.Job{}); err != nil && h.logger != nil {
+			h.logger.Error("on-demand google sync failed", "account_id", account.ID, "error", err)
+		}
+	}(*account)
 	w.WriteHeader(http.StatusNoContent)
 }
 

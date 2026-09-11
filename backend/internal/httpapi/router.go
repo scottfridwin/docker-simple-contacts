@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/cors"
@@ -12,6 +13,7 @@ import (
 	"github.com/scottfridlund/contacts/backend/internal/auth"
 	"github.com/scottfridlund/contacts/backend/internal/contactsync"
 	"github.com/scottfridlund/contacts/backend/internal/person"
+	"github.com/scottfridlund/contacts/backend/internal/ratelimit"
 )
 
 type syncAccountStore interface {
@@ -23,7 +25,7 @@ type syncAccountStore interface {
 }
 
 // NewRouter builds the application's HTTP handler.
-func NewRouter(logger *slog.Logger, svc *person.Service, ready pinger, syncRepo syncAccountStore, allowedOrigins []string, providers ...*auth.Provider) http.Handler {
+func NewRouter(logger *slog.Logger, svc *person.Service, ready pinger, syncRepo syncAccountStore, googleAdapter contactsync.Adapter, allowedOrigins []string, providers ...*auth.Provider) http.Handler {
 	r := chi.NewRouter()
 
 	r.Use(requestID)
@@ -46,7 +48,11 @@ func NewRouter(logger *slog.Logger, svc *person.Service, ready pinger, syncRepo 
 	r.Get("/readyz", readyHandler(ready))
 
 	h := &personHandler{svc: svc}
-	syncHandler := &syncAccountHandler{repo: syncRepo}
+	relHandler := &relationshipHandler{svc: svc}
+	sharesHandler := &shareHandler{svc: svc}
+	syncHandler := &syncAccountHandler{repo: syncRepo, adapter: googleAdapter, logger: logger}
+	googleAuth := &googleOAuthHandler{repo: syncRepo, adapter: googleAdapter, logger: logger}
+	shareCreateLimit := rateLimit(ratelimit.NewLimiter(20, time.Minute))
 	r.Route("/api/v1", func(api chi.Router) {
 		api.Route("/persons", func(p chi.Router) {
 			p.Post("/", h.create)
@@ -57,6 +63,13 @@ func NewRouter(logger *slog.Logger, svc *person.Service, ready pinger, syncRepo 
 			p.Get("/{id}", h.get)
 			p.Patch("/{id}", h.update)
 			p.Delete("/{id}", h.delete)
+			p.Get("/{id}/relationships", relHandler.list)
+			p.Post("/{id}/relationships", relHandler.create)
+			p.Delete("/{id}/relationships/{relationshipId}", relHandler.delete)
+			p.Get("/{id}/shares", sharesHandler.list)
+			p.With(shareCreateLimit).Post("/{id}/shares", sharesHandler.create)
+			p.Delete("/{id}/shares/mine", sharesHandler.leave)
+			p.Delete("/{id}/shares/{shareId}", sharesHandler.delete)
 		})
 		api.Route("/sync-accounts", func(s chi.Router) {
 			s.Get("/", syncHandler.list)
@@ -64,6 +77,11 @@ func NewRouter(logger *slog.Logger, svc *person.Service, ready pinger, syncRepo 
 			s.Get("/{id}", syncHandler.get)
 			s.Patch("/{id}", syncHandler.update)
 			s.Delete("/{id}", syncHandler.delete)
+			s.Post("/{id}/sync", syncHandler.syncNow)
+		})
+		api.Route("/sync/google", func(s chi.Router) {
+			s.Get("/begin", googleAuth.begin)
+			s.Get("/callback", googleAuth.callback)
 		})
 	})
 

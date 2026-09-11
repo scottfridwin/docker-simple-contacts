@@ -26,10 +26,15 @@ Build a self-hosted contact management system with:
 ### Out of scope
 - Password or local-account authentication.
 - SSO providers other than Authentik.
-- Sharing contacts between accounts.
-- Contact sync integrations (Google, Outlook, LDAP, etc.).
-- Background jobs/queues.
+- Contact sync integrations other than Google (Outlook, LDAP, CardDAV, etc.)
+  without a new design decision.
+- Background jobs/queues beyond the sync scheduler.
 - File attachments.
+
+> Sharing contacts between accounts was originally out of scope for v1/v2 but
+> was approved and implemented afterward - see
+> [03-implementation-decisions.md](03-implementation-decisions.md) decision
+> log section I.
 
 ## Required Technology and Project Layout
 ### Backend

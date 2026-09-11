@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"flag"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -15,6 +16,7 @@ import (
 	"github.com/scottfridlund/contacts/backend/internal/auth"
 	"github.com/scottfridlund/contacts/backend/internal/config"
 	"github.com/scottfridlund/contacts/backend/internal/contactsync"
+	googlesync "github.com/scottfridlund/contacts/backend/internal/contactsync/google"
 	"github.com/scottfridlund/contacts/backend/internal/db"
 	"github.com/scottfridlund/contacts/backend/internal/httpapi"
 	"github.com/scottfridlund/contacts/backend/internal/logging"
@@ -72,15 +74,15 @@ func run() error {
 	logger := logging.New(cfg.LogLevel, cfg.IsProduction())
 	logger.Info("starting contacts server", "env", cfg.Env, "port", cfg.Port)
 
-	if err := db.Migrate(cfg.DatabaseURL()); err != nil {
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	if err := db.Migrate(ctx, cfg.DatabaseURL(), logger); err != nil {
 		return err
 	}
 	logger.Info("migrations applied")
 
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
-
-	pool, err := db.Connect(ctx, cfg.DatabaseURL())
+	pool, err := db.Connect(ctx, cfg.DatabaseURL(), logger)
 	if err != nil {
 		return err
 	}
@@ -89,12 +91,34 @@ func run() error {
 	repo := person.NewRepository(pool)
 	syncAccountRepo := contactsync.NewRepository(pool)
 	syncJobRepo := contactsync.NewJobRepository(pool)
+	syncLinkRepo := contactsync.NewRecordLinkRepository(pool)
 	syncSvc := contactsync.NewService(syncJobRepo)
 	svc := person.NewService(repo, syncSvc)
 	accountRepo := user.NewRepository(pool)
 
+	processor := contactsync.Processor(contactsync.NoopProcessor{})
+	var googleAdapter contactsync.Adapter
+	if cfg.GoogleClientID != "" && cfg.GoogleClientSecret != "" && cfg.GoogleRedirectURL != "" {
+		adapter, err := googlesync.NewAdapter(ctx, googlesync.Config{
+			ClientID:     cfg.GoogleClientID,
+			ClientSecret: cfg.GoogleClientSecret,
+			RedirectURL:  cfg.GoogleRedirectURL,
+			DryRun:       cfg.GoogleSyncDryRun,
+		}, syncAccountRepo, svc, syncLinkRepo, nil, logger)
+		if err != nil {
+			return fmt.Errorf("configuring google sync adapter: %w", err)
+		}
+		registry := contactsync.AdapterRegistry{}
+		registry.Register(adapter)
+		processor = contactsync.NewDispatchProcessor(registry)
+		googleAdapter = adapter
+		logger.Info("google sync adapter configured", "dry_run", cfg.GoogleSyncDryRun)
+	}
+	runner := contactsync.NewRunner(syncAccountRepo, syncJobRepo, processor, logger)
+
 	purgeWindow := time.Duration(cfg.PurgeAfterDays) * 24 * time.Hour
 	go runPurgeLoop(ctx, logger, svc, purgeWindow)
+	go runSyncLoop(ctx, logger, runner, 30*time.Second)
 
 	var provider *auth.Provider
 	if cfg.AuthentikIssuer != "" {
@@ -104,12 +128,12 @@ func run() error {
 			ClientSecret: cfg.AuthentikSecret,
 			RedirectURL:  cfg.AuthentikRedirect,
 			SessionKey:   cfg.SessionSecret,
-		}, accountRepo)
+		}, accountRepo, logger)
 		if err != nil {
 			return err
 		}
 	}
-	handler := httpapi.NewRouter(logger, svc, repo, syncAccountRepo, cfg.CORSAllowedOrigins, provider)
+	handler := httpapi.NewRouter(logger, svc, repo, syncAccountRepo, googleAdapter, cfg.CORSAllowedOrigins, provider)
 	srv := &http.Server{
 		Addr:              ":" + cfg.Port,
 		Handler:           handler,
@@ -143,6 +167,15 @@ func run() error {
 	return nil
 }
 
+func runSyncLoop(ctx context.Context, logger *slog.Logger, runner *contactsync.Runner, interval time.Duration) {
+	if runner == nil {
+		return
+	}
+	if err := runner.RunLoop(ctx, interval); err != nil && !errors.Is(err, context.Canceled) {
+		logger.Error("sync loop failed", "error", err)
+	}
+}
+
 // runPurgeLoop periodically purges soft-deleted records past the retention
 // window (recycle bin behavior).
 func runPurgeLoop(ctx context.Context, logger *slog.Logger, svc *person.Service, window time.Duration) {
@@ -150,6 +183,11 @@ func runPurgeLoop(ctx context.Context, logger *slog.Logger, svc *person.Service,
 	defer ticker.Stop()
 
 	purge := func() {
+		defer func() {
+			if rec := recover(); rec != nil {
+				logger.Error("recovered from panic in purge loop", "panic", rec)
+			}
+		}()
 		count, err := svc.PurgeExpired(ctx, window)
 		if err != nil {
 			logger.Error("purge failed", "error", err)

@@ -31,10 +31,11 @@ func (s *Service) RecordChanged(ctx context.Context, change PersonChange) error 
 		return fmt.Errorf("sync change missing person id")
 	}
 	_, err := s.jobs.Create(ctx, &Job{
-		OwnerID:  change.Snapshot.OwnerID,
-		PersonID: change.Snapshot.ID,
-		Kind:     change.Kind,
-		Snapshot: change.Snapshot,
+		OwnerID:         change.Snapshot.OwnerID,
+		PersonID:        change.Snapshot.ID,
+		Kind:            change.Kind,
+		Snapshot:        change.Snapshot,
+		OriginAccountID: change.OriginAccountID,
 	})
 	if err != nil {
 		return fmt.Errorf("creating sync job: %w", err)

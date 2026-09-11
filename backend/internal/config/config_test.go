@@ -18,6 +18,9 @@ func clearEnv(t *testing.T) {
 		"AUTHENTIK_REDIRECT_URI", "OIDC_ISSUER_URL", "OIDC_CLIENT_ID",
 		"OIDC_CLIENT_ID_FILE", "OIDC_CLIENT_SECRET", "OIDC_CLIENT_SECRET_FILE",
 		"OIDC_REDIRECT_URI", "SESSION_SECRET", "SESSION_SECRET_FILE",
+		"GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_ID_FILE", "GOOGLE_CLIENT_SECRET",
+		"GOOGLE_CLIENT_SECRET_FILE", "GOOGLE_REDIRECT_URL", "GOOGLE_REDIRECT_URI",
+		"GOOGLE_SYNC_DRY_RUN",
 	} {
 		t.Setenv(k, "")
 	}
@@ -178,5 +181,69 @@ func TestLoadAuthentikConfigurationUsesSecretFiles(t *testing.T) {
 	}
 	if cfg.AuthentikClientID != "client-id" || cfg.AuthentikSecret != "client-secret" {
 		t.Fatalf("unexpected Authentik credentials: %#v", cfg)
+	}
+}
+
+func TestLoadFailsWithPartialGoogleSyncConfiguration(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("DB_HOST", "localhost")
+	t.Setenv("DB_USER", "app")
+	t.Setenv("DB_PASSWORD", "secret")
+	t.Setenv("GOOGLE_CLIENT_ID", "google-client")
+
+	if _, err := Load(); err == nil {
+		t.Fatal("expected error when Google sync config is partial")
+	}
+}
+
+func TestLoadGoogleSyncConfigurationUsesSecretFiles(t *testing.T) {
+	clearEnv(t)
+	dir := t.TempDir()
+	clientIDPath := filepath.Join(dir, "google-client-id")
+	clientSecretPath := filepath.Join(dir, "google-client-secret")
+	if err := os.WriteFile(clientIDPath, []byte("gid\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(clientSecretPath, []byte("gsecret\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("DB_HOST", "localhost")
+	t.Setenv("DB_USER", "app")
+	t.Setenv("DB_PASSWORD", "secret")
+	t.Setenv("GOOGLE_CLIENT_ID_FILE", clientIDPath)
+	t.Setenv("GOOGLE_CLIENT_SECRET_FILE", clientSecretPath)
+	t.Setenv("GOOGLE_REDIRECT_URL", "https://contacts.example/api/v1/sync/google/callback")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.GoogleClientID != "gid" || cfg.GoogleClientSecret != "gsecret" {
+		t.Fatalf("unexpected Google config: %#v", cfg)
+	}
+}
+
+func TestLoadGoogleSyncDryRun(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("DB_HOST", "localhost")
+	t.Setenv("DB_USER", "app")
+	t.Setenv("DB_PASSWORD", "secret")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.GoogleSyncDryRun {
+		t.Fatal("expected GoogleSyncDryRun to default to false")
+	}
+
+	t.Setenv("GOOGLE_SYNC_DRY_RUN", "true")
+	cfg, err = Load()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !cfg.GoogleSyncDryRun {
+		t.Fatal("expected GoogleSyncDryRun to be true when GOOGLE_SYNC_DRY_RUN=true")
 	}
 }

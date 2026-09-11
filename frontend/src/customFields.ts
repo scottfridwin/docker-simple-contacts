@@ -4,7 +4,8 @@ export const MAX_CUSTOM_FIELDS = 64;
 export const MAX_KEY_LENGTH = 64;
 export const MAX_STRING_LENGTH = 1024;
 
-const SNAKE_CASE = /^[a-z][a-z0-9]*(_[a-z0-9]+)*$/;
+// eslint-disable-next-line no-control-regex
+const CONTROL_CHARS = /[\u0000-\u001F\u007F]/;
 
 export interface DraftCustomField {
   key: string;
@@ -12,11 +13,11 @@ export interface DraftCustomField {
   value: string;
 }
 
-/** Validates a single custom field key against the snake_case policy. */
+/** Validates a single custom field key: any non-empty, printable text up to MAX_KEY_LENGTH characters. */
 export function validateKey(key: string): string | null {
-  if (!key) return 'Key is required';
+  if (!key.trim()) return 'Key is required';
   if (key.length > MAX_KEY_LENGTH) return `Key must be at most ${MAX_KEY_LENGTH} characters`;
-  if (!SNAKE_CASE.test(key)) return 'Key must be lowercase snake_case';
+  if (CONTROL_CHARS.test(key)) return 'Key must not contain control characters';
   return null;
 }
 

@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -20,6 +21,7 @@ import (
 	"golang.org/x/oauth2"
 
 	"github.com/scottfridlund/contacts/backend/internal/authn"
+	"github.com/scottfridlund/contacts/backend/internal/ratelimit"
 	"github.com/scottfridlund/contacts/backend/internal/user"
 )
 
@@ -37,21 +39,25 @@ type Config struct {
 }
 
 type Provider struct {
-	oauth    oauth2.Config
-	verifier *oidc.IDTokenVerifier
-	users    userStore
-	key      []byte
+	oauth          oauth2.Config
+	verifier       *oidc.IDTokenVerifier
+	users          userStore
+	key            []byte
+	loginRateLimit *ratelimit.Limiter
 }
 
 type userStore interface {
 	Upsert(context.Context, string, string, string) (*user.User, error)
 }
 
-func New(ctx context.Context, cfg Config, users userStore) (*Provider, error) {
+func New(ctx context.Context, cfg Config, users userStore, logger *slog.Logger) (*Provider, error) {
 	if len(cfg.SessionKey) < 32 {
 		return nil, errors.New("SESSION_SECRET must be at least 32 bytes")
 	}
-	provider, err := oidc.NewProvider(ctx, cfg.Issuer)
+	if logger == nil {
+		logger = slog.Default()
+	}
+	provider, err := discoverOIDCProvider(ctx, cfg.Issuer, logger, defaultOIDCRetryConfig())
 	if err != nil {
 		return nil, fmt.Errorf("discovering OIDC provider: %w", err)
 	}
@@ -63,10 +69,54 @@ func New(ctx context.Context, cfg Config, users userStore) (*Provider, error) {
 			RedirectURL:  cfg.RedirectURL,
 			Scopes:       []string{oidc.ScopeOpenID, "profile", "email"},
 		},
-		verifier: provider.Verifier(&oidc.Config{ClientID: cfg.ClientID}),
-		users:    users,
-		key:      cfg.SessionKey,
+		verifier:       provider.Verifier(&oidc.Config{ClientID: cfg.ClientID}),
+		users:          users,
+		key:            cfg.SessionKey,
+		loginRateLimit: ratelimit.NewLimiter(20, time.Minute),
 	}, nil
+}
+
+// oidcRetryConfig controls discoverOIDCProvider's timing. Production uses
+// defaultOIDCRetryConfig; tests pass small values so they don't have to wait
+// on the real budget.
+type oidcRetryConfig struct {
+	initialBackoff time.Duration
+	maxBackoff     time.Duration
+	maxWait        time.Duration
+}
+
+func defaultOIDCRetryConfig() oidcRetryConfig {
+	return oidcRetryConfig{initialBackoff: time.Second, maxBackoff: 15 * time.Second, maxWait: 2 * time.Minute}
+}
+
+// discoverOIDCProvider retries OIDC discovery with backoff so a slow-to-start
+// or momentarily unreachable Authentik instance doesn't stop the whole app
+// (Person CRUD and Google sync don't depend on it) from starting - the same
+// startup race that database migrations can hit.
+func discoverOIDCProvider(ctx context.Context, issuer string, logger *slog.Logger, cfg oidcRetryConfig) (*oidc.Provider, error) {
+	deadline := time.Now().Add(cfg.maxWait)
+	backoff := cfg.initialBackoff
+	var lastErr error
+	for attempt := 1; ; attempt++ {
+		provider, err := oidc.NewProvider(ctx, issuer)
+		if err == nil {
+			return provider, nil
+		}
+		lastErr = err
+		if time.Now().After(deadline) {
+			return nil, fmt.Errorf("giving up after %d attempts: %w", attempt, lastErr)
+		}
+		logger.Warn("OIDC provider not reachable yet, retrying", "issuer", issuer, "attempt", attempt, "retry_in", backoff, "error", err)
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(backoff):
+		}
+		backoff *= 2
+		if backoff > cfg.maxBackoff {
+			backoff = cfg.maxBackoff
+		}
+	}
 }
 
 func (p *Provider) Routes(r interface {
@@ -94,6 +144,10 @@ func (p *Provider) Middleware(next http.Handler) http.Handler {
 }
 
 func (p *Provider) login(w http.ResponseWriter, r *http.Request) {
+	if p.loginRateLimit != nil && !p.loginRateLimit.Allow(ratelimit.ClientIP(r)) {
+		http.Error(w, "too many login attempts, please slow down", http.StatusTooManyRequests)
+		return
+	}
 	state, err := randomToken()
 	if err != nil {
 		http.Error(w, "failed to create login state", http.StatusInternalServerError)

@@ -1,8 +1,13 @@
 package person
 
 import (
+	"fmt"
 	"strings"
 	"testing"
+
+	"github.com/google/uuid"
+
+	"github.com/scottfridlund/contacts/backend/internal/contactsync"
 )
 
 func TestValidateCreateRequiresNames(t *testing.T) {
@@ -22,16 +27,33 @@ func TestValidateCreateValid(t *testing.T) {
 	}
 }
 
+// TestValidateUpdateNilNameTreatedAsEmpty guards derefString's nil branch:
+// setting FirstNameSet/LastNameSet without an actual value must be treated
+// as clearing the name to empty, which is invalid for a required field.
+func TestValidateUpdateNilNameTreatedAsEmpty(t *testing.T) {
+	errs := ValidateUpdate(UpdateInput{FirstNameSet: true, LastNameSet: true})
+	if !errs.HasErrors() {
+		t.Fatal("expected errors when first_name/last_name are set to nil")
+	}
+	if !strings.Contains(errs.Error(), "first_name") || !strings.Contains(errs.Error(), "last_name") {
+		t.Errorf("expected first_name and last_name errors, got: %s", errs.Error())
+	}
+}
+
 func TestCustomFieldKeyFormat(t *testing.T) {
 	cases := map[string]bool{
-		"blood_type": true,
-		"age":        true,
-		"field1":     true,
-		"BloodType":  false,
-		"blood-type": false,
-		"_leading":   false,
-		"trailing_":  false,
-		"double__us": false,
+		"blood_type":    true,
+		"age":           true,
+		"field1":        true,
+		"BloodType":     true,
+		"Blood Type":    true,
+		"blood-type":    true,
+		"T-Shirt Size":  true,
+		"Employee ID #": true,
+		"":              false,
+		"   ":           false,
+		"has\ttab":      false,
+		"has\nnewline":  false,
 	}
 	for key, valid := range cases {
 		errs := ValidateCustomFields(map[string]any{key: "x"})
@@ -76,6 +98,10 @@ func TestCustomFieldLimits(t *testing.T) {
 	if errs := ValidateCustomFields(map[string]any{"big": longString}); !errs.HasErrors() {
 		t.Error("expected error for oversized string value")
 	}
+	longKey := strings.Repeat("k", MaxKeyLength+1)
+	if errs := ValidateCustomFields(map[string]any{longKey: "v"}); !errs.HasErrors() {
+		t.Error("expected error for oversized key")
+	}
 }
 
 func TestValidateNewFields(t *testing.T) {
@@ -84,6 +110,9 @@ func TestValidateNewFields(t *testing.T) {
 
 	if errs := ValidateCreate(CreateInput{FirstName: "A", LastName: "B", Nickname: &longPtr}); !errs.HasErrors() {
 		t.Error("expected error for oversized nickname")
+	}
+	if errs := ValidateCreate(CreateInput{FirstName: "A", LastName: "B", Pronouns: &longPtr}); !errs.HasErrors() {
+		t.Error("expected error for oversized pronouns")
 	}
 
 	bad := "not-a-date"
@@ -95,28 +124,86 @@ func TestValidateNewFields(t *testing.T) {
 	if errs := ValidateCreate(CreateInput{FirstName: "A", LastName: "B", Birthdate: &good}); errs.HasErrors() {
 		t.Errorf("expected no errors for valid birthdate, got: %s", errs.Error())
 	}
+
+	shortNotes := "Met at a conference."
+	if errs := ValidateCreate(CreateInput{FirstName: "A", LastName: "B", Notes: &shortNotes}); errs.HasErrors() {
+		t.Errorf("expected no errors for in-bounds notes, got: %s", errs.Error())
+	}
+}
+
+// TestValidateUpdateChecksEverySetField exercises ValidateUpdate with every
+// *Set flag true and an invalid value, covering the update-path branches
+// that mirror ValidateCreate's per-field validators.
+func TestValidateUpdateChecksEverySetField(t *testing.T) {
+	longName := strings.Repeat("x", MaxNameLength+1)
+	badBirthdate := "not-a-date"
+	badMiddleNames := []string{""}
+	badPhones := []contactsync.LabeledValue{{Value: ""}}
+	badEmails := []contactsync.LabeledValue{{Value: "not-an-email"}}
+	badAddresses := []contactsync.Address{{}}
+	badOrg := contactsync.Organization{Name: strings.Repeat("x", MaxOrgFieldLength+1)}
+	badNotes := strings.Repeat("x", MaxNotesLength+1)
+
+	errs := ValidateUpdate(UpdateInput{
+		FirstNameSet: true, FirstName: &longName,
+		LastNameSet: true, LastName: &longName,
+		MiddleNamesSet: true, MiddleNames: &badMiddleNames,
+		NicknameSet: true, Nickname: &longName,
+		PronounsSet: true, Pronouns: &longName,
+		BirthdateSet: true, Birthdate: &badBirthdate,
+		PhoneNumbersSet: true, PhoneNumbers: &badPhones,
+		EmailsSet: true, Emails: &badEmails,
+		AddressesSet: true, Addresses: &badAddresses,
+		OrganizationSet: true, Organization: &badOrg,
+		NotesSet: true, Notes: &badNotes,
+		CustomFieldsSet: true, CustomFields: map[string]any{"BadKey": "x"},
+	})
+	if !errs.HasErrors() {
+		t.Fatal("expected errors for every invalid field")
+	}
+	wantFields := []string{
+		"first_name", "last_name", "middle_names[0]", "nickname", "pronouns",
+		"birthdate", "phone_numbers[0].value", "emails[0].value", "addresses[0]",
+		"organization.name", "notes",
+	}
+	for _, f := range wantFields {
+		found := false
+		for _, e := range errs {
+			if e.Field == f {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("expected an error for field %q, got: %s", f, errs.Error())
+		}
+	}
 }
 
 func TestValidatePhoneNumbers(t *testing.T) {
-	tooMany := make([]string, MaxPhoneNumbers+1)
+	tooMany := make([]contactsync.LabeledValue, MaxPhoneNumbers+1)
 	for i := range tooMany {
-		tooMany[i] = "555-000"
+		tooMany[i] = contactsync.LabeledValue{Value: "555-000"}
 	}
 	if errs := ValidateCreate(CreateInput{FirstName: "A", LastName: "B", PhoneNumbers: tooMany}); !errs.HasErrors() {
 		t.Error("expected error for too many phone numbers")
 	}
 
-	if errs := ValidateCreate(CreateInput{FirstName: "A", LastName: "B", PhoneNumbers: []string{""}}); !errs.HasErrors() {
+	if errs := ValidateCreate(CreateInput{FirstName: "A", LastName: "B", PhoneNumbers: []contactsync.LabeledValue{{Value: ""}}}); !errs.HasErrors() {
 		t.Error("expected error for empty phone number")
 	}
 
 	long := strings.Repeat("1", MaxPhoneNumberLength+1)
-	if errs := ValidateCreate(CreateInput{FirstName: "A", LastName: "B", PhoneNumbers: []string{long}}); !errs.HasErrors() {
+	if errs := ValidateCreate(CreateInput{FirstName: "A", LastName: "B", PhoneNumbers: []contactsync.LabeledValue{{Value: long}}}); !errs.HasErrors() {
 		t.Error("expected error for phone number exceeding max length")
 	}
 
-	if errs := ValidateCreate(CreateInput{FirstName: "A", LastName: "B", PhoneNumbers: []string{"+1-555-0100", "555-0101"}}); errs.HasErrors() {
+	if errs := ValidateCreate(CreateInput{FirstName: "A", LastName: "B", PhoneNumbers: []contactsync.LabeledValue{{Label: "mobile", Value: "+1-555-0100"}, {Label: "home", Value: "555-0101"}}}); errs.HasErrors() {
 		t.Errorf("expected no errors for valid phone numbers, got: %s", errs.Error())
+	}
+	longLabel := strings.Repeat("x", MaxLabelLength+1)
+	if errs := ValidateCreate(CreateInput{FirstName: "A", LastName: "B", PhoneNumbers: []contactsync.LabeledValue{{Label: longLabel, Value: "555-0100"}}}); !errs.HasErrors() {
+		t.Error("expected error for an oversized phone number label")
 	}
 }
 
@@ -131,6 +218,48 @@ func TestValidateMiddleNames(t *testing.T) {
 	if errs := ValidateCreate(CreateInput{FirstName: "A", LastName: "B", MiddleNames: []string{""}}); !errs.HasErrors() {
 		t.Error("expected error for empty middle name")
 	}
+	longMiddle := strings.Repeat("x", MaxNameLength+1)
+	if errs := ValidateCreate(CreateInput{FirstName: "A", LastName: "B", MiddleNames: []string{longMiddle}}); !errs.HasErrors() {
+		t.Error("expected error for oversized middle name")
+	}
+}
+
+func TestValidateLabels(t *testing.T) {
+	tooMany := make([]string, MaxPersonLabels+1)
+	for i := range tooMany {
+		tooMany[i] = fmt.Sprintf("label-%d", i)
+	}
+	if errs := ValidateCreate(CreateInput{FirstName: "A", LastName: "B", Labels: tooMany}); !errs.HasErrors() {
+		t.Error("expected error for too many labels")
+	}
+	if errs := ValidateCreate(CreateInput{FirstName: "A", LastName: "B", Labels: []string{""}}); !errs.HasErrors() {
+		t.Error("expected error for empty label")
+	}
+	longLabel := strings.Repeat("x", MaxPersonLabelLength+1)
+	if errs := ValidateCreate(CreateInput{FirstName: "A", LastName: "B", Labels: []string{longLabel}}); !errs.HasErrors() {
+		t.Error("expected error for oversized label")
+	}
+	if errs := ValidateCreate(CreateInput{FirstName: "A", LastName: "B", Labels: []string{"Family", "Book Club"}}); errs.HasErrors() {
+		t.Errorf("expected no errors for valid labels, got: %s", errs.Error())
+	}
+}
+
+func TestSanitizeLabelsForSync(t *testing.T) {
+	got := SanitizeLabelsForSync([]string{"Family", "  ", "Family", "Friends", strings.Repeat("x", MaxPersonLabelLength+1)})
+	if len(got) != 2 || got[0] != "Family" || got[1] != "Friends" {
+		t.Fatalf("SanitizeLabelsForSync = %+v, want [Family Friends]", got)
+	}
+}
+
+func TestSanitizeLabelsForSyncEnforcesMaxCount(t *testing.T) {
+	raw := make([]string, MaxPersonLabels+10)
+	for i := range raw {
+		raw[i] = fmt.Sprintf("label-%02d", i)
+	}
+	got := SanitizeLabelsForSync(raw)
+	if len(got) != MaxPersonLabels {
+		t.Fatalf("len(SanitizeLabelsForSync(...)) = %d, want %d", len(got), MaxPersonLabels)
+	}
 }
 
 func TestValidateUpdateFields(t *testing.T) {
@@ -144,6 +273,74 @@ func TestValidateUpdateFields(t *testing.T) {
 	}
 }
 
+func TestValidateEmails(t *testing.T) {
+	if errs := ValidateCreate(CreateInput{FirstName: "A", LastName: "B", Emails: []contactsync.LabeledValue{{Label: "home", Value: "not-an-email"}}}); !errs.HasErrors() {
+		t.Error("expected error for invalid email address")
+	}
+	if errs := ValidateCreate(CreateInput{FirstName: "A", LastName: "B", Emails: []contactsync.LabeledValue{{Label: "home", Value: "a@example.com"}}}); errs.HasErrors() {
+		t.Errorf("expected no errors for valid email, got: %s", errs.Error())
+	}
+	tooMany := make([]contactsync.LabeledValue, MaxEmails+1)
+	for i := range tooMany {
+		tooMany[i] = contactsync.LabeledValue{Value: "a@example.com"}
+	}
+	if errs := ValidateCreate(CreateInput{FirstName: "A", LastName: "B", Emails: tooMany}); !errs.HasErrors() {
+		t.Error("expected error for too many emails")
+	}
+	if errs := ValidateCreate(CreateInput{FirstName: "A", LastName: "B", Emails: []contactsync.LabeledValue{{Value: "  "}}}); !errs.HasErrors() {
+		t.Error("expected error for a blank email value")
+	}
+	longValue := strings.Repeat("a", MaxEmailLength) + "@example.com"
+	if errs := ValidateCreate(CreateInput{FirstName: "A", LastName: "B", Emails: []contactsync.LabeledValue{{Value: longValue}}}); !errs.HasErrors() {
+		t.Error("expected error for an oversized email value")
+	}
+	longLabel := strings.Repeat("x", MaxLabelLength+1)
+	if errs := ValidateCreate(CreateInput{FirstName: "A", LastName: "B", Emails: []contactsync.LabeledValue{{Label: longLabel, Value: "a@example.com"}}}); !errs.HasErrors() {
+		t.Error("expected error for an oversized email label")
+	}
+}
+
+func TestValidateAddresses(t *testing.T) {
+	if errs := ValidateCreate(CreateInput{FirstName: "A", LastName: "B", Addresses: []contactsync.Address{{Label: "home", City: "Springfield"}}}); errs.HasErrors() {
+		t.Errorf("expected no errors for valid address, got: %s", errs.Error())
+	}
+	long := strings.Repeat("x", MaxAddressFieldLength+1)
+	if errs := ValidateCreate(CreateInput{FirstName: "A", LastName: "B", Addresses: []contactsync.Address{{City: long}}}); !errs.HasErrors() {
+		t.Error("expected error for oversized address field")
+	}
+	if errs := ValidateCreate(CreateInput{FirstName: "A", LastName: "B", Addresses: []contactsync.Address{{}}}); !errs.HasErrors() {
+		t.Error("expected error for an address with no fields set")
+	}
+	longLabel := strings.Repeat("x", MaxLabelLength+1)
+	if errs := ValidateCreate(CreateInput{FirstName: "A", LastName: "B", Addresses: []contactsync.Address{{Label: longLabel, City: "Springfield"}}}); !errs.HasErrors() {
+		t.Error("expected error for an oversized address label")
+	}
+	tooMany := make([]contactsync.Address, MaxAddresses+1)
+	for i := range tooMany {
+		tooMany[i] = contactsync.Address{City: "Springfield"}
+	}
+	if errs := ValidateCreate(CreateInput{FirstName: "A", LastName: "B", Addresses: tooMany}); !errs.HasErrors() {
+		t.Error("expected error for too many addresses")
+	}
+}
+
+func TestValidateOrganization(t *testing.T) {
+	long := strings.Repeat("x", MaxOrgFieldLength+1)
+	if errs := ValidateCreate(CreateInput{FirstName: "A", LastName: "B", Organization: &contactsync.Organization{Name: long}}); !errs.HasErrors() {
+		t.Error("expected error for oversized organization field")
+	}
+	if errs := ValidateCreate(CreateInput{FirstName: "A", LastName: "B", Organization: &contactsync.Organization{Name: "Acme", Title: "Engineer"}}); errs.HasErrors() {
+		t.Errorf("expected no errors for valid organization, got: %s", errs.Error())
+	}
+}
+
+func TestValidateNotes(t *testing.T) {
+	long := strings.Repeat("x", MaxNotesLength+1)
+	if errs := ValidateCreate(CreateInput{FirstName: "A", LastName: "B", Notes: &long}); !errs.HasErrors() {
+		t.Error("expected error for oversized notes")
+	}
+}
+
 func TestDeriveDisplayName(t *testing.T) {
 	got := DeriveDisplayName("Scott", []string{"A", "B"}, "Fridlund")
 	if got != "Scott A B Fridlund" {
@@ -154,21 +351,56 @@ func TestDeriveDisplayName(t *testing.T) {
 	}
 }
 
-func TestIsDateString(t *testing.T) {
-	if !IsDateString("2026-08-25") {
-		t.Error("expected YYYY-MM-DD to be a date")
-	}
-	if !IsDateString("2026-08-25T10:00:00Z") {
-		t.Error("expected RFC3339 to be a date")
-	}
-	if IsDateString("not a date") {
-		t.Error("expected non-date string to be rejected")
+func TestValidateRelationshipInputRejectsOversizedName(t *testing.T) {
+	long := strings.Repeat("x", MaxNameLength+1)
+	errs := ValidateRelationshipInput(uuid.New(), RelationshipInput{Type: RelationSibling, RelatedPersonName: &long})
+	if !errs.HasErrors() {
+		t.Error("expected error for oversized related_person_name")
 	}
 }
 
-func TestCustomDateFieldValidation(t *testing.T) {
-	if errs := ValidateCustomFields(map[string]any{"anniversary_date": "not-a-date"}); !errs.HasErrors() {
-		t.Error("expected invalid custom date to be rejected")
+// TestSanitizeCustomFieldsForSync guards the lenient sync-import path: bad
+// data is dropped (never surfaced as an error, since a single unusable
+// custom field must not block importing the rest of a contact), and the
+// result always passes the strict ValidateCustomFields check.
+func TestSanitizeCustomFieldsForSync(t *testing.T) {
+	if got := SanitizeCustomFieldsForSync(nil); len(got) != 0 {
+		t.Errorf("expected empty map for nil input, got %+v", got)
+	}
+
+	longValue := strings.Repeat("x", MaxStringValueLength+1)
+	raw := map[string]any{
+		"Blood Type":  "O+",
+		"":            "dropped: empty key",
+		"has\x00null": "dropped: control character",
+		"too long":    longValue,
+		"nested":      map[string]any{"x": 1},
+		"is_vip":      true,
+		"shoe_size":   10.5,
+	}
+	got := SanitizeCustomFieldsForSync(raw)
+	want := map[string]any{"Blood Type": "O+", "is_vip": true, "shoe_size": 10.5}
+	if len(got) != len(want) {
+		t.Fatalf("SanitizeCustomFieldsForSync = %+v, want %+v", got, want)
+	}
+	for key, value := range want {
+		if got[key] != value {
+			t.Errorf("got[%q] = %#v, want %#v", key, got[key], value)
+		}
+	}
+	if errs := ValidateCustomFields(got); errs.HasErrors() {
+		t.Errorf("sanitized output must pass ValidateCustomFields, got errors: %s", errs.Error())
+	}
+}
+
+func TestSanitizeCustomFieldsForSyncEnforcesMaxCount(t *testing.T) {
+	raw := make(map[string]any, MaxCustomFields+5)
+	for i := 0; i < MaxCustomFields+5; i++ {
+		raw[itoa(i)] = "v"
+	}
+	got := SanitizeCustomFieldsForSync(raw)
+	if len(got) != MaxCustomFields {
+		t.Fatalf("len(got) = %d, want %d", len(got), MaxCustomFields)
 	}
 }
 

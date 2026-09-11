@@ -7,7 +7,14 @@ interface PersonListProps {
   deleted?: boolean;
   onRestore?: (person: Person) => void;
   onPermanentDelete?: (person: Person) => void;
+  onToggleFavorite?: (person: Person) => void;
 }
+
+const RESERVED_SYNC_FIELDS = new Set([
+  'google_resource_name',
+  '_google_updated_at',
+  'contacts_local_id',
+]);
 
 export function PersonList({
   persons,
@@ -16,6 +23,7 @@ export function PersonList({
   deleted,
   onRestore,
   onPermanentDelete,
+  onToggleFavorite,
 }: PersonListProps) {
   if (persons.length === 0) {
     return (
@@ -31,12 +39,34 @@ export function PersonList({
         <li key={person.id} className="person-item">
           <div className="person-summary">
             <span className="person-name">{person.display_name}</span>
-            {(person.phone_numbers ?? []).length > 0 && (
-              <span className="person-meta">{person.phone_numbers.join(' · ')}</span>
+            {person.is_owner === false && (
+              <span
+                className="shared-badge"
+                title={`Shared by ${person.owner_display_name ?? 'another account'}`}
+              >
+                shared by {person.owner_display_name ?? 'another account'}
+              </span>
             )}
-            {Object.keys(person.custom_fields ?? {}).length > 0 && (
+            {(person.phone_numbers ?? []).length > 0 && (
+              <span className="person-meta">
+                {person.phone_numbers.map((p) => p.value).join(' · ')}
+              </span>
+            )}
+            {(person.labels ?? []).length > 0 && (
+              <span className="person-meta person-labels">
+                {person.labels.map((l) => (
+                  <span key={l} className="label-chip">
+                    {l}
+                  </span>
+                ))}
+              </span>
+            )}
+            {Object.entries(person.custom_fields ?? {}).some(
+              ([key]) => !RESERVED_SYNC_FIELDS.has(key),
+            ) && (
               <span className="person-meta">
                 {Object.entries(person.custom_fields)
+                  .filter(([key]) => !RESERVED_SYNC_FIELDS.has(key))
                   .map(([k, v]) => `${k}: ${String(v)}`)
                   .join(' · ')}
               </span>
@@ -58,12 +88,27 @@ export function PersonList({
               </>
             ) : (
               <>
+                <button
+                  type="button"
+                  className={`btn-icon btn-star${person.is_favorite ? ' is-favorite' : ''}`}
+                  onClick={() => onToggleFavorite?.(person)}
+                  aria-label={
+                    person.is_favorite
+                      ? `unfavorite ${person.display_name}`
+                      : `favorite ${person.display_name}`
+                  }
+                  aria-pressed={person.is_favorite}
+                >
+                  {person.is_favorite ? '★' : '☆'}
+                </button>
                 <button type="button" onClick={() => onEdit(person)}>
                   Edit
                 </button>
-                <button type="button" className="danger" onClick={() => onDelete(person)}>
-                  Delete
-                </button>
+                {person.is_owner !== false && (
+                  <button type="button" className="danger" onClick={() => onDelete(person)}>
+                    Delete
+                  </button>
+                )}
               </>
             )}
           </div>

@@ -13,12 +13,14 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/scottfridlund/contacts/backend/internal/authn"
 	"github.com/scottfridlund/contacts/backend/internal/contactsync"
 	"github.com/scottfridlund/contacts/backend/internal/person"
 )
 
 type fakeSyncAccountStore struct {
-	items map[uuid.UUID]*contactsync.Account
+	items     map[uuid.UUID]*contactsync.Account
+	createErr error
 }
 
 func newFakeSyncAccountStore() *fakeSyncAccountStore {
@@ -33,11 +35,19 @@ func (f *fakeSyncAccountStore) List(_ context.Context, _ int) ([]contactsync.Acc
 	return out, nil
 }
 
-func (f *fakeSyncAccountStore) Create(_ context.Context, account *contactsync.Account) (*contactsync.Account, error) {
+func (f *fakeSyncAccountStore) Create(ctx context.Context, account *contactsync.Account) (*contactsync.Account, error) {
+	if f.createErr != nil {
+		return nil, f.createErr
+	}
 	cp := *account
 	cp.ID = uuid.New()
 	cp.CreatedAt = time.Now()
 	cp.UpdatedAt = cp.CreatedAt
+	// Mirror the real repository: owner_id comes from the request context,
+	// not the caller-supplied struct.
+	if ownerID, ok := authn.UserID(ctx); ok {
+		cp.OwnerID = &ownerID
+	}
 	if cp.Status == "" {
 		cp.Status = "connected"
 	}
@@ -79,7 +89,7 @@ func testSyncRouter() http.Handler {
 	personStore := newFakeStore()
 	personSvc := person.NewService(personStore)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	return NewRouter(logger, personSvc, personStore, newFakeSyncAccountStore(), []string{"http://localhost:5173"})
+	return NewRouter(logger, personSvc, personStore, newFakeSyncAccountStore(), nil, []string{"http://localhost:5173"})
 }
 
 func TestCreateSyncAccount(t *testing.T) {
@@ -98,6 +108,43 @@ func TestCreateSyncAccount(t *testing.T) {
 	}
 	if account.Provider != "google" || account.ProviderAccountID != "abc123" {
 		t.Fatalf("unexpected account: %+v", account)
+	}
+}
+
+// TestSyncAccountJSONWireFormat guards against a regression where Account had
+// no json tags: Go-to-Go round-trip tests can't catch that, since encoding and
+// decoding into the same untagged struct is symmetric either way. Frontend
+// clients need exact snake_case keys, and OAuth tokens must never leak to the
+// browser.
+func TestSyncAccountJSONWireFormat(t *testing.T) {
+	h := testSyncRouter()
+	rec := doJSON(t, h, http.MethodPost, "/api/v1/sync-accounts", map[string]any{
+		"provider":               "google",
+		"provider_account_id":    "abc123",
+		"access_token":           "secret-access-token",
+		"refresh_token":          "secret-refresh-token",
+		"sync_frequency_minutes": 30,
+	})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(rec.Body.Bytes(), &raw); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"id", "provider", "provider_account_id", "sync_frequency_minutes", "status", "sync_cursor", "created_at", "updated_at"} {
+		if _, ok := raw[key]; !ok {
+			t.Fatalf("response missing expected snake_case key %q: %s", key, rec.Body.String())
+		}
+	}
+	for _, key := range []string{"ID", "ProviderAccountID", "SyncFrequencyMinutes", "access_token", "refresh_token", "AccessToken", "RefreshToken"} {
+		if _, ok := raw[key]; ok {
+			t.Fatalf("response leaked unexpected key %q: %s", key, rec.Body.String())
+		}
+	}
+	if body := rec.Body.String(); bytes.Contains([]byte(body), []byte("secret-access-token")) ||
+		bytes.Contains([]byte(body), []byte("secret-refresh-token")) {
+		t.Fatalf("response leaked oauth token material: %s", body)
 	}
 }
 
@@ -174,6 +221,70 @@ func TestListGetUpdateDeleteSyncAccountFlow(t *testing.T) {
 	getAfterDelete := doJSON(t, h, http.MethodGet, "/api/v1/sync-accounts/"+created.ID.String(), nil)
 	if getAfterDelete.Code != http.StatusNotFound {
 		t.Fatalf("get after delete status = %d, want 404", getAfterDelete.Code)
+	}
+}
+
+// TestSyncNowTriggersBackgroundSync guards the on-demand "Sync now" action:
+// POSTing to /sync-accounts/{id}/sync must call Adapter.Sync for that
+// account and return immediately (204), not block until the sync itself
+// finishes - a large/rate-limited pull can run far longer than a browser or
+// proxy is willing to wait on one request. It's also a full-resync override:
+// any previously-saved sync cursor must be cleared before Adapter.Sync runs,
+// so it re-pulls everything from scratch instead of only what's new since
+// last time.
+func TestSyncNowTriggersBackgroundSync(t *testing.T) {
+	store := newFakeSyncAccountStore()
+	created, err := store.Create(context.Background(), &contactsync.Account{
+		Provider:          "google",
+		ProviderAccountID: "subject-1",
+		SyncCursor:        "some-previous-cursor",
+	})
+	if err != nil {
+		t.Fatalf("seeding account: %v", err)
+	}
+	done := make(chan struct{}, 1)
+	adapter := &fakeGoogleAdapter{syncDone: done}
+	personStore := newFakeStore()
+	personSvc := person.NewService(personStore)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	h := NewRouter(logger, personSvc, personStore, store, adapter, []string{"http://localhost:5173"})
+
+	rec := doJSON(t, h, http.MethodPost, "/api/v1/sync-accounts/"+created.ID.String()+"/sync", nil)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204", rec.Code)
+	}
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected Adapter.Sync to be called in the background")
+	}
+	if adapter.syncCalls != 1 {
+		t.Fatalf("syncCalls = %d, want 1", adapter.syncCalls)
+	}
+	if adapter.syncAccount.SyncCursor != "" {
+		t.Fatalf("SyncCursor = %q, want cleared for a full resync", adapter.syncAccount.SyncCursor)
+	}
+}
+
+func TestSyncNowNotFoundAndUnconfigured(t *testing.T) {
+	store := newFakeSyncAccountStore()
+	personStore := newFakeStore()
+	personSvc := person.NewService(personStore)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	// No adapter configured (Google sync disabled entirely).
+	h := NewRouter(logger, personSvc, personStore, store, nil, []string{"http://localhost:5173"})
+	rec := doJSON(t, h, http.MethodPost, "/api/v1/sync-accounts/"+uuid.New().String()+"/sync", nil)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503 when no adapter is configured", rec.Code)
+	}
+
+	// Adapter configured, but the account id doesn't exist.
+	h = NewRouter(logger, personSvc, personStore, store, &fakeGoogleAdapter{}, []string{"http://localhost:5173"})
+	rec = doJSON(t, h, http.MethodPost, "/api/v1/sync-accounts/"+uuid.New().String()+"/sync", nil)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404 for an unknown account", rec.Code)
 	}
 }
 

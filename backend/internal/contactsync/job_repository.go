@@ -34,19 +34,30 @@ func (r *JobRepository) Create(ctx context.Context, job *Job) (*Job, error) {
 		return nil, fmt.Errorf("marshalling sync snapshot: %w", err)
 	}
 	ownerID, owned := authn.UserID(ctx)
+	if !owned && job.OwnerID != nil && *job.OwnerID != uuid.Nil {
+		// A background/system-initiated change (e.g. the retention purge
+		// loop, or a merge pulled from a provider) has no authenticated
+		// actor in ctx at all. Fall back to the owner explicitly carried on
+		// the Job itself, so the job still ends up scoped to that owner
+		// instead of persisting a NULL owner_id - which would make
+		// Runner.runJob's later account lookup fall through to every
+		// connected account system-wide instead of just the owner's.
+		ownerID = *job.OwnerID
+		owned = true
+	}
 	const qOwned = `
-		INSERT INTO sync_jobs (owner_id, person_id, kind, snapshot, status, attempts, last_error, processed_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-		RETURNING id, owner_id, person_id, kind, snapshot, status, attempts, last_error, processed_at, created_at, updated_at`
+		INSERT INTO sync_jobs (owner_id, person_id, kind, snapshot, status, attempts, last_error, processed_at, origin_account_id)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		RETURNING id, owner_id, person_id, kind, snapshot, status, attempts, last_error, processed_at, created_at, updated_at, origin_account_id`
 	const qLegacy = `
-		INSERT INTO sync_jobs (person_id, kind, snapshot, status, attempts, last_error, processed_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)
-		RETURNING id, owner_id, person_id, kind, snapshot, status, attempts, last_error, processed_at, created_at, updated_at`
+		INSERT INTO sync_jobs (person_id, kind, snapshot, status, attempts, last_error, processed_at, origin_account_id)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		RETURNING id, owner_id, person_id, kind, snapshot, status, attempts, last_error, processed_at, created_at, updated_at, origin_account_id`
 	var row pgx.Row
 	if owned {
-		row = r.pool.QueryRow(ctx, qOwned, ownerID, job.PersonID, string(job.Kind), snapshot, job.Status, job.Attempts, job.LastError, job.ProcessedAt)
+		row = r.pool.QueryRow(ctx, qOwned, ownerID, job.PersonID, string(job.Kind), snapshot, job.Status, job.Attempts, job.LastError, job.ProcessedAt, job.OriginAccountID)
 	} else {
-		row = r.pool.QueryRow(ctx, qLegacy, job.PersonID, string(job.Kind), snapshot, job.Status, job.Attempts, job.LastError, job.ProcessedAt)
+		row = r.pool.QueryRow(ctx, qLegacy, job.PersonID, string(job.Kind), snapshot, job.Status, job.Attempts, job.LastError, job.ProcessedAt, job.OriginAccountID)
 	}
 	return scanJob(row)
 }
@@ -57,7 +68,7 @@ func (r *JobRepository) ListByOwner(ctx context.Context, limit int) ([]Job, erro
 		limit = 50
 	}
 	q := `
-		SELECT id, owner_id, person_id, kind, snapshot, status, attempts, last_error, processed_at, created_at, updated_at
+		SELECT id, owner_id, person_id, kind, snapshot, status, attempts, last_error, processed_at, created_at, updated_at, origin_account_id
 		FROM sync_jobs`
 	args := []any{}
 	if ownerID, ok := authn.UserID(ctx); ok {
@@ -85,18 +96,22 @@ func (r *JobRepository) ListByOwner(ctx context.Context, limit int) ([]Job, erro
 	return jobs, nil
 }
 
-// ListPending returns pending jobs in descending creation order.
+// ListPending returns jobs ready to (re)process: every pending job, plus any
+// failed job that hasn't exhausted MaxJobAttempts and whose exponential
+// backoff window (2^attempts minutes since its last attempt) has elapsed.
+// Without this, a single transient failure (a network blip, a brief Google
+// API error) would permanently strand that job in "failed" with no retry.
 func (r *JobRepository) ListPending(ctx context.Context, limit int) ([]Job, error) {
 	if limit <= 0 {
 		limit = 50
 	}
 	q := `
-		SELECT id, owner_id, person_id, kind, snapshot, status, attempts, last_error, processed_at, created_at, updated_at
+		SELECT id, owner_id, person_id, kind, snapshot, status, attempts, last_error, processed_at, created_at, updated_at, origin_account_id
 		FROM sync_jobs
-		WHERE status = $1`
-	args := []any{JobStatusPending}
+		WHERE (status = $1 OR (status = $2 AND attempts < $3 AND updated_at <= now() - (power(2, attempts) * interval '1 minute')))`
+	args := []any{JobStatusPending, JobStatusFailed, MaxJobAttempts}
 	if ownerID, ok := authn.UserID(ctx); ok {
-		q += ` AND owner_id = $2`
+		q += ` AND owner_id = $4`
 		args = append(args, ownerID)
 	}
 	q += ` ORDER BY created_at ASC, id ASC LIMIT ` + strconv.Itoa(limit)
@@ -197,7 +212,7 @@ func scanJob(s jobScanner) (*Job, error) {
 	var snapshotRaw []byte
 	if err := s.Scan(
 		&job.ID, &job.OwnerID, &job.PersonID, &kind, &snapshotRaw, &job.Status,
-		&job.Attempts, &job.LastError, &job.ProcessedAt, &job.CreatedAt, &job.UpdatedAt,
+		&job.Attempts, &job.LastError, &job.ProcessedAt, &job.CreatedAt, &job.UpdatedAt, &job.OriginAccountID,
 	); err != nil {
 		return nil, err
 	}

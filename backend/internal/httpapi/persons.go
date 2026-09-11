@@ -10,6 +10,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
+	"github.com/scottfridlund/contacts/backend/internal/contactsync"
 	"github.com/scottfridlund/contacts/backend/internal/person"
 )
 
@@ -203,17 +204,24 @@ func parseListParams(r *http.Request) person.ListParams {
 		pageSize = maxPageSize
 	}
 
-	// Default sort: display_name desc.
-	sortField := "display_name"
+	// Default sort: last name, first name ascending.
+	sortField := "last_name"
 	if s := q.Get("sort"); s != "" {
 		sortField = s
 	}
-	sortDesc := true
+	sortDesc := false
 	switch q.Get("order") {
 	case "asc":
 		sortDesc = false
 	case "desc":
 		sortDesc = true
+	}
+
+	var favorite *bool
+	if v := q.Get("favorite"); v != "" {
+		if parsed, err := strconv.ParseBool(v); err == nil {
+			favorite = &parsed
+		}
 	}
 
 	return person.ListParams{
@@ -223,6 +231,7 @@ func parseListParams(r *http.Request) person.ListParams {
 		SortDesc:  sortDesc,
 		FirstName: q.Get("first_name"),
 		LastName:  q.Get("last_name"),
+		Favorite:  favorite,
 	}
 }
 
@@ -256,7 +265,8 @@ func decodeUpdate(w http.ResponseWriter, r *http.Request) (person.UpdateInput, e
 	allowed := map[string]struct{}{
 		"first_name": {}, "middle_names": {}, "last_name": {},
 		"nickname": {}, "pronouns": {}, "birthdate": {},
-		"phone_numbers": {}, "custom_fields": {},
+		"emails": {}, "phone_numbers": {}, "addresses": {},
+		"organization": {}, "notes": {}, "custom_fields": {}, "labels": {}, "is_favorite": {},
 	}
 	for key := range fields {
 		if _, ok := allowed[key]; !ok {
@@ -304,12 +314,46 @@ func decodeUpdate(w http.ResponseWriter, r *http.Request) (person.UpdateInput, e
 		in.BirthdateSet = true
 	}
 	if raw, ok := fields["phone_numbers"]; ok {
-		var nums []string
+		var nums []contactsync.LabeledValue
 		if err := json.Unmarshal(raw, &nums); err != nil {
-			return person.UpdateInput{}, errors.New("phone_numbers must be an array of strings")
+			return person.UpdateInput{}, errors.New("phone_numbers must be an array of {label, value} objects")
 		}
 		in.PhoneNumbers = &nums
 		in.PhoneNumbersSet = true
+	}
+	if raw, ok := fields["emails"]; ok {
+		var emails []contactsync.LabeledValue
+		if err := json.Unmarshal(raw, &emails); err != nil {
+			return person.UpdateInput{}, errors.New("emails must be an array of {label, value} objects")
+		}
+		in.Emails = &emails
+		in.EmailsSet = true
+	}
+	if raw, ok := fields["addresses"]; ok {
+		var addresses []contactsync.Address
+		if err := json.Unmarshal(raw, &addresses); err != nil {
+			return person.UpdateInput{}, errors.New("addresses must be an array of address objects")
+		}
+		in.Addresses = &addresses
+		in.AddressesSet = true
+	}
+	if raw, ok := fields["organization"]; ok {
+		if string(raw) == "null" {
+			in.Organization = nil
+		} else {
+			var org contactsync.Organization
+			if err := json.Unmarshal(raw, &org); err != nil {
+				return person.UpdateInput{}, errors.New("organization must be an object")
+			}
+			in.Organization = &org
+		}
+		in.OrganizationSet = true
+	}
+	if raw, ok := fields["notes"]; ok {
+		if err := json.Unmarshal(raw, &in.Notes); err != nil {
+			return person.UpdateInput{}, errors.New("notes must be a string")
+		}
+		in.NotesSet = true
 	}
 	if raw, ok := fields["custom_fields"]; ok {
 		var cf map[string]any
@@ -318,6 +362,20 @@ func decodeUpdate(w http.ResponseWriter, r *http.Request) (person.UpdateInput, e
 		}
 		in.CustomFields = cf
 		in.CustomFieldsSet = true
+	}
+	if raw, ok := fields["labels"]; ok {
+		var labels []string
+		if err := json.Unmarshal(raw, &labels); err != nil {
+			return person.UpdateInput{}, errors.New("labels must be an array of strings")
+		}
+		in.Labels = &labels
+		in.LabelsSet = true
+	}
+	if raw, ok := fields["is_favorite"]; ok {
+		if err := json.Unmarshal(raw, &in.IsFavorite); err != nil {
+			return person.UpdateInput{}, errors.New("is_favorite must be a boolean")
+		}
+		in.IsFavoriteSet = true
 	}
 	return in, nil
 }
