@@ -388,7 +388,11 @@ export default function App() {
 
   const handleSyncNow = async (account: SyncAccount) => {
     const label = account.display_name || account.provider_account_id || account.provider;
-    if (!window.confirm(`Fully resync ${label}? This re-checks every contact against Google and may take a while for large contact lists.`)) {
+    if (
+      !window.confirm(
+        `Fully resync ${label}? This re-checks every contact against Google and may take a while for large contact lists.`,
+      )
+    ) {
       return;
     }
     setSyncError(null);
@@ -404,7 +408,11 @@ export default function App() {
   };
 
   const handleSyncAllNow = async () => {
-    if (!window.confirm('Fully resync all connected accounts? This re-checks every contact against Google and may take a while for large contact lists.')) {
+    if (
+      !window.confirm(
+        'Fully resync all connected accounts? This re-checks every contact against Google and may take a while for large contact lists.',
+      )
+    ) {
       return;
     }
     setSyncError(null);
