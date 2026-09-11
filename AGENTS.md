@@ -276,6 +276,22 @@ docs/design/            authoritative design documents
   own `OwnerID` (and `JobRepository.Create` falls back to `Job.OwnerID`
   the same way) rather than persisting an unscoped job that would
   otherwise fan out to every connected account system-wide.
+- Enabling propagation of sync-origin changes (above) exposed a latent,
+  more severe bug: `reconcileExisting`'s "remote wins" branch called
+  `people.Update` purely off a timestamp comparison, with no check for
+  whether the incoming data actually differs from what's already stored.
+  Google bumps a contact's own `updateTime` on *every* write, including
+  our own exports - so once a Person is linked to two accounts, each
+  side's harmless re-export of identical data made the *other* side's
+  copy look newer on its next pull, triggering another no-op update,
+  another job, another export back - an infinite ping-pong between the
+  two accounts that never converges and never stops on its own.
+  `person.Service.Update` now diffs the fully-applied result against the
+  pre-update snapshot (`reflect.DeepEqual`) and skips the repository
+  write *and* `notify()` entirely when nothing actually changed - this is
+  what actually breaks the loop, not the `OriginAccountID` exclusion
+  (which only prevents bouncing back to the *same* account, not a second
+  hop through a third).
 
 ## Conventions
 

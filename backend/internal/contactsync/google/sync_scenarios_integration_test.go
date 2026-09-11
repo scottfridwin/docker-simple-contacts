@@ -348,6 +348,45 @@ func TestScenario_ModifyInGoogle(t *testing.T) {
 	}
 }
 
+// TestScenario_NoOpRemoteMergeDoesNotLoop guards against an infinite
+// ping-pong between two accounts linked to the same Person: Google bumps a
+// contact's own updateTime on every write, including our own exports - so
+// without a content-equality check, a pull that sees a "newer" remote
+// timestamp but IDENTICAL field data would still reapply the update, bump
+// local.UpdatedAt, and raise a fresh sync job that gets exported right back
+// to the other linked account - making its remote timestamp look newer
+// yet again, forever.
+func TestScenario_NoOpRemoteMergeDoesNotLoop(t *testing.T) {
+	sc := newScenario(t)
+	local, resourceName := sc.linked("Grace", "Hopper")
+	updatedAtAfterCreate := local.UpdatedAt
+
+	// Bump Google's own updateTime without changing any field - simulating
+	// the contact's own earlier export bouncing back on the next pull.
+	sc.server.setUpdateTime(resourceName, time.Now().Add(time.Hour))
+
+	if err := sc.sync(contactsync.Job{}); err != nil {
+		t.Fatalf("second sync: %v", err)
+	}
+
+	after, err := sc.people.Get(sc.ctx, local.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if !after.UpdatedAt.Equal(updatedAtAfterCreate) {
+		t.Fatalf("UpdatedAt changed from %v to %v for a no-op remote merge - this would loop forever between linked accounts", updatedAtAfterCreate, after.UpdatedAt)
+	}
+
+	jobs := contactsync.NewJobRepository(sc.pool)
+	count, err := jobs.CountPendingForPerson(sc.ctx, nil, local.ID)
+	if err != nil {
+		t.Fatalf("CountPendingForPerson: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("pending sync jobs for person = %d, want 0 (a no-op merge must not raise a job)", count)
+	}
+}
+
 // --- Scenario 4: modify contact in Contacts ---
 
 func TestScenario_ModifyInContacts(t *testing.T) {

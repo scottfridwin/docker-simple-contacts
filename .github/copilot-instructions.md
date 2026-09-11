@@ -163,6 +163,16 @@ conflict.
 - The 30-day retention purge now notifies sync per purged record (like
   `HardDelete`) instead of bypassing it, so a purged contact's linked
   remote copy is deleted too instead of resurrecting on the next pull.
+- Enabling sync-origin propagation exposed a latent infinite-loop bug:
+  `reconcileExisting`'s "remote wins" merge called `people.Update` purely
+  off a timestamp comparison, with no check that the data actually
+  differs - and Google bumps `updateTime` on every write, including our
+  own exports. Once a Person links two accounts, each side's no-op
+  re-export made the other's copy look newer, forever. `person.Service.
+  Update` now skips the DB write and `notify()` entirely when the
+  fully-applied result is identical to the pre-update snapshot
+  (`reflect.DeepEqual`) - this, not the `OriginAccountID` exclusion above,
+  is what actually stops the loop.
 - Failed sync jobs retry with exponential backoff up to `MaxJobAttempts`
   (5), then stay `failed` (dead letter) - see `contactsync.JobRepository`.
 - Login and share creation are rate-limited per client IP (20/minute) via

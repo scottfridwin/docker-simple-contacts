@@ -3,6 +3,7 @@ package person
 import (
 	"context"
 	"errors"
+	"reflect"
 	"strings"
 	"time"
 
@@ -142,7 +143,21 @@ func (s *Service) Update(ctx context.Context, id uuid.UUID, in UpdateInput) (*Pe
 		return nil, nil, err
 	}
 
+	before := *current
 	applyUpdate(current, in)
+	if reflect.DeepEqual(before, *current) {
+		// A no-op edit (every field already matches) must not bump
+		// updated_at or raise a sync job. Without this, a remote-triggered
+		// merge whose data already matches what's stored locally (e.g. one
+		// linked account's own earlier export bouncing back on the other
+		// account's next pull) would keep resetting updated_at and
+		// notifying sync every single time - an infinite ping-pong between
+		// two linked/shared accounts that never converges, since each
+		// side's harmless re-application looks like a fresh edit to the
+		// other.
+		return current, nil, nil
+	}
+
 	updated, err := s.repo.Update(ctx, id, current)
 	if err == nil {
 		// Ownership doesn't change from an edit; carry it over rather than

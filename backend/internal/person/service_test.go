@@ -705,6 +705,49 @@ func TestServiceEmitsSyncNotifications(t *testing.T) {
 	}
 }
 
+// TestServiceUpdateNoOpSkipsNotifyAndTimestampBump guards against an
+// infinite ping-pong loop between two linked/shared sync accounts: a merge
+// that reapplies data already matching what's stored locally (e.g. one
+// account's own earlier export bouncing back on another account's next
+// pull, since Google bumps a contact's own updateTime on every write
+// including ours) must not bump updated_at or raise a fresh sync job -
+// otherwise each side's harmless re-application looks like a fresh edit to
+// the other side, which re-exports it, which looks like a fresh edit back
+// again, forever.
+func TestServiceUpdateNoOpSkipsNotifyAndTimestampBump(t *testing.T) {
+	store := newMemStore()
+	notifier := &memNotifier{}
+	svc := NewService(store, notifier)
+
+	created, _, err := svc.Create(context.Background(), CreateInput{FirstName: "Ada", LastName: "Lovelace"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	notifier.events = nil
+	before := created.UpdatedAt
+
+	sameFirst := "Ada"
+	updated, verrs, err := svc.Update(context.Background(), created.ID, UpdateInput{FirstName: &sameFirst, FirstNameSet: true})
+	if err != nil || verrs.HasErrors() {
+		t.Fatalf("update: err=%v verrs=%v", err, verrs)
+	}
+	if !updated.UpdatedAt.Equal(before) {
+		t.Fatalf("UpdatedAt = %v, want unchanged %v for a no-op update", updated.UpdatedAt, before)
+	}
+	if len(notifier.events) != 0 {
+		t.Fatalf("expected no sync notification for a no-op update, got %#v", notifier.events)
+	}
+
+	// A genuine change must still notify as usual.
+	newFirst := "Augusta"
+	if _, _, err := svc.Update(context.Background(), created.ID, UpdateInput{FirstName: &newFirst, FirstNameSet: true}); err != nil {
+		t.Fatal(err)
+	}
+	if len(notifier.events) != 1 || notifier.events[0].Kind != contactsync.ChangeKindUpdated {
+		t.Fatalf("expected one updated event for a real change, got %#v", notifier.events)
+	}
+}
+
 // TestServiceSyncOriginChangesStillNotifyButCarryOriginAccount guards the
 // propagation fix: a change pulled in from one sync account (e.g. an edit
 // made directly in Google) must still notify sync - so it can propagate
