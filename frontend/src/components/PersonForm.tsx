@@ -466,6 +466,14 @@ export function PersonForm({
 
       <fieldset className="custom-fields">
         <legend>Custom fields</legend>
+        {drafts.length > 0 && (
+          <div className="custom-field-row custom-field-headers" aria-hidden="true">
+            <span>Key</span>
+            <span>Type</span>
+            <span>Value</span>
+            <span />
+          </div>
+        )}
         {drafts.map((draft, index) => (
           <div className="custom-field-row" key={index}>
             <input
@@ -497,6 +505,7 @@ export function PersonForm({
             ) : (
               <input
                 aria-label={`custom field value ${index}`}
+                placeholder="value"
                 type={draft.type === 'date' ? 'date' : draft.type === 'number' ? 'number' : 'text'}
                 value={draft.value}
                 onChange={(e) => updateDraft(index, { value: e.target.value })}

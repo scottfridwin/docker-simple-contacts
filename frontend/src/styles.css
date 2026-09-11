@@ -895,6 +895,12 @@ input[type='number'] {
   margin-bottom: 0.5rem;
 }
 
+.custom-field-headers {
+  color: var(--muted);
+  font-size: 0.8rem;
+  margin-bottom: 0.25rem;
+}
+
 .custom-field-row .error {
   grid-column: 1 / -1;
 }
