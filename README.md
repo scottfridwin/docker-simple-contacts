@@ -245,8 +245,9 @@ shares via `GET/POST /persons/{id}/shares`, `DELETE
 - Rate limiting: share creation and login are limited per client IP (20/minute
   each) to slow down abuse; over the limit returns `429`.
 - Sync account management: `GET/POST /sync-accounts`, `GET/PATCH/DELETE /sync-accounts/{id}`,
-  `POST /sync-accounts/{id}/sync` (trigger an on-demand sync in the
-  background; the UI's "Sync now" button uses this)
+  `POST /sync-accounts/{id}/sync` (manual override: resets the cursor and
+  triggers a full resync in the background; the UI's "Sync now" button
+  uses this)
 - Google sync OAuth: `GET /sync/google/begin`, `GET /sync/google/callback`
 - Multiple Google accounts can be connected at once (via the sync drawer's
   "Add Google account" action); each connected account mirrors the full

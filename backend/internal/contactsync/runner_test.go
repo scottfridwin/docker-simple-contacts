@@ -17,6 +17,7 @@ type fakeAccountStore struct {
 	accounts []Account
 	due      []Account
 	linked   []Account
+	shared   []Account
 	err      error
 }
 
@@ -41,6 +42,13 @@ func (f *fakeAccountStore) ListLinkedToPerson(context.Context, uuid.UUID) ([]Acc
 		return nil, f.err
 	}
 	return append([]Account(nil), f.linked...), nil
+}
+
+func (f *fakeAccountStore) ListSharedWithAccountsForPerson(context.Context, uuid.UUID) ([]Account, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	return append([]Account(nil), f.shared...), nil
 }
 
 type fakeQueue struct {
@@ -146,6 +154,37 @@ func TestRunnerRunJobFansOutToLinkedAccountsOfOtherOwners(t *testing.T) {
 	}
 	if proc.calls != 2 {
 		t.Fatalf("processor calls = %d, want 2 (deduped across owner + linked accounts)", proc.calls)
+	}
+	if len(proc.contextOwners) != 2 || proc.contextOwners[0] != ownerA || proc.contextOwners[1] != ownerB {
+		t.Fatalf("contextOwners = %#v, want [%s, %s]", proc.contextOwners, ownerA, ownerB)
+	}
+}
+
+// TestRunnerRunJobFansOutToShareRecipientAccountsNeverLinkedBefore guards the
+// propagation-on-edit feature: editing a Person already shared with another
+// account must reach that recipient's own connected accounts even the very
+// first time, before ListLinkedToPerson would ever know about them (unlike
+// the already-mirroring case above, which only guards accounts that have
+// already synced this record at least once).
+func TestRunnerRunJobFansOutToShareRecipientAccountsNeverLinkedBefore(t *testing.T) {
+	ownerA := uuid.New()
+	ownerB := uuid.New()
+	personID := uuid.New()
+	accountA := Account{ID: uuid.New(), Provider: "google", OwnerID: &ownerA}
+	accountB := Account{ID: uuid.New(), Provider: "google", OwnerID: &ownerB}
+	job := Job{ID: uuid.New(), OwnerID: &ownerA, PersonID: personID, Status: JobStatusPending}
+	proc := &fakeProcessor{}
+	runner := NewRunner(
+		&fakeAccountStore{accounts: []Account{accountA}, shared: []Account{accountB}},
+		&fakeQueue{jobs: []Job{job}},
+		proc,
+		nil,
+	)
+	if _, err := runner.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	if proc.calls != 2 {
+		t.Fatalf("processor calls = %d, want 2 (owner account + share recipient's account)", proc.calls)
 	}
 	if len(proc.contextOwners) != 2 || proc.contextOwners[0] != ownerA || proc.contextOwners[1] != ownerB {
 		t.Fatalf("contextOwners = %#v, want [%s, %s]", proc.contextOwners, ownerA, ownerB)

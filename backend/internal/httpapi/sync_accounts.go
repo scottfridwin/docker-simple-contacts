@@ -168,12 +168,20 @@ func (h *syncAccountHandler) delete(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// syncNow triggers an on-demand sync for one account in the background and
+// syncNow triggers a full resync for one account in the background and
 // returns immediately, since a sync (especially a large/rate-limited pull)
 // can run far longer than a browser or proxy is willing to wait on a
 // request. The frontend polls sync account status to observe the result.
 // Adapter.Sync's own in-process guard makes this safe to call even while a
 // scheduled or already-triggered sync is still running for the account.
+//
+// This is a manual override, not a lightweight refresh: it resets the
+// account's sync cursor so Adapter.Sync treats it as a brand new initial
+// sync, re-pulling every remote record from scratch (instead of only
+// what's changed since the last cursor) and re-running the full local
+// export pass - fully realigning the local and remote data instead of
+// relying on incremental change tracking, which can miss edge cases (see
+// e.g. the ambiguous/stale contacts_local_id tag scenarios).
 func (h *syncAccountHandler) syncNow(w http.ResponseWriter, r *http.Request) {
 	id, ok := parseSyncAccountID(w, r)
 	if !ok {
@@ -192,6 +200,7 @@ func (h *syncAccountHandler) syncNow(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal_error", "failed to fetch sync account", nil)
 		return
 	}
+	account.SyncCursor = ""
 	// Deliberately unbounded: a large/rate-limited sync can legitimately
 	// outlive the originating HTTP request by a wide margin, and must not be
 	// canceled just because the client's request context ended.

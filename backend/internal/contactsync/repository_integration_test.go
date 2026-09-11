@@ -113,6 +113,46 @@ func TestRepositoryListLinkedToPerson(t *testing.T) {
 	}
 }
 
+// TestRepositoryListSharedWithAccountsForPerson guards the edit-propagation
+// feature: editing a Person shared with another account must be able to
+// reach that recipient's own connected accounts even before any of them
+// have ever linked/synced this particular record - ListLinkedToPerson alone
+// can't see them yet in that case.
+func TestRepositoryListSharedWithAccountsForPerson(t *testing.T) {
+	pool := newTestPool(t)
+	repo := NewRepository(pool)
+	ctx := context.Background()
+
+	owner := createSyncTestUser(t, ctx, pool, "share-owner")
+	recipient := createSyncTestUser(t, ctx, pool, "share-recipient")
+	stranger := createSyncTestUser(t, ctx, pool, "share-stranger")
+	personID := createSyncTestPerson(t, ctx, pool, owner)
+
+	recipientAccount, err := repo.Create(authn.WithUserID(ctx, recipient), &Account{Provider: "google", ProviderAccountID: "share-google-recipient"})
+	if err != nil {
+		t.Fatalf("create recipient account: %v", err)
+	}
+	t.Cleanup(func() { _, _ = pool.Exec(ctx, "DELETE FROM sync_accounts WHERE id = $1", recipientAccount.ID) })
+
+	strangerAccount, err := repo.Create(authn.WithUserID(ctx, stranger), &Account{Provider: "google", ProviderAccountID: "share-google-stranger"})
+	if err != nil {
+		t.Fatalf("create stranger account: %v", err)
+	}
+	t.Cleanup(func() { _, _ = pool.Exec(ctx, "DELETE FROM sync_accounts WHERE id = $1", strangerAccount.ID) })
+
+	if _, err := pool.Exec(ctx, `INSERT INTO person_shares (person_id, shared_with_user_id) VALUES ($1, $2)`, personID, recipient); err != nil {
+		t.Fatalf("creating share: %v", err)
+	}
+
+	got, err := repo.ListSharedWithAccountsForPerson(ctx, personID)
+	if err != nil {
+		t.Fatalf("ListSharedWithAccountsForPerson: %v", err)
+	}
+	if len(got) != 1 || got[0].ID != recipientAccount.ID {
+		t.Fatalf("ListSharedWithAccountsForPerson = %+v, want only recipient's account %v", got, recipientAccount.ID)
+	}
+}
+
 // TestJobRepositoryListPendingRetriesFailedJobsWithBackoff guards the retry
 // mechanism: a failed job must not be retried immediately (respecting its
 // exponential backoff window), must be retried once that window elapses, and

@@ -226,14 +226,18 @@ func TestListGetUpdateDeleteSyncAccountFlow(t *testing.T) {
 
 // TestSyncNowTriggersBackgroundSync guards the on-demand "Sync now" action:
 // POSTing to /sync-accounts/{id}/sync must call Adapter.Sync for that
-// account and return immediately (202), not block until the sync itself
+// account and return immediately (204), not block until the sync itself
 // finishes - a large/rate-limited pull can run far longer than a browser or
-// proxy is willing to wait on one request.
+// proxy is willing to wait on one request. It's also a full-resync override:
+// any previously-saved sync cursor must be cleared before Adapter.Sync runs,
+// so it re-pulls everything from scratch instead of only what's new since
+// last time.
 func TestSyncNowTriggersBackgroundSync(t *testing.T) {
 	store := newFakeSyncAccountStore()
 	created, err := store.Create(context.Background(), &contactsync.Account{
 		Provider:          "google",
 		ProviderAccountID: "subject-1",
+		SyncCursor:        "some-previous-cursor",
 	})
 	if err != nil {
 		t.Fatalf("seeding account: %v", err)
@@ -257,6 +261,9 @@ func TestSyncNowTriggersBackgroundSync(t *testing.T) {
 	}
 	if adapter.syncCalls != 1 {
 		t.Fatalf("syncCalls = %d, want 1", adapter.syncCalls)
+	}
+	if adapter.syncAccount.SyncCursor != "" {
+		t.Fatalf("SyncCursor = %q, want cleared for a full resync", adapter.syncAccount.SyncCursor)
 	}
 }
 

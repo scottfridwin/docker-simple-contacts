@@ -136,6 +136,16 @@ conflict.
   relationships are capped at 50 per Person. Managed via
   `GET/POST /persons/{id}/shares`, `DELETE /persons/{id}/shares/{shareId}`,
   and `DELETE /persons/{id}/shares/mine`.
+- The "included in the recipient's own Google sync export" claim above only
+  holds at initial-sync time (`exportLocal` runs once, when the account's
+  cursor is empty). `Runner.runJob` also fans out edits to
+  `ListSharedWithAccountsForPerson` (every account owned by anyone the
+  edited Person is currently shared with), so a shared contact keeps
+  syncing to the recipient's own connected accounts on every subsequent
+  edit too, not just at the recipient's own first sync.
+- `POST /sync-accounts/{id}/sync` ("Sync now") clears the account's
+  `SyncCursor` before syncing - it's a full-resync override (re-pulls
+  everything, re-runs export), not a lightweight incremental refresh.
 - Failed sync jobs retry with exponential backoff up to `MaxJobAttempts`
   (5), then stay `failed` (dead letter) - see `contactsync.JobRepository`.
 - Login and share creation are rate-limited per client IP (20/minute) via

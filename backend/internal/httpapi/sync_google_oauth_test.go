@@ -28,6 +28,7 @@ type fakeGoogleAdapter struct {
 	syncCalls   int
 	syncDone    chan struct{}
 	syncCtx     context.Context
+	syncAccount contactsync.Account
 }
 
 func (f *fakeGoogleAdapter) ProviderName() string { return "google" }
@@ -70,9 +71,10 @@ func (f *fakeGoogleAdapter) DeleteRecord(context.Context, contactsync.AuthSessio
 	return nil
 }
 
-func (f *fakeGoogleAdapter) Sync(ctx context.Context, _ contactsync.Account, _ contactsync.Job) error {
+func (f *fakeGoogleAdapter) Sync(ctx context.Context, account contactsync.Account, _ contactsync.Job) error {
 	f.syncCalls++
 	f.syncCtx = ctx
+	f.syncAccount = account
 	if f.syncDone != nil {
 		defer func() { f.syncDone <- struct{}{} }()
 	}

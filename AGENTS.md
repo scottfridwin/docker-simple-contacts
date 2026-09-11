@@ -220,6 +220,28 @@ docs/design/            authoritative design documents
   without the owner's involvement. Shares and relationships are each capped
   at 50 per Person. Share creation and login are rate-limited per IP
   (20/minute) via `internal/ratelimit`.
+- That "included in the recipient's own Google sync export" promise above
+  only held at initial-sync time: `exportLocal` (the pass that scans
+  `person.List`, owned + shared, for anything not yet linked to *this*
+  account) only ever runs once, when `Account.SyncCursor` is still empty.
+  A contact shared with a recipient whose account had already completed
+  its first sync before the share existed was then structurally
+  unreachable - no scheduled sync, and no edit-triggered job (which fanned
+  out only to the *owner's* accounts plus accounts *already* linked to
+  that Person) ever re-scanned for newly-accessible shared records.
+  `Runner.runJob` now also fans out to `ListSharedWithAccountsForPerson`
+  (every sync account owned by anyone the Person is currently shared
+  with), so editing a shared Person pushes the change - and, the first
+  time, creates the link - on the recipient's own connected accounts too,
+  not just the owner's.
+- `POST /sync-accounts/{id}/sync` ("Sync now") is a manual full-resync
+  override, not an incremental nudge: the handler clears the account's
+  `SyncCursor` before calling `Adapter.Sync`, so it re-pulls every remote
+  record from scratch and re-runs `exportLocal` (since `initialSync` is
+  cursor-emptiness-based) instead of only picking up changes since the
+  last cursor - the only way, short of disconnect/reconnect, to force an
+  already-initialized account to fully realign with Google (e.g. to pick
+  up newly-shared-but-never-linked contacts without waiting for an edit).
 
 ## Conventions
 

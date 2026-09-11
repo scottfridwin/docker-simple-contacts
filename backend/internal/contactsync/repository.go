@@ -233,6 +233,41 @@ func (r *Repository) ListLinkedToPerson(ctx context.Context, personID uuid.UUID)
 	return accounts, nil
 }
 
+// ListSharedWithAccountsForPerson returns every sync account owned by an
+// account personID has been shared with (view+edit recipients), regardless
+// of whether that account has ever linked/synced this record before. This
+// lets a local edit to a shared contact fan out to a recipient's own
+// connected accounts even on the very first time - see ListLinkedToPerson for
+// the complementary "already syncing this record" case. Deliberately
+// unscoped by the caller's authn context, mirroring ListLinkedToPerson.
+func (r *Repository) ListSharedWithAccountsForPerson(ctx context.Context, personID uuid.UUID) ([]Account, error) {
+	const q = `
+		SELECT a.id, a.owner_id, a.provider, a.provider_account_id, a.display_name, a.access_token, a.refresh_token,
+		       a.expires_at, a.scope, a.sync_cursor, a.sync_frequency_minutes, a.status, a.last_synced_at, a.last_error,
+		       a.created_at, a.updated_at
+		FROM sync_accounts a
+		JOIN person_shares ps ON ps.shared_with_user_id = a.owner_id
+		WHERE ps.person_id = $1`
+	rows, err := r.pool.Query(ctx, q, personID)
+	if err != nil {
+		return nil, fmt.Errorf("listing sync accounts shared with person: %w", err)
+	}
+	defer rows.Close()
+
+	accounts := make([]Account, 0)
+	for rows.Next() {
+		account, scanErr := scanAccount(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		accounts = append(accounts, *account)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterating sync accounts shared with person: %w", err)
+	}
+	return accounts, nil
+}
+
 type accountScanner interface {
 	Scan(dest ...any) error
 }

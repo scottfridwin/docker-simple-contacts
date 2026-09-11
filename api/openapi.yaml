@@ -396,9 +396,11 @@ paths:
         required: true
         schema: { type: string, format: uuid }
     post:
-      summary: Trigger an on-demand sync for this account
+      summary: Trigger a full resync for this account
       description: >-
-        Starts a sync in the background and returns immediately; poll
+        Manual override: resets the account's sync cursor and starts a full
+        resync (re-pulling every remote record and re-running the local
+        export pass) in the background, returning immediately; poll
         GET /sync-accounts/{id} to observe progress. A sync already in
         progress for this account is a safe no-op.
       operationId: syncAccountNow

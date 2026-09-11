@@ -16,6 +16,7 @@ type accountStore interface {
 	List(context.Context, int) ([]Account, error)
 	ListDue(context.Context, time.Time) ([]Account, error)
 	ListLinkedToPerson(context.Context, uuid.UUID) ([]Account, error)
+	ListSharedWithAccountsForPerson(context.Context, uuid.UUID) ([]Account, error)
 }
 
 type jobQueue interface {
@@ -164,7 +165,17 @@ func (r *Runner) runJob(ctx context.Context, job Job) error {
 	if err != nil {
 		return fmt.Errorf("loading linked sync accounts for job %s: %w", job.ID, err)
 	}
+	// And fan out to every account owned by someone this person is currently
+	// shared with, even if they've never synced this particular record
+	// before - otherwise an edit only ever reaches a share recipient's own
+	// connected account once something else (e.g. a future full resync)
+	// happens to link it first.
+	shared, err := r.accounts.ListSharedWithAccountsForPerson(ctx, job.PersonID)
+	if err != nil {
+		return fmt.Errorf("loading shared-with sync accounts for job %s: %w", job.ID, err)
+	}
 	accounts = mergeAccountsByID(accounts, linked)
+	accounts = mergeAccountsByID(accounts, shared)
 	if len(accounts) == 0 {
 		if err := r.jobs.MarkDone(ownerCtx, job.ID); err != nil {
 			return fmt.Errorf("marking job %s done: %w", job.ID, err)
