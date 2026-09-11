@@ -16,33 +16,29 @@ const mocks = vi.hoisted(() => ({
   updatePerson: vi.fn(),
   updateSyncAccount: vi.fn(),
   deleteSyncAccount: vi.fn(),
+  listRelationships: vi.fn(),
+  listShares: vi.fn(),
 }));
 
-vi.mock('../src/api', () => ({
-  ApiRequestError: class ApiRequestError extends Error {
-    status: number;
-    code: string;
-    details?: unknown;
-
-    constructor(status: number, code: string, message: string, details?: unknown) {
-      super(message);
-      this.status = status;
-      this.code = code;
-      this.details = details;
-    }
-  },
-  listPersons: mocks.listPersons,
-  listDeletedPersons: mocks.listDeletedPersons,
-  listSyncAccounts: mocks.listSyncAccounts,
-  beginGoogleSync: mocks.beginGoogleSync,
-  createPerson: mocks.createPerson,
-  deletePerson: mocks.deletePerson,
-  permanentlyDeletePerson: mocks.permanentlyDeletePerson,
-  restorePerson: mocks.restorePerson,
-  updatePerson: mocks.updatePerson,
-  updateSyncAccount: mocks.updateSyncAccount,
-  deleteSyncAccount: mocks.deleteSyncAccount,
-}));
+vi.mock('../src/api', async () => {
+  const actual = await vi.importActual<typeof import('../src/api')>('../src/api');
+  return {
+    ...actual,
+    listPersons: mocks.listPersons,
+    listDeletedPersons: mocks.listDeletedPersons,
+    listSyncAccounts: mocks.listSyncAccounts,
+    beginGoogleSync: mocks.beginGoogleSync,
+    createPerson: mocks.createPerson,
+    deletePerson: mocks.deletePerson,
+    permanentlyDeletePerson: mocks.permanentlyDeletePerson,
+    restorePerson: mocks.restorePerson,
+    updatePerson: mocks.updatePerson,
+    updateSyncAccount: mocks.updateSyncAccount,
+    deleteSyncAccount: mocks.deleteSyncAccount,
+    listRelationships: mocks.listRelationships,
+    listShares: mocks.listShares,
+  };
+});
 
 describe('App sync integration', () => {
   beforeEach(() => {
@@ -64,6 +60,8 @@ describe('App sync integration', () => {
     });
     mocks.updateSyncAccount.mockResolvedValue({});
     mocks.deleteSyncAccount.mockResolvedValue(undefined);
+    mocks.listRelationships.mockResolvedValue({ data: [] });
+    mocks.listShares.mockResolvedValue({ data: [] });
     Object.defineProperty(window, 'open', {
       value: vi.fn().mockReturnValue({ close: vi.fn() }),
       writable: true,
@@ -187,6 +185,46 @@ describe('App sync integration', () => {
         screen.queryByRole('heading', { name: /connected accounts/i }),
       ).not.toBeInTheDocument();
     });
+  });
+
+  // Guards a real production bug: removing a contact's last label (or last
+  // email/phone/address) silently never saved, because the payload sent
+  // `undefined` instead of an empty array for an emptied field - the backend
+  // treats an absent key as "no change", not "clear this field".
+  it('saves removing the last label as an empty array instead of omitting the field', async () => {
+    const person = {
+      id: 'p1',
+      first_name: 'Scott',
+      middle_names: [],
+      last_name: 'Fridlund',
+      display_name: 'Scott Fridlund',
+      emails: [],
+      phone_numbers: [],
+      addresses: [],
+      custom_fields: {},
+      labels: ['Test Label 1'],
+      is_favorite: false,
+      created_at: '2026-01-01T00:00:00Z',
+      updated_at: '2026-01-01T00:00:00Z',
+    };
+    mocks.listPersons.mockImplementation((params?: { favorite?: boolean }) =>
+      Promise.resolve(
+        params?.favorite
+          ? { data: [], page: 1, page_size: 25, total: 0, total_pages: 0 }
+          : { data: [person], page: 1, page_size: 25, total: 1, total_pages: 1 },
+      ),
+    );
+    mocks.updatePerson.mockResolvedValue({ ...person, labels: [] });
+
+    render(<App />);
+
+    await userEvent.click(await screen.findByRole('button', { name: /edit/i }));
+    await userEvent.click(screen.getByRole('button', { name: /remove labels 1/i }));
+    await userEvent.click(screen.getByRole('button', { name: /save/i }));
+
+    await waitFor(() => expect(mocks.updatePerson).toHaveBeenCalledTimes(1));
+    const [, payload] = mocks.updatePerson.mock.calls[0];
+    expect(payload.labels).toEqual([]);
   });
 
   it('enables save only after account changes and submits updated values', async () => {

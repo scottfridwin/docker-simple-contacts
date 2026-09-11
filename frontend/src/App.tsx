@@ -443,16 +443,16 @@ export default function App() {
         nickname: values.nickname || undefined,
         pronouns: values.pronouns || undefined,
         birthdate: values.birthdate || undefined,
-        emails: values.emails.length ? values.emails : undefined,
-        phone_numbers: values.phone_numbers.length ? values.phone_numbers : undefined,
-        addresses: values.addresses.length ? values.addresses : undefined,
+        emails: values.emails,
+        phone_numbers: values.phone_numbers,
+        addresses: values.addresses,
         organization:
           values.organization.name || values.organization.title || values.organization.department
             ? values.organization
             : undefined,
         notes: values.notes || undefined,
         custom_fields: values.custom_fields,
-        labels: values.labels.length ? values.labels : undefined,
+        labels: values.labels,
       };
       if (view.mode === 'edit') {
         await updatePerson(view.person.id, payload);
