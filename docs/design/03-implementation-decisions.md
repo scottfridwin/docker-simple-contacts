@@ -975,5 +975,20 @@ the `PATCH /sync-accounts/{id}` handler and the OAuth reconnect flow.
   `sync_frequency_minutes`, and asserts both the user's settings and the
   sync's own token write all survive.
 
+### S) GOOGLE_SYNC_DRY_RUN: a write-suppression flag for testing
+
+New optional env var `GOOGLE_SYNC_DRY_RUN` (default `false`). When true,
+`Adapter.UpsertRecord`/`DeleteRecord` log what they would have sent and
+return immediately without any HTTP request to Google at all - no
+`createContact`/`updateContact`/`deleteContact`, and (since they return
+before ever loading the group resolver) no `contactGroups` create/modify
+either. Reads (`ListChanges`, `contactGroups.list`, `getContact`) are
+completely unaffected, so the *import* side of sync can be exercised
+against a real, live Google account with zero risk of mutating it -
+useful for validating merge/import logic before trusting export against
+production Google data. A dry-run create returns an empty `ExternalID`
+(so `linkRecord` never links a person to a resource that doesn't exist);
+a dry-run update returns the record's existing `ExternalID` unchanged.
+
 
 

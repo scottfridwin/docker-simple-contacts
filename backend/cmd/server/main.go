@@ -103,6 +103,7 @@ func run() error {
 			ClientID:     cfg.GoogleClientID,
 			ClientSecret: cfg.GoogleClientSecret,
 			RedirectURL:  cfg.GoogleRedirectURL,
+			DryRun:       cfg.GoogleSyncDryRun,
 		}, syncAccountRepo, svc, syncLinkRepo, nil, logger)
 		if err != nil {
 			return fmt.Errorf("configuring google sync adapter: %w", err)
@@ -111,7 +112,7 @@ func run() error {
 		registry.Register(adapter)
 		processor = contactsync.NewDispatchProcessor(registry)
 		googleAdapter = adapter
-		logger.Info("google sync adapter configured")
+		logger.Info("google sync adapter configured", "dry_run", cfg.GoogleSyncDryRun)
 	}
 	runner := contactsync.NewRunner(syncAccountRepo, syncJobRepo, processor, logger)
 

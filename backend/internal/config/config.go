@@ -30,6 +30,7 @@ type Config struct {
 	GoogleClientID     string
 	GoogleClientSecret string
 	GoogleRedirectURL  string
+	GoogleSyncDryRun   bool
 }
 
 // IsProduction reports whether the server runs in a production environment.
@@ -136,6 +137,7 @@ func Load() (Config, error) {
 			return Config{}, err
 		}
 	}
+	cfg.GoogleSyncDryRun = getEnvBool("GOOGLE_SYNC_DRY_RUN", false)
 
 	if err := cfg.validate(); err != nil {
 		return Config{}, err
@@ -220,4 +222,18 @@ func firstEnv(keys ...string) string {
 		}
 	}
 	return ""
+}
+
+// getEnvBool parses a boolean env var, falling back to fallback when unset
+// or unparseable (e.g. "true", "1", "false", "0").
+func getEnvBool(key string, fallback bool) bool {
+	v := os.Getenv(key)
+	if v == "" {
+		return fallback
+	}
+	parsed, err := strconv.ParseBool(v)
+	if err != nil {
+		return fallback
+	}
+	return parsed
 }

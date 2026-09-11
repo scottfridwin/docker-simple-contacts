@@ -871,3 +871,39 @@ func TestUpsertRecordRetriesOnceOnETagConflict(t *testing.T) {
 		t.Fatalf("patchCalls = %d, want 2 (failed attempt + retry)", patchCalls)
 	}
 }
+
+// TestUpsertRecordDryRunNeverCallsGoogle guards the dry-run flag: with it
+// enabled, neither a create (empty ExternalID) nor an update (existing
+// ExternalID) may make any HTTP request to Google at all - the server fails
+// the test if it receives any request.
+func TestUpsertRecordDryRunNeverCallsGoogle(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatalf("unexpected request to %s in dry-run mode", r.URL.Path)
+	}))
+	defer server.Close()
+
+	adapter := &Adapter{cfg: Config{PeopleBaseURL: server.URL, DryRun: true}, http: http.DefaultClient, logger: slog.Default()}
+	session := contactsync.AuthSession{AccessToken: "token"}
+
+	create := contactsync.Record{Fields: map[string]contactsync.FieldState{"first_name": {IsSet: true, Value: "Ada"}}}
+	out, err := adapter.UpsertRecord(context.Background(), session, create)
+	if err != nil {
+		t.Fatalf("UpsertRecord (create): %v", err)
+	}
+	if out.Record.ExternalID != "" {
+		t.Fatalf("dry-run create returned an external id %q, want empty (never actually created)", out.Record.ExternalID)
+	}
+
+	update := contactsync.Record{ExternalID: "people/1", Fields: map[string]contactsync.FieldState{"first_name": {IsSet: true, Value: "Ada"}}}
+	out, err = adapter.UpsertRecord(context.Background(), session, update)
+	if err != nil {
+		t.Fatalf("UpsertRecord (update): %v", err)
+	}
+	if out.Record.ExternalID != "people/1" {
+		t.Fatalf("dry-run update changed external id to %q, want unchanged people/1", out.Record.ExternalID)
+	}
+
+	if err := adapter.DeleteRecord(context.Background(), session, "people/1"); err != nil {
+		t.Fatalf("DeleteRecord: %v", err)
+	}
+}

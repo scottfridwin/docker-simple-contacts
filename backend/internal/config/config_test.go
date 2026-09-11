@@ -20,6 +20,7 @@ func clearEnv(t *testing.T) {
 		"OIDC_REDIRECT_URI", "SESSION_SECRET", "SESSION_SECRET_FILE",
 		"GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_ID_FILE", "GOOGLE_CLIENT_SECRET",
 		"GOOGLE_CLIENT_SECRET_FILE", "GOOGLE_REDIRECT_URL", "GOOGLE_REDIRECT_URI",
+		"GOOGLE_SYNC_DRY_RUN",
 	} {
 		t.Setenv(k, "")
 	}
@@ -220,5 +221,29 @@ func TestLoadGoogleSyncConfigurationUsesSecretFiles(t *testing.T) {
 	}
 	if cfg.GoogleClientID != "gid" || cfg.GoogleClientSecret != "gsecret" {
 		t.Fatalf("unexpected Google config: %#v", cfg)
+	}
+}
+
+func TestLoadGoogleSyncDryRun(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("DB_HOST", "localhost")
+	t.Setenv("DB_USER", "app")
+	t.Setenv("DB_PASSWORD", "secret")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.GoogleSyncDryRun {
+		t.Fatal("expected GoogleSyncDryRun to default to false")
+	}
+
+	t.Setenv("GOOGLE_SYNC_DRY_RUN", "true")
+	cfg, err = Load()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !cfg.GoogleSyncDryRun {
+		t.Fatal("expected GoogleSyncDryRun to be true when GOOGLE_SYNC_DRY_RUN=true")
 	}
 }

@@ -41,6 +41,13 @@ type Config struct {
 	TokenURL      string
 	PeopleBaseURL string
 	Scopes        []string
+	// DryRun, when true, suppresses every write to Google (createContact,
+	// updateContact, deleteContact, contactGroups create/modify) - reads
+	// (listing/pulling contacts and groups) are unaffected, so the import
+	// side of sync can be exercised against a real account with zero risk
+	// of mutating it. Intended for testing sync behavior before trusting
+	// it against production Google data.
+	DryRun bool
 }
 
 type accountStateStore interface {
@@ -352,6 +359,14 @@ func (a *Adapter) FetchRecord(ctx context.Context, session contactsync.AuthSessi
 
 // UpsertRecord creates or updates one remote contact.
 func (a *Adapter) UpsertRecord(ctx context.Context, session contactsync.AuthSession, record contactsync.Record) (contactsync.ProviderRecord, error) {
+	if a.cfg.DryRun {
+		action := "update"
+		if strings.TrimSpace(record.ExternalID) == "" {
+			action = "create"
+		}
+		a.logger.Info("dry run: skipping google write", "action", action, "external_id", record.ExternalID, "field_count", len(record.Fields))
+		return contactsync.ProviderRecord{Record: record}, nil
+	}
 	resolver, err := a.groupResolverFor(ctx, session)
 	if err != nil {
 		return contactsync.ProviderRecord{}, err
@@ -405,6 +420,10 @@ func (a *Adapter) updateContact(ctx context.Context, accessToken string, record 
 // DeleteRecord deletes one remote Google contact.
 func (a *Adapter) DeleteRecord(ctx context.Context, session contactsync.AuthSession, remoteID string) error {
 	if strings.TrimSpace(remoteID) == "" {
+		return nil
+	}
+	if a.cfg.DryRun {
+		a.logger.Info("dry run: skipping google delete", "external_id", remoteID)
 		return nil
 	}
 	return a.delete(ctx, session.AccessToken, "/"+remoteID+":deleteContact")

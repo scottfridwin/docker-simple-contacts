@@ -118,6 +118,7 @@ The backend is configured entirely through environment variables.
 | `GOOGLE_CLIENT_SECRET` | —         | Google OAuth client secret for contact sync.             |
 | `GOOGLE_CLIENT_SECRET_FILE` | —    | Docker secret file for Google OAuth client secret.       |
 | `GOOGLE_REDIRECT_URL` | —          | Backend Google sync callback URL (`/api/v1/sync/google/callback`). |
+| `GOOGLE_SYNC_DRY_RUN` | `false`     | When `true`, suppresses every write to Google (create/update/delete contacts, contact group create/modify) - reads are unaffected. For testing sync against a real account with zero risk of mutating it. |
 | `SESSION_SECRET_FILE`   | —           | Docker secret file containing a 32+ byte session key.   |
 | `SESSION_SECRET`        | —           | Inline session key fallback.                            |
 | `CONTACTS_VERSION`     | `latest`    | Tag used for both published application images.         |
