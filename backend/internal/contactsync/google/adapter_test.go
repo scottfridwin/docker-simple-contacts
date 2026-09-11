@@ -207,6 +207,30 @@ func TestRemoteToLocalProducesUpdatableMiddleNames(t *testing.T) {
 	}
 }
 
+// TestFieldAwareUpdateIncludesNicknameAndBirthdate guards a real sync gap:
+// nickname and birthdate were mapped on contact creation but never on a
+// later reconcileExisting "remote wins" merge, so editing either field
+// directly in Google after the initial sync silently never reached the
+// local copy.
+func TestFieldAwareUpdateIncludesNicknameAndBirthdate(t *testing.T) {
+	nickname := "Ace"
+	birthdate := "1989-04-19"
+	fields := map[string]contactsync.FieldState{
+		"nickname":  {IsSet: true, Value: nickname},
+		"birthdate": {IsSet: true, Value: birthdate},
+	}
+	remoteModel := person.CreateInput{Nickname: &nickname, Birthdate: &birthdate}
+
+	update := fieldAwareUpdate(fields, remoteModel)
+
+	if !update.NicknameSet || update.Nickname == nil || *update.Nickname != nickname {
+		t.Fatalf("Nickname = %v (set=%v), want %q", update.Nickname, update.NicknameSet, nickname)
+	}
+	if !update.BirthdateSet || update.Birthdate == nil || *update.Birthdate != birthdate {
+		t.Fatalf("Birthdate = %v (set=%v), want %q", update.Birthdate, update.BirthdateSet, birthdate)
+	}
+}
+
 // TestToGooglePersonMapsNewContactFields ensures emails, addresses,
 // organization, notes, nickname, and birthdate all round-trip into the
 // Google People API payload shape.

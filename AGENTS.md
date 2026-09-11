@@ -202,7 +202,13 @@ docs/design/            authoritative design documents
   (`FieldState.IsSet`); a field Google never had data for doesn't overwrite
   a local edit to that same field. Two edits to the *same* field still
   resolve by whichever side's timestamp is newer — there's no per-field
-  timestamp on either side to do a real 3-way merge.
+  timestamp on either side to do a real 3-way merge. `nickname` and
+  `birthdate` were mapped on contact creation but missing from
+  `fieldAwareUpdate`, so editing either directly in Google after the
+  initial sync never reached the local copy on a later "remote wins"
+  merge — both are now included there too. `pronouns` still has no
+  Google-side mapping at all (not exported, not imported, not part of
+  the field mask) - it remains a local-only field.
 - **OAuth verification pages**: unauthenticated users must be able to view a
   public home page describing app purpose, and a public privacy policy page at
   `/privacy`.

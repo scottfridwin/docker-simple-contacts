@@ -348,6 +348,40 @@ func TestScenario_ModifyInGoogle(t *testing.T) {
 	}
 }
 
+// TestScenario_ModifyNicknameAndBirthdateInGoogle guards a real sync gap:
+// nickname and birthdate were only ever mapped at contact creation - editing
+// either field directly in Google after the initial sync never reached the
+// local copy, since reconcileExisting's "remote wins" merge (fieldAwareUpdate)
+// didn't include them.
+func TestScenario_ModifyNicknameAndBirthdateInGoogle(t *testing.T) {
+	sc := newScenario(t)
+	_, resourceName := sc.linked("Ada", "Lovelace")
+
+	sc.server.mutate(resourceName, time.Now().Add(time.Hour), func(p *googlePerson) {
+		p.Nicknames = []googleNickname{{Value: "Countess"}}
+		p.Birthdays = []googleBirthday{{Date: &googleDate{Year: 1815, Month: 12, Day: 10}}}
+	})
+
+	if err := sc.sync(contactsync.Job{}); err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+
+	people, _, err := sc.people.List(sc.ctx, person.ListParams{Page: 1, PageSize: 100})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	updated, ok := findPersonByName(t, people, "Ada", "Lovelace")
+	if !ok {
+		t.Fatal("expected Ada Lovelace to still exist")
+	}
+	if updated.Nickname == nil || *updated.Nickname != "Countess" {
+		t.Errorf("expected the Google-side nickname to be applied locally, got %+v", updated.Nickname)
+	}
+	if updated.Birthdate == nil || *updated.Birthdate != "1815-12-10" {
+		t.Errorf("expected the Google-side birthdate to be applied locally, got %+v", updated.Birthdate)
+	}
+}
+
 // TestScenario_NoOpRemoteMergeDoesNotLoop guards against an infinite
 // ping-pong between two accounts linked to the same Person: Google bumps a
 // contact's own updateTime on every write, including our own exports - so

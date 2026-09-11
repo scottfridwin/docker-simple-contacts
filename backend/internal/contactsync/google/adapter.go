@@ -977,6 +977,14 @@ func fieldAwareUpdate(fields map[string]contactsync.FieldState, remoteModel pers
 		update.LastName = stringPtr(remoteModel.LastName)
 		update.LastNameSet = true
 	}
+	if fieldIsSet(fields, "nickname") {
+		update.Nickname = remoteModel.Nickname
+		update.NicknameSet = true
+	}
+	if fieldIsSet(fields, "birthdate") {
+		update.Birthdate = remoteModel.Birthdate
+		update.BirthdateSet = true
+	}
 	if fieldIsSet(fields, "phone_numbers") {
 		update.PhoneNumbers = &remoteModel.PhoneNumbers
 		update.PhoneNumbersSet = true

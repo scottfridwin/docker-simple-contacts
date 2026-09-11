@@ -123,6 +123,12 @@ conflict.
   Google's payload actually reported (`FieldState.IsSet`) are applied, so a
   field Google never had data for doesn't overwrite a local edit to it; two
   edits to the same field still resolve by whichever timestamp is newer.
+  `nickname` and `birthdate` were mapped on contact creation but missing from
+  `fieldAwareUpdate`, so editing either directly in Google after the
+  initial sync never reached the local copy on a later "remote wins"
+  merge - both are now included there too. `pronouns` still has no
+  Google-side mapping at all (not exported, not imported, not part of
+  the field mask) - it remains a local-only field.
 - Keep public verification pages available without login: home page with app
   purpose and privacy policy at `/privacy`.
 - Sharing: an owner can share an individual Person with another account
