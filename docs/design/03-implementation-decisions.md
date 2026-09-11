@@ -886,5 +886,53 @@ ID-mapping complexity into the Google adapter alone.
   spirit to how `custom_fields`/`userDefined` values are independently
   reconciled per account.
 
+## Post-implementation decision log (2026-09-11)
+
+### Q) A multi-page pull never terminated (pageToken sent as syncToken)
+
+Real production incident: a sync for one account ran continuously for
+over 10 hours (285+ page fetches, ~28,500+ distinct contacts processed)
+and never completed - `sync_accounts.last_synced_at` stayed null the
+whole time, and every single page-fetch log line reported
+`has_more=true`, never once reaching `has_more=false`.
+
+**Root cause**: `people.connections.list` requires two *different*
+tokens sent via two *different* query parameters - `pageToken` to
+continue a listing already in progress, and `syncToken` to resume
+incremental sync on a later, separate pull once a listing has fully
+completed (only the *last* page of a listing carries `nextSyncToken` at
+all). `Adapter.ListChanges` conflated the two into one opaque cursor
+string and always sent it via `syncToken`, regardless of which kind of
+token it actually held. On the second and later pages of any pull with
+more than one page of contacts, this sent the previous page's
+`nextPageToken` value through the `syncToken` parameter - which Google
+appears to treat as an unrecognized/invalid sync token, silently
+restarting the entire listing from the beginning rather than erroring.
+Since already-linked contacts just get re-matched by their
+`contacts_local_id` tag (not duplicated), this didn't produce duplicate
+data, but it meant a pull with more than ~100 contacts (one page) could
+never terminate - it kept restarting forever, continuously burning the
+same rate-limit quota that was the subject of decisions O/P's retry
+work, which likely made those symptoms far worse than they otherwise
+would have been.
+
+**Fix**: introduced `contactSyncCursor{PageToken, SyncToken}`, JSON-encoded
+into the same opaque `Account.SyncCursor` string column (no schema
+change) so `ListChanges` can tell which kind of token it's holding and
+send it via the correct query parameter - `pageToken` when continuing a
+listing already in progress, `syncToken` only when starting a fresh
+pull. A pre-fix cursor value (a bare string, not JSON) decodes as a bare
+sync token for backward compatibility.
+
+- **Why this went uncaught**: the test fake Google server
+  (`fake_server_test.go`) never paginated - it always returned every
+  matching contact in a single response - so there was never a second
+  page in any test to exercise the buggy code path at all.
+  `fakeGoogleServer` gained `setListPageSize`/`listCallCount` so tests
+  can force and verify real multi-page pulls; added
+  `TestPullRemoteTerminatesAcrossMultiplePages`, which seeds more
+  contacts than fit on one page and asserts the pull completes in a
+  small, bounded number of list calls instead of looping.
+
 
 

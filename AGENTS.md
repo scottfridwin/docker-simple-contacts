@@ -169,6 +169,18 @@ docs/design/            authoritative design documents
   partway through with 401 UNAUTHENTICATED even though the refresh token
   is fine. `pullRemote`/`exportLocal` now re-check (and refresh if needed)
   before every page, not just once per run.
+- A pull spanning more than one page never terminated (ran 10+ hours in
+  production): the second and later page requests sent Google's
+  `nextPageToken` through the `syncToken` query parameter instead of
+  `pageToken` - two different tokens for two different purposes - which
+  Google silently treats as invalid and restarts the whole listing from
+  scratch, so `has_more` never reached false. `ListChanges` now encodes
+  which kind of token its cursor holds (`contactSyncCursor`, JSON in the
+  same opaque `SyncCursor` string column) and sends it via the correct
+  parameter. The test fake Google server never paginated before this, so
+  no test could have caught it; it now supports forced pagination
+  (`setListPageSize`/`listCallCount`) and there's a regression test
+  asserting a multi-page pull terminates in a bounded number of calls.
 - **Sync matching/merge**: a Google contact with no `contacts_local_id` tag
   matches an existing local contact only on an exact, unambiguous
   first+last name match (`person.FindByExactName`), otherwise it's created

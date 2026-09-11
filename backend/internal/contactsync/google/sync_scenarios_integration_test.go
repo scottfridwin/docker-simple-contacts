@@ -927,3 +927,46 @@ func TestPullRemoteRefreshesExpiringTokenMidRun(t *testing.T) {
 		t.Fatal("expected the pull to still succeed after refreshing mid-run")
 	}
 }
+
+// TestPullRemoteTerminatesAcrossMultiplePages guards a real production
+// incident: a pull with more than one page of contacts never reached
+// HasMore=false and ran for 10+ hours, because the second and later page
+// requests sent Google's nextPageToken value through the syncToken query
+// parameter instead of pageToken - an invalid/unrecognized syncToken made
+// Google silently restart the whole listing from the beginning every time.
+// Seeds enough contacts to force multiple pages and asserts the pull
+// actually terminates (bounded number of list calls) with every contact
+// imported exactly once.
+func TestPullRemoteTerminatesAcrossMultiplePages(t *testing.T) {
+	sc := newScenario(t)
+	sc.server.setListPageSize(2)
+
+	const total = 5
+	for i := 0; i < total; i++ {
+		sc.server.seed(googlePerson{Names: []googleName{{GivenName: fmt.Sprintf("Person%d", i), FamilyName: "Test"}}})
+	}
+
+	if err := sc.sync(contactsync.Job{}); err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+
+	// 5 contacts at 2 per page is 3 pages; allow a little slack but this
+	// must be small and bounded - the old bug made it grow without limit.
+	if calls := sc.server.listCallCount(); calls == 0 || calls > 10 {
+		t.Fatalf("listCallCount = %d, want a small bounded number (~3), not endless restarts", calls)
+	}
+
+	people, _, err := sc.people.List(sc.ctx, person.ListParams{Page: 1, PageSize: 100})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	count := 0
+	for _, p := range people {
+		if p.LastName == "Test" {
+			count++
+		}
+	}
+	if count != total {
+		t.Fatalf("imported %d persons, want exactly %d (one per seeded contact)", count, total)
+	}
+}

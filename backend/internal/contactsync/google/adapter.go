@@ -246,16 +246,35 @@ func (a *Adapter) RefreshAuthorization(ctx context.Context, session contactsync.
 }
 
 // ListChanges lists incremental remote updates since the previous sync token.
+//
+// Google's people.connections.list requires two DIFFERENT tokens sent via
+// two DIFFERENT query parameters: pageToken to continue a listing already
+// in progress, and syncToken to resume incremental sync on the NEXT
+// separate pull once a listing has fully completed. Our single opaque
+// cursor string encodes whichever of the two is currently relevant (see
+// contactSyncCursor) - previously every cursor value was sent as syncToken
+// regardless of which kind it actually was, so continuing to a second page
+// sent that page's nextPageToken as if it were a syncToken. Google treats
+// that as an unrecognized/invalid sync token and silently starts the whole
+// listing over, which is why a pull with more than one page of contacts
+// never reached HasMore=false - it kept restarting forever, reprocessing
+// the same (already-linked, so not duplicated) contacts in a different
+// order each time and burning through the rate-limit quota on every
+// restart.
 func (a *Adapter) ListChanges(ctx context.Context, session contactsync.AuthSession, cursor string) (contactsync.ChangePage, error) {
 	resolver, err := a.groupResolverFor(ctx, session)
 	if err != nil {
 		return contactsync.ChangePage{}, err
 	}
+	state := decodeContactSyncCursor(cursor)
 	values := url.Values{}
 	values.Set("personFields", googlePersonFields)
 	values.Set("requestSyncToken", "true")
-	if cursor != "" {
-		values.Set("syncToken", cursor)
+	switch {
+	case state.PageToken != "":
+		values.Set("pageToken", state.PageToken)
+	case state.SyncToken != "":
+		values.Set("syncToken", state.SyncToken)
 	}
 	body := googleConnectionsResponse{}
 	if err := a.getJSON(ctx, session.AccessToken, "/people/me/connections?"+values.Encode(), &body); err != nil {
@@ -265,18 +284,53 @@ func (a *Adapter) ListChanges(ctx context.Context, session contactsync.AuthSessi
 	for _, entry := range body.Connections {
 		records = append(records, toProviderRecord(entry, resolver))
 	}
-	nextCursor := strings.TrimSpace(body.NextSyncToken)
-	if nextCursor == "" {
-		nextCursor = strings.TrimSpace(cursor)
-	}
-	if body.NextPageToken != "" {
-		nextCursor = body.NextPageToken
+	next := contactSyncCursor{}
+	switch {
+	case body.NextPageToken != "":
+		next.PageToken = body.NextPageToken
+	case body.NextSyncToken != "":
+		next.SyncToken = body.NextSyncToken
+	default:
+		next.SyncToken = state.SyncToken
 	}
 	return contactsync.ChangePage{
 		Records:    records,
-		NextCursor: nextCursor,
+		NextCursor: next.encode(),
 		HasMore:    body.NextPageToken != "",
 	}, nil
+}
+
+// contactSyncCursor distinguishes an in-progress page continuation from a
+// completed pass's resumable sync token (see ListChanges). Encoded as JSON
+// so Account.SyncCursor can stay a plain opaque string column; a raw,
+// non-JSON value (any cursor persisted before this fix) decodes as a bare
+// sync token, since that's the only kind of cursor ever persisted before.
+type contactSyncCursor struct {
+	PageToken string `json:"p,omitempty"`
+	SyncToken string `json:"s,omitempty"`
+}
+
+func decodeContactSyncCursor(raw string) contactSyncCursor {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return contactSyncCursor{}
+	}
+	var c contactSyncCursor
+	if err := json.Unmarshal([]byte(raw), &c); err != nil {
+		return contactSyncCursor{SyncToken: raw}
+	}
+	return c
+}
+
+func (c contactSyncCursor) encode() string {
+	if c.PageToken == "" && c.SyncToken == "" {
+		return ""
+	}
+	data, err := json.Marshal(c)
+	if err != nil {
+		return c.SyncToken
+	}
+	return string(data)
 }
 
 // FetchRecord fetches one remote Google contact.

@@ -106,6 +106,9 @@ conflict.
   `pullRemote`/`exportLocal` re-check/refresh the OAuth token before every
   page (not just once at the top of `Sync()`), since a large/slow pull can
   outlive the token's remaining lifetime and fail with 401 partway through.
+  A pull spanning more than one page never terminated because later pages
+  sent Google's `nextPageToken` via the `syncToken` param instead of
+  `pageToken`; `ListChanges` now tracks which kind of token its cursor is.
 - Google sync matching/merge: a Google contact with no `contacts_local_id` tag
   matches an existing local contact only on an exact, unambiguous first+last
   name match (no fuzzy matching), otherwise it's created as a new Person. When

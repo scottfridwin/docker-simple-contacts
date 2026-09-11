@@ -48,6 +48,17 @@ type fakeGoogleServer struct {
 	groupsByName map[string]string
 	groupMembers map[string]map[string]bool
 	nextGroupID  int
+
+	// listPageSize, pendingPages, and nextPageTokenID stand in for Google's
+	// real pagination: when set (>0), handleList splits a listing across
+	// multiple pages instead of always returning everything at once, so
+	// tests can exercise real multi-page pulls (see the pageToken/syncToken
+	// mixup bug this guards against - a fake server that never paginates
+	// can never catch that class of bug).
+	listPageSize    int
+	pendingPages    map[string][]googlePerson
+	nextPageTokenID int
+	listCalls       int
 }
 
 func newFakeGoogleServer() *fakeGoogleServer {
@@ -58,6 +69,7 @@ func newFakeGoogleServer() *fakeGoogleServer {
 		groups:       map[string]*googleContactGroup{},
 		groupsByName: map[string]string{},
 		groupMembers: map[string]map[string]bool{},
+		pendingPages: map[string][]googlePerson{},
 	}
 	// Every real Google account already has a "starred" system group -
 	// pre-seed it so tests can exercise the starred <-> is_favorite mapping.
@@ -251,6 +263,24 @@ func (s *fakeGoogleServer) handle(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// setListPageSize makes handleList split listings into pages of at most n
+// items (0 means unlimited, the default), so a test can force a multi-page
+// pull deterministically.
+func (s *fakeGoogleServer) setListPageSize(n int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.listPageSize = n
+}
+
+// listCallCount returns how many list-changes requests have been made so
+// far, for asserting a pull terminates in a bounded number of pages instead
+// of looping forever.
+func (s *fakeGoogleServer) listCallCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.listCalls
+}
+
 func (s *fakeGoogleServer) handleList(w http.ResponseWriter, r *http.Request) {
 	if s.blockListGate != nil {
 		gate, ready := s.blockListGate, s.blockListReady
@@ -260,26 +290,59 @@ func (s *fakeGoogleServer) handleList(w http.ResponseWriter, r *http.Request) {
 		}
 		<-gate
 	}
-	token := strings.TrimSpace(r.URL.Query().Get("syncToken"))
-	out := []googlePerson{}
-	if token == "" {
-		for _, p := range s.contacts {
-			if !p.Metadata.Deleted {
-				out = append(out, s.withMemberships(p))
-			}
+	s.listCalls++
+
+	// Google's real API requires pageToken (continuing a listing already in
+	// progress) and syncToken (resuming incremental sync on a fresh pull) to
+	// be sent as two DIFFERENT query parameters - mirror that distinction
+	// here instead of accepting either name for the same cursor value, or a
+	// bug that sends one as the other would go uncaught (see ListChanges'
+	// doc comment for the real production incident this guards against).
+	pageToken := strings.TrimSpace(r.URL.Query().Get("pageToken"))
+	syncToken := strings.TrimSpace(r.URL.Query().Get("syncToken"))
+
+	var all []googlePerson
+	if pageToken != "" {
+		pending, ok := s.pendingPages[pageToken]
+		if !ok {
+			http.Error(w, `{"error":{"code":400,"status":"INVALID_ARGUMENT","message":"invalid or expired pageToken"}}`, http.StatusBadRequest)
+			return
 		}
+		delete(s.pendingPages, pageToken)
+		all = pending
 	} else {
-		since, _ := strconv.Atoi(token)
-		for name, v := range s.versions {
-			if v > since {
-				out = append(out, s.withMemberships(s.contacts[name]))
+		if syncToken == "" {
+			for _, p := range s.contacts {
+				if !p.Metadata.Deleted {
+					all = append(all, s.withMemberships(p))
+				}
+			}
+		} else {
+			since, _ := strconv.Atoi(syncToken)
+			for name, v := range s.versions {
+				if v > since {
+					all = append(all, s.withMemberships(s.contacts[name]))
+				}
 			}
 		}
+		sort.Slice(all, func(i, j int) bool { return all[i].ResourceName < all[j].ResourceName })
 	}
-	writeJSON(w, http.StatusOK, googleConnectionsResponse{
-		Connections:   out,
-		NextSyncToken: strconv.Itoa(s.version),
-	})
+
+	resp := googleConnectionsResponse{NextSyncToken: strconv.Itoa(s.version)}
+	if s.listPageSize > 0 && len(all) > s.listPageSize {
+		resp.Connections = all[:s.listPageSize]
+		remaining := append([]googlePerson(nil), all[s.listPageSize:]...)
+		s.nextPageTokenID++
+		token := fmt.Sprintf("page-%d", s.nextPageTokenID)
+		s.pendingPages[token] = remaining
+		resp.NextPageToken = token
+		// Per the real API, only the LAST page of a listing carries
+		// nextSyncToken - an earlier page must not.
+		resp.NextSyncToken = ""
+	} else {
+		resp.Connections = all
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (s *fakeGoogleServer) handleGet(w http.ResponseWriter, resourceName string) {
