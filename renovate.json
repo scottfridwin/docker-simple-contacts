@@ -6,28 +6,52 @@
     ":semanticCommits",
     ":prConcurrentLimit10"
   ],
-  "labels": ["dependencies"],
-  "postUpdateOptions": ["gomodTidy"],
+  "labels": [
+    "dependencies"
+  ],
+  "postUpdateOptions": [
+    "gomodTidy"
+  ],
   "packageRules": [
     {
-      "matchManagers": ["gomod"],
-      "addLabels": ["go"]
+      "matchManagers": [
+        "gomod"
+      ],
+      "addLabels": [
+        "go"
+      ]
     },
     {
-      "matchManagers": ["npm"],
-      "addLabels": ["frontend"]
+      "matchManagers": [
+        "npm"
+      ],
+      "addLabels": [
+        "frontend"
+      ]
     },
     {
-      "matchManagers": ["github-actions"],
-      "addLabels": ["ci"]
+      "matchManagers": [
+        "github-actions"
+      ],
+      "addLabels": [
+        "ci"
+      ]
     },
     {
-      "matchUpdateTypes": ["minor", "patch"],
+      "matchUpdateTypes": [
+        "minor",
+        "patch"
+      ],
       "matchCurrentVersion": "!/^0/",
       "automerge": false
     }
   ],
   "vulnerabilityAlerts": {
-    "labels": ["security"]
-  }
+    "labels": [
+      "security"
+    ]
+  },
+  "assignees": [
+    "scottfridwin"
+  ]
 }
