@@ -50,8 +50,9 @@ func (h *googleOAuthHandler) begin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal_error", "failed to initialize google oauth state", nil)
 		return
 	}
-	redirectURI := strings.TrimSpace(r.URL.Query().Get("redirect_uri"))
-	authRequest, err := h.adapter.BeginAuthorization(r.Context(), redirectURI, state)
+	// Always use the configured redirect URL: the code exchange uses it too, and
+	// a caller-chosen one must not be able to redirect the authorization.
+	authRequest, err := h.adapter.BeginAuthorization(r.Context(), "", state)
 	if err != nil {
 		h.logError(r, "google oauth begin failed", err)
 		writeError(w, http.StatusBadRequest, "invalid_request", err.Error(), nil)
@@ -283,20 +284,29 @@ func writeGoogleCallbackHTML(w http.ResponseWriter, account *contactsync.Account
 		<p>Your Google account is connected. Contacts are syncing in the background and will
 		appear shortly.</p>
 		<p class="muted">You can close this window and return to the app.</p>
-		<button type="button" onclick="window.opener && window.opener.postMessage({type: 'google-sync-complete', account: %s}, window.location.origin); window.close();">Close window</button>
+		<button type="button" id="close">Close window</button>
 	</main>
 	<script>
 		(function () {
-			try {
-				if (window.opener && !window.opener.closed) {
-					window.opener.postMessage({ type: 'google-sync-complete', account: %s }, window.location.origin);
-				}
-			} catch (e) {}
+			// json.Marshal escapes <, > and &, so the payload is safe inside a script element
+			var message = { type: 'google-sync-complete', account: %s };
+			function notify() {
+				try {
+					if (window.opener && !window.opener.closed) {
+						window.opener.postMessage(message, window.location.origin);
+					}
+				} catch (e) {}
+			}
+			document.getElementById('close').addEventListener('click', function () {
+				notify();
+				window.close();
+			});
+			notify();
 			window.setTimeout(function () {
 				window.close();
 			}, 800);
 		}());
 	</script>
 </body>
-</html>`, payload, payload)
+</html>`, payload)
 }

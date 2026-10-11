@@ -17,8 +17,9 @@ deployment artifact is a set of container images.
 > Review the code and test it in your own environment before relying on it.
 
 > v2 scope: a single `Person` entity with standard fields plus user-defined
-> custom fields, full CRUD via API and UI, and optional Authentik OIDC SSO.
-> When Authentik is configured, each account can access only its own contacts.
+> custom fields, full CRUD via API and UI, Authentik OIDC SSO, and two-way Google
+> Contacts sync. Each account can access only its own contacts and the ones
+> shared with it.
 
 ## Architecture
 
@@ -120,7 +121,8 @@ The backend is configured entirely through environment variables.
 | `DB_SSLMODE`           | `disable`   | `libpq` sslmode.                                        |
 | `CORS_ALLOWED_ORIGINS` | dev origins | Comma-separated allow-list of browser origins.          |
 | `PURGE_AFTER_DAYS`     | `30`        | Recycle-bin retention before soft-deleted rows purge.   |
-| `AUTHENTIK_ISSUER`     | —           | Authentik OIDC issuer/discovery URL; enables SSO.        |
+| `AUTHENTIK_ISSUER`     | —           | Authentik OIDC issuer/discovery URL; enables SSO. Required unless `AUTH_DISABLED=true`. |
+| `AUTH_DISABLED`        | `false`     | `true` runs **without login**: every request can read and change all data. Only for local development and tests; the backend refuses to start without Authentik unless this is set. |
 | `AUTHENTIK_CLIENT_ID`  | —           | Authentik OAuth client ID.                              |
 | `AUTHENTIK_CLIENT_SECRET_FILE` | —    | Docker secret file for the OAuth client secret.         |
 | `AUTHENTIK_CLIENT_SECRET` | —        | Inline OAuth client secret fallback.                    |
@@ -131,6 +133,8 @@ The backend is configured entirely through environment variables.
 | `GOOGLE_CLIENT_SECRET_FILE` | —    | Docker secret file for Google OAuth client secret.       |
 | `GOOGLE_REDIRECT_URL` | —          | Backend Google sync callback URL (`/api/v1/sync/google/callback`). |
 | `GOOGLE_SYNC_DRY_RUN` | `false`     | When `true`, suppresses every write to Google (create/update/delete contacts, contact group create/modify) - reads are unaffected. For testing sync against a real account with zero risk of mutating it. |
+| `TOKEN_ENCRYPTION_KEY_FILE` | —    | Docker secret file with the key that encrypts stored Google OAuth tokens (AES-256-GCM). Required with Google sync. Create one with `openssl rand -base64 32` and keep it with your backups: without it, connected Google accounts must be reconnected. Existing plaintext tokens are encrypted on startup. |
+| `TOKEN_ENCRYPTION_KEY` | —         | Inline token encryption key fallback (32 bytes as base64 or 64 hex characters). |
 | `SESSION_SECRET_FILE`   | —           | Docker secret file containing a 32+ byte session key.   |
 | `SESSION_SECRET`        | —           | Inline session key fallback.                            |
 | `CONTACTS_VERSION`     | `latest`    | Tag used for both published application images.         |

@@ -992,3 +992,27 @@ a dry-run update returns the record's existing `ExternalID` unchanged.
 
 
 
+
+## Post-implementation decision log (2026-10-10): security hardening
+
+- **Login is required by default (fail closed).** The backend used to run with
+  no authentication at all whenever `AUTHENTIK_ISSUER` was unset - every API
+  endpoint open and sync accounts unscoped - so a missing or mistyped variable
+  silently exposed everything. It now refuses to start unless Authentik is
+  configured or `AUTH_DISABLED=true` is set explicitly. Only the dev compose
+  override and the e2e tests set it. Do not reintroduce an implicit no-auth mode.
+- **Google OAuth tokens are encrypted at rest** (AES-256-GCM, package
+  `internal/secretbox`, key from `TOKEN_ENCRYPTION_KEY[_FILE]`, required with
+  Google sync). Encryption lives only in the `contactsync.Repository`: it
+  seals `access_token`/`refresh_token` on every write and opens them on every
+  read, so the adapter and handlers only ever see plaintext. Stored values carry
+  an `enc:v1:` prefix; values without it are legacy plaintext, still readable,
+  and are encrypted by `EncryptPlaintextTokens` at startup. Never write tokens
+  to `sync_accounts` outside the repository.
+- **Google OAuth always uses the configured `GOOGLE_REDIRECT_URL`**; the
+  `redirect_uri` query parameter of `/sync/google/begin` was removed (the code
+  exchange already used the configured URL, so a different one could only fail
+  or misdirect the authorization).
+- **The OAuth callback page passes account data only inside its `<script>`**
+  (where `json.Marshal`'s HTML escaping is sufficient); the old inline `onclick`
+  attribute broke on the JSON's quotes.

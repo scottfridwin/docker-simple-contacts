@@ -3,7 +3,9 @@
 package contactsync
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"os"
 	"testing"
 
@@ -11,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/scottfridlund/contacts/backend/internal/authn"
+	"github.com/scottfridlund/contacts/backend/internal/secretbox"
 )
 
 // These tests run only with `-tags=integration` and require TEST_DATABASE_URL
@@ -278,5 +281,84 @@ func TestUpdateSyncStateDoesNotClobberUserSettings(t *testing.T) {
 	}
 	if got.AccessToken == nil || *got.AccessToken != token {
 		t.Errorf("AccessToken = %v, want %q (UpdateSyncState must still persist its own fields)", got.AccessToken, token)
+	}
+}
+
+// TestRepositoryEncryptsTokensAtRest checks that OAuth tokens never reach the
+// database as plaintext once a cipher is configured, and that rows stored
+// before encryption was enabled are encrypted without breaking reads.
+func TestRepositoryEncryptsTokensAtRest(t *testing.T) {
+	pool := newTestPool(t)
+	ctx := context.Background()
+	box, err := secretbox.New(bytes.Repeat([]byte{9}, secretbox.KeySize))
+	if err != nil {
+		t.Fatal(err)
+	}
+	plainRepo := NewRepository(pool)
+	repo := NewRepository(pool, WithTokenCipher(box))
+	owner := createSyncTestUser(t, ctx, pool, "token-crypto-owner")
+	ownerCtx := authn.WithUserID(ctx, owner)
+
+	rawTokens := func(id uuid.UUID) (string, string) {
+		t.Helper()
+		var access, refresh string
+		if err := pool.QueryRow(ctx, `SELECT access_token, refresh_token FROM sync_accounts WHERE id = $1`, id).Scan(&access, &refresh); err != nil {
+			t.Fatal(err)
+		}
+		return access, refresh
+	}
+	access, refresh := "ya29.access", "1//refresh"
+
+	created, err := repo.Create(ownerCtx, &Account{Provider: "google", ProviderAccountID: "crypto-new", AccessToken: &access, RefreshToken: &refresh})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	t.Cleanup(func() { _, _ = pool.Exec(ctx, "DELETE FROM sync_accounts WHERE id = $1", created.ID) })
+	if *created.AccessToken != access || *created.RefreshToken != refresh {
+		t.Fatal("Create must return plaintext tokens")
+	}
+	if a, r := rawTokens(created.ID); !secretbox.IsSealed(a) || !secretbox.IsSealed(r) {
+		t.Fatalf("tokens stored as plaintext: %q %q", a, r)
+	}
+	got, err := repo.GetByID(ownerCtx, created.ID)
+	if err != nil || *got.AccessToken != access || *got.RefreshToken != refresh {
+		t.Fatalf("GetByID = %+v, %v", got, err)
+	}
+	if _, err := plainRepo.GetByID(ownerCtx, created.ID); !errors.Is(err, secretbox.ErrNoKey) {
+		t.Fatalf("reading encrypted tokens without a key: want ErrNoKey, got %v", err)
+	}
+
+	newAccess := "ya29.refreshed"
+	got.AccessToken = &newAccess
+	if _, err := repo.UpdateSyncState(ownerCtx, got); err != nil {
+		t.Fatalf("UpdateSyncState: %v", err)
+	}
+	if a, _ := rawTokens(created.ID); !secretbox.IsSealed(a) {
+		t.Fatalf("UpdateSyncState stored plaintext: %q", a)
+	}
+
+	legacy, err := plainRepo.Create(ownerCtx, &Account{Provider: "google", ProviderAccountID: "crypto-legacy", AccessToken: &access, RefreshToken: &refresh})
+	if err != nil {
+		t.Fatalf("create legacy: %v", err)
+	}
+	t.Cleanup(func() { _, _ = pool.Exec(ctx, "DELETE FROM sync_accounts WHERE id = $1", legacy.ID) })
+	if a, _ := rawTokens(legacy.ID); a != access {
+		t.Fatalf("legacy row should start as plaintext, got %q", a)
+	}
+	if got, err := repo.GetByID(ownerCtx, legacy.ID); err != nil || *got.RefreshToken != refresh {
+		t.Fatalf("reading legacy plaintext with a key: %+v, %v", got, err)
+	}
+	n, err := repo.EncryptPlaintextTokens(ctx)
+	if err != nil || n < 1 {
+		t.Fatalf("EncryptPlaintextTokens = %d, %v", n, err)
+	}
+	if a, r := rawTokens(legacy.ID); !secretbox.IsSealed(a) || !secretbox.IsSealed(r) {
+		t.Fatalf("legacy tokens not encrypted: %q %q", a, r)
+	}
+	if got, err := repo.GetByID(ownerCtx, legacy.ID); err != nil || *got.AccessToken != access {
+		t.Fatalf("reading re-encrypted legacy row: %+v, %v", got, err)
+	}
+	if n, err := repo.EncryptPlaintextTokens(ctx); err != nil || n != 0 {
+		t.Fatalf("second EncryptPlaintextTokens = %d, %v; want 0", n, err)
 	}
 }

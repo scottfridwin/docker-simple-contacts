@@ -29,6 +29,7 @@ type fakeGoogleAdapter struct {
 	syncDone    chan struct{}
 	syncCtx     context.Context
 	syncAccount contactsync.Account
+	beginURI    string
 }
 
 func (f *fakeGoogleAdapter) ProviderName() string { return "google" }
@@ -37,7 +38,8 @@ func (f *fakeGoogleAdapter) Capabilities() contactsync.Capabilities {
 	return contactsync.Capabilities{}
 }
 
-func (f *fakeGoogleAdapter) BeginAuthorization(context.Context, string, string) (contactsync.AuthRequest, error) {
+func (f *fakeGoogleAdapter) BeginAuthorization(_ context.Context, redirectURI, _ string) (contactsync.AuthRequest, error) {
+	f.beginURI = redirectURI
 	if f.beginErr != nil {
 		return contactsync.AuthRequest{}, f.beginErr
 	}
@@ -184,6 +186,38 @@ func TestGoogleOAuthBegin(t *testing.T) {
 	}
 	if out.AuthorizationURL == "" || out.State == "" {
 		t.Fatalf("unexpected begin payload: %+v", out)
+	}
+}
+
+func TestGoogleOAuthBeginIgnoresClientRedirectURI(t *testing.T) {
+	adapter := &fakeGoogleAdapter{authRequest: contactsync.AuthRequest{AuthorizationURL: "https://accounts.google.com/o/oauth2/v2/auth"}}
+	h := testSyncGoogleRouter(adapter)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/sync/google/begin?redirect_uri=https://evil.example/cb", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+	if adapter.beginURI != "" {
+		t.Fatalf("adapter got redirect URI %q, want the configured one (empty)", adapter.beginURI)
+	}
+}
+
+func TestGoogleCallbackHTMLKeepsAccountDataInsideScript(t *testing.T) {
+	name := `Robert" onmouseover="alert(1)</script><script>alert(2)//`
+	rec := httptest.NewRecorder()
+	writeGoogleCallbackHTML(rec, &contactsync.Account{Provider: "google", DisplayName: &name})
+	body := rec.Body.String()
+
+	if strings.Contains(body, "onclick") || strings.Contains(body, "onmouseover=\"alert") {
+		t.Fatalf("account data escaped into an HTML attribute:\n%s", body)
+	}
+	if strings.Count(body, "</script>") != 1 || strings.Contains(body, "<script>alert") {
+		t.Fatalf("account data broke out of the script element:\n%s", body)
+	}
+	if !strings.Contains(body, `id="close"`) || !strings.Contains(body, "addEventListener('click'") {
+		t.Fatal("close button is not wired up")
 	}
 }
 

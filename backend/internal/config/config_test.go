@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -20,10 +21,11 @@ func clearEnv(t *testing.T) {
 		"OIDC_REDIRECT_URI", "SESSION_SECRET", "SESSION_SECRET_FILE",
 		"GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_ID_FILE", "GOOGLE_CLIENT_SECRET",
 		"GOOGLE_CLIENT_SECRET_FILE", "GOOGLE_REDIRECT_URL", "GOOGLE_REDIRECT_URI",
-		"GOOGLE_SYNC_DRY_RUN",
+		"GOOGLE_SYNC_DRY_RUN", "TOKEN_ENCRYPTION_KEY", "TOKEN_ENCRYPTION_KEY_FILE",
 	} {
 		t.Setenv(k, "")
 	}
+	t.Setenv("AUTH_DISABLED", "true")
 }
 
 func TestLoadAppliesDefaults(t *testing.T) {
@@ -215,12 +217,58 @@ func TestLoadGoogleSyncConfigurationUsesSecretFiles(t *testing.T) {
 	t.Setenv("GOOGLE_CLIENT_SECRET_FILE", clientSecretPath)
 	t.Setenv("GOOGLE_REDIRECT_URL", "https://contacts.example/api/v1/sync/google/callback")
 
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "TOKEN_ENCRYPTION_KEY") {
+		t.Fatalf("expected Google sync without a token key to fail, got %v", err)
+	}
+
+	keyPath := filepath.Join(dir, "token-key")
+	if err := os.WriteFile(keyPath, []byte(strings.Repeat("ab", 32)+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TOKEN_ENCRYPTION_KEY_FILE", keyPath)
 	cfg, err := Load()
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if cfg.GoogleClientID != "gid" || cfg.GoogleClientSecret != "gsecret" {
 		t.Fatalf("unexpected Google config: %#v", cfg)
+	}
+	if len(cfg.TokenEncryptionKey) != 32 || cfg.TokenEncryptionKey[0] != 0xab {
+		t.Fatalf("unexpected token key: %x", cfg.TokenEncryptionKey)
+	}
+}
+
+func TestLoadRejectsInvalidTokenKey(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("DB_HOST", "localhost")
+	t.Setenv("DB_USER", "app")
+	t.Setenv("DB_PASSWORD", "secret")
+	t.Setenv("TOKEN_ENCRYPTION_KEY", "too-short")
+
+	if _, err := Load(); err == nil {
+		t.Fatal("expected an invalid TOKEN_ENCRYPTION_KEY to fail")
+	}
+}
+
+func TestLoadFailsClosedWithoutAuthentication(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("AUTH_DISABLED", "")
+	t.Setenv("DB_HOST", "localhost")
+	t.Setenv("DB_USER", "app")
+	t.Setenv("DB_PASSWORD", "secret")
+
+	_, err := Load()
+	if err == nil || !strings.Contains(err.Error(), "AUTH_DISABLED") {
+		t.Fatalf("expected startup without Authentik or AUTH_DISABLED to fail, got %v", err)
+	}
+
+	t.Setenv("AUTH_DISABLED", "true")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !cfg.AuthDisabled {
+		t.Fatal("expected AuthDisabled")
 	}
 }
 

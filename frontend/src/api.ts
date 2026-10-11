@@ -210,11 +210,6 @@ export function syncAccountNow(id: string): Promise<void> {
   return request<void>(`/sync-accounts/${id}/sync`, { method: 'POST' });
 }
 
-export function beginGoogleSync(redirectUri?: string): Promise<GoogleOAuthBeginResponse> {
-  const query = new URLSearchParams();
-  if (redirectUri) {
-    query.set('redirect_uri', redirectUri);
-  }
-  const qs = query.toString();
-  return request<GoogleOAuthBeginResponse>(`/sync/google/begin${qs ? `?${qs}` : ''}`);
+export function beginGoogleSync(): Promise<GoogleOAuthBeginResponse> {
+  return request<GoogleOAuthBeginResponse>('/sync/google/begin');
 }
