@@ -411,12 +411,8 @@ paths:
   /sync/google/begin:
     get:
       summary: Begin Google OAuth for contact sync
+      description: Always uses the server's configured GOOGLE_REDIRECT_URL.
       operationId: beginGoogleSyncOAuth
-      parameters:
-        - name: redirect_uri
-          in: query
-          required: false
-          schema: { type: string, format: uri }
       responses:
         '200':
           description: OAuth authorization URL and CSRF state

@@ -12,6 +12,8 @@ services:
     environment:
       DB_PASSWORD: ${DB_PASSWORD:-contacts}
       DB_PASSWORD_FILE:
+      # Local development and the e2e tests run without Authentik
+      AUTH_DISABLED: "true"
 
   frontend:
     build:

@@ -21,6 +21,7 @@ import (
 	"github.com/scottfridlund/contacts/backend/internal/httpapi"
 	"github.com/scottfridlund/contacts/backend/internal/logging"
 	"github.com/scottfridlund/contacts/backend/internal/person"
+	"github.com/scottfridlund/contacts/backend/internal/secretbox"
 	"github.com/scottfridlund/contacts/backend/internal/user"
 )
 
@@ -89,7 +90,20 @@ func run() error {
 	defer pool.Close()
 
 	repo := person.NewRepository(pool)
-	syncAccountRepo := contactsync.NewRepository(pool)
+	var syncRepoOpts []contactsync.Option
+	if cfg.TokenEncryptionKey != nil {
+		box, err := secretbox.New(cfg.TokenEncryptionKey)
+		if err != nil {
+			return err
+		}
+		syncRepoOpts = append(syncRepoOpts, contactsync.WithTokenCipher(box))
+	}
+	syncAccountRepo := contactsync.NewRepository(pool, syncRepoOpts...)
+	if n, err := syncAccountRepo.EncryptPlaintextTokens(ctx); err != nil {
+		return fmt.Errorf("encrypting stored sync tokens: %w", err)
+	} else if n > 0 {
+		logger.Info("encrypted stored sync tokens", "accounts", n)
+	}
 	syncJobRepo := contactsync.NewJobRepository(pool)
 	syncLinkRepo := contactsync.NewRecordLinkRepository(pool)
 	syncSvc := contactsync.NewService(syncJobRepo)
@@ -120,6 +134,9 @@ func run() error {
 	go runPurgeLoop(ctx, logger, svc, purgeWindow)
 	go runSyncLoop(ctx, logger, runner, 30*time.Second)
 
+	if cfg.AuthDisabled && cfg.AuthentikIssuer == "" {
+		logger.Warn("AUTH_DISABLED=true: running WITHOUT login - every request can read and change all data")
+	}
 	var provider *auth.Provider
 	if cfg.AuthentikIssuer != "" {
 		provider, err = auth.New(ctx, auth.Config{

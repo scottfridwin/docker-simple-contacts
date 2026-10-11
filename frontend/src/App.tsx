@@ -322,9 +322,7 @@ export default function App() {
     setSyncConnecting(true);
     setSyncError(null);
     try {
-      const { authorization_url: authorizationUrl } = await beginGoogleSync(
-        `${window.location.origin}/api/v1/sync/google/callback`,
-      );
+      const { authorization_url: authorizationUrl } = await beginGoogleSync();
       const popup = window.open(authorizationUrl, 'google-sync', 'popup,width=520,height=760');
       if (!popup) {
         window.location.assign(authorizationUrl);

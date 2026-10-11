@@ -7,6 +7,8 @@ import (
 	"os"
 	"strconv"
 	"strings"
+
+	"github.com/scottfridlund/contacts/backend/internal/secretbox"
 )
 
 // Config holds all runtime configuration for the server.
@@ -31,6 +33,11 @@ type Config struct {
 	GoogleClientSecret string
 	GoogleRedirectURL  string
 	GoogleSyncDryRun   bool
+	// TokenEncryptionKey encrypts stored OAuth tokens; required with Google sync.
+	TokenEncryptionKey []byte
+	// AuthDisabled runs without login (every request is anonymous); only for
+	// local development and tests.
+	AuthDisabled bool
 }
 
 // IsProduction reports whether the server runs in a production environment.
@@ -138,6 +145,22 @@ func Load() (Config, error) {
 		}
 	}
 	cfg.GoogleSyncDryRun = getEnvBool("GOOGLE_SYNC_DRY_RUN", false)
+
+	keyFile, keyValue := firstEnv("TOKEN_ENCRYPTION_KEY_FILE"), firstEnv("TOKEN_ENCRYPTION_KEY")
+	if keyFile != "" || keyValue != "" || cfg.GoogleClientID != "" {
+		raw, keyErr := resolveSecretValue(keyFile, keyValue, "TOKEN_ENCRYPTION_KEY")
+		if keyErr != nil {
+			return Config{}, fmt.Errorf("%w (needed to encrypt stored Google tokens; generate one with `openssl rand -base64 32`)", keyErr)
+		}
+		if cfg.TokenEncryptionKey, keyErr = secretbox.ParseKey(raw); keyErr != nil {
+			return Config{}, fmt.Errorf("TOKEN_ENCRYPTION_KEY: %w", keyErr)
+		}
+	}
+
+	cfg.AuthDisabled = getEnvBool("AUTH_DISABLED", false)
+	if cfg.AuthentikIssuer == "" && !cfg.AuthDisabled {
+		return Config{}, errors.New("authentication is not configured: set AUTHENTIK_ISSUER (with its client and session settings), or AUTH_DISABLED=true to run without login for local development")
+	}
 
 	if err := cfg.validate(); err != nil {
 		return Config{}, err
