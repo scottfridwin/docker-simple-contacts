@@ -50,7 +50,7 @@ frontend/               React + Vite PWA
   nginx.conf            serves SPA + proxies /api to the backend
 api/openapi.yaml        OpenAPI 3 contract (validated in CI)
 docs/design/            authoritative design documents
-.github/workflows/      build.yml (test + publish + promote-based release), ci.yml (deep gates)
+.github/workflows/      build.yml (lint, test, integration, e2e, publish, automatic release), scan.yml (Trivy)
 ```
 
 ## Non-negotiable decisions (v1)
@@ -115,10 +115,13 @@ docs/design/            authoritative design documents
 - **Logging**: JSON in production, human-readable in development, stdout/stderr
   only — never write log files.
 - **License**: Apache-2.0. **Versioning**: SemVer. CI publishes `main` and
-  `sha-<shortsha>` images on every push to `main`; releases are cut by running
-  the *Build and Publish Docker Images* workflow with a `vX.Y.Z` input, which
-  promotes (re-tags) the current `main` image to `vX.Y.Z`/`X.Y.Z`/`latest` — no
-  rebuild. See the README release section.
+  `sha-<shortsha>` images on every push to `main`; a merge that changes
+  `backend/` or `frontend/` releases automatically, with the bump taken from the
+  Conventional Commit subject (`feat:` minor, `!`/`BREAKING CHANGE` major, else
+  patch), re-tagging the published images `X.Y.Z`/`X.Y`/`X`/`latest` — no
+  rebuild. Use Conventional Commit subjects. See the README release section.
+- **CI pins**: GitHub Actions are pinned to commit SHAs (required by the repo
+  settings) and base images by digest; Renovate updates both.
 - **Coverage**: CI enforces ≥ 70% on `config`, `httpapi`, `person`.
 - **Scope**: authentication is limited to Authentik OIDC SSO and account-owned
   or account-shared Person records (see **Sharing** below). Google Contacts

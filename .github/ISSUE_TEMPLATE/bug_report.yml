@@ -1,0 +1,38 @@
+name: Bug report
+description: Something does not work as expected
+labels: [bug]
+body:
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: The image tags or digests you are running.
+      placeholder: contacts-backend:2.1.0, contacts-frontend:2.1.0
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Contacts (create, edit, delete)
+        - Sharing
+        - Google sync
+        - Login (Authentik)
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Backend log
+      description: >-
+        `docker logs` of the backend, ideally with LOG_LEVEL=debug. Remove tokens, email addresses and contact details.
+      render: text
