@@ -1,260 +1,489 @@
-name: Build and Publish Docker Images
+name: Build, Test & Publish
 
 on:
   push:
     branches:
       - main
+    paths-ignore:
+      - "**/*.md"
+      - "LICENSE"
+  # No paths-ignore: the required checks must report on every PR
   pull_request:
     branches:
       - main
   workflow_dispatch:
     inputs:
       release_tag:
-        description: "Version tag to release (e.g., v1.0.0). Promotes the current main image. Leave empty to just build."
+        description: "Release tag (e.g. v2.1.0). Leave empty to only build and publish :main."
         required: false
         type: string
 
-env:
-  REGISTRY: ghcr.io
-  OWNER: scottfridwin
+permissions:
+  contents: read
 
-# Cancel superseded runs on the same ref (does not affect release dispatches).
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event.inputs.release_tag || 'ci' }}
-  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
+env:
+  REGISTRY: ghcr.io/${{ github.repository_owner }}
+  PLATFORMS: linux/amd64,linux/arm64
+  GO_VERSION: "1.27"
+  NODE_VERSION: "24"
+  # renovate: datasource=github-releases depName=golangci/golangci-lint
+  GOLANGCI_LINT_VERSION: v2.14.0
+  # renovate: datasource=github-releases depName=golang-migrate/migrate
+  MIGRATE_VERSION: v4.20.1
+  # renovate: datasource=npm depName=@redocly/cli
+  REDOCLY_VERSION: 1.34.20
 
 jobs:
   # ----------------------------------------------------------
-  # Test: Gate the build on backend + frontend tests.
+  # Lint: golangci-lint, go vet, eslint, prettier and the OpenAPI spec
   # ----------------------------------------------------------
-  test:
-    name: Test ${{ matrix.component }}
+  lint:
+    name: Lint
     runs-on: ubuntu-latest
-
-    strategy:
-      fail-fast: false
-      matrix:
-        component: [backend, frontend]
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
-      # ---- Backend (Go) ----
       - name: Set up Go
-        if: matrix.component == 'backend'
-        uses: actions/setup-go@v7
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
-          go-version: "1.27"
+          go-version: ${{ env.GO_VERSION }}
           cache-dependency-path: backend/go.sum
 
-      - name: Backend vet + unit tests with coverage gate
-        if: matrix.component == 'backend'
-        working-directory: backend
-        run: |
-          go vet ./...
-          make -C .. backend-cover
-
-      # ---- Frontend (Node) ----
-      - name: Set up Node
-        if: matrix.component == 'frontend'
-        uses: actions/setup-node@v7
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9
         with:
-          node-version: "24"
+          version: ${{ env.GOLANGCI_LINT_VERSION }}
+          working-directory: backend
+
+      - name: go vet
+        working-directory: backend
+        run: go vet ./...
+
+      - name: Set up Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
           cache: npm
           cache-dependency-path: frontend/package-lock.json
 
-      - name: Frontend lint, test, build
-        if: matrix.component == 'frontend'
+      - name: eslint and prettier
         working-directory: frontend
         run: |
           npm ci
           npm run lint
           npm run format:check
+
+      - name: OpenAPI spec
+        run: npx --yes "@redocly/cli@${REDOCLY_VERSION}" lint api/openapi.yaml
+
+  # ----------------------------------------------------------
+  # Test: backend unit tests with the coverage gate, frontend unit tests and build
+  # ----------------------------------------------------------
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: backend/go.sum
+
+      - name: Backend unit tests with coverage gate
+        run: make backend-cover
+
+      - name: Set up Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Frontend unit tests and build
+        working-directory: frontend
+        run: |
+          npm ci
           npm run test
           npm run build
 
   # ----------------------------------------------------------
-  # Build: Build and push multi-arch Docker images.
-  # Runs on push to main OR manual dispatch with no release_tag.
+  # Integration: migrations up/down and the PostgreSQL integration tests
   # ----------------------------------------------------------
-  build:
-    name: Build ${{ matrix.service }}
-    needs: test
+  integration:
+    name: Integration
     runs-on: ubuntu-latest
-    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.event.inputs.release_tag == '')
+    services:
+      postgres:
+        # renovate: datasource=docker depName=postgres
+        image: postgres:18-alpine@sha256:77f585114c32fbca283dc835b0596f4e52b51b4c6662d7810b2f4084f60a1873
+        env:
+          POSTGRES_USER: contacts
+          POSTGRES_PASSWORD: contacts
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U contacts"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgres://contacts:contacts@localhost:5432/postgres?sslmode=disable
+      TEST_DATABASE_URL: postgres://contacts:contacts@localhost:5432/postgres?sslmode=disable
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: backend/go.sum
+
+      - name: Install golang-migrate
+        run: go install -tags postgres "github.com/golang-migrate/migrate/v4/cmd/migrate@${MIGRATE_VERSION}"
+
+      - name: Migrations down and up again
+        working-directory: backend
+        run: |
+          migrate -path migrations -database "$DATABASE_URL" up
+          migrate -path migrations -database "$DATABASE_URL" down -all
+          migrate -path migrations -database "$DATABASE_URL" up
+
+      - name: Integration tests
+        working-directory: backend
+        run: go test -tags=integration ./...
+
+  # ----------------------------------------------------------
+  # E2E: Playwright against the full stack built from source
+  # ----------------------------------------------------------
+  e2e:
+    name: E2E
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Start stack
+        run: |
+          mkdir -p secrets
+          printf 'contacts\n' > secrets/db_password
+          docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
+
+      - name: Set up Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Run Playwright
+        working-directory: frontend
+        env:
+          E2E_BASE_URL: http://localhost:5173
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+          npm run test:e2e
+
+      - name: Stack logs on failure
+        if: failure()
+        run: docker compose -f docker-compose.yml -f docker-compose.dev.yml logs
+
+      - name: Tear down
+        if: always()
+        run: docker compose -f docker-compose.yml -f docker-compose.dev.yml down -v
+
+  # ----------------------------------------------------------
+  # Images: build both images for every platform (pull requests only; main publishes them)
+  # ----------------------------------------------------------
+  images:
+    name: Images
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - image: contacts-backend
+            context: backend
+          - image: contacts-frontend
+            context: frontend
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
+        with:
+          # Shared runners hit Docker Hub's anonymous pull limit (HTTP 429)
+          buildkitd-config-inline: |
+            [registry."docker.io"]
+              mirrors = ["mirror.gcr.io"]
+
+      - name: Build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
+        with:
+          context: ${{ matrix.context }}
+          platforms: ${{ env.PLATFORMS }}
+          push: false
+          cache-from: type=gha,scope=${{ matrix.image }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image }}
+
+  # ----------------------------------------------------------
+  # Publish: push :main and :sha-<commit> of both images for every build of main
+  # ----------------------------------------------------------
+  publish:
+    name: Publish ${{ matrix.image }}
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    needs: [lint, test, integration, e2e]
+    runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
-
+      id-token: write
+      attestations: write
     strategy:
-      fail-fast: false
       matrix:
         include:
-          - service: contacts-backend
-            context: ./backend
-          - service: contacts-frontend
-            context: ./frontend
+          - image: contacts-backend
+            context: backend
+          - image: contacts-frontend
+            context: frontend
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
-      - name: Compute image tags
-        id: tags
-        run: |
-          IMAGE="${{ env.REGISTRY }}/${{ env.OWNER }}/${{ matrix.service }}"
-          SHORT_SHA=$(echo "$GITHUB_SHA" | cut -c1-7)
-          TAGS="${IMAGE}:sha-${SHORT_SHA}"
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4
 
-          # Main branch: also tag as "main"
-          if [[ "$GITHUB_REF" == "refs/heads/main" ]]; then
-            TAGS="${TAGS},${IMAGE}:main"
-          fi
-
-          echo "tags=${TAGS}" >> "$GITHUB_OUTPUT"
-          echo "Generated tags: ${TAGS}"
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
+        with:
+          buildkitd-config-inline: |
+            [registry."docker.io"]
+              mirrors = ["mirror.gcr.io"]
 
       - name: Log in to GHCR
-        uses: docker/login-action@v4
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
         with:
-          registry: ${{ env.REGISTRY }}
+          registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Set up QEMU (for multi-arch)
-        uses: docker/setup-qemu-action@v4
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
+      - name: Image metadata
+        id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6
+        with:
+          images: ${{ env.REGISTRY }}/${{ matrix.image }}
+          tags: |
+            type=raw,value=main
+            type=sha,prefix=sha-,format=short
 
       - name: Build and push
-        uses: docker/build-push-action@v7
+        id: build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
         with:
           context: ${{ matrix.context }}
-          file: ${{ matrix.context }}/Dockerfile
+          platforms: ${{ env.PLATFORMS }}
           push: true
-          platforms: linux/amd64,linux/arm64
-          tags: ${{ steps.tags.outputs.tags }}
-          cache-from: type=gha,scope=${{ matrix.service }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.service }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          provenance: mode=max
+          sbom: true
+          cache-from: type=gha,scope=${{ matrix.image }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image }}
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4
+        with:
+          subject-name: ${{ env.REGISTRY }}/${{ matrix.image }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
 
   # ----------------------------------------------------------
-  # Release: Promote the current main image with version tags.
-  # Triggered via workflow_dispatch with a version tag input.
-  # Re-tags the multi-arch manifest — no rebuild needed.
+  # Release check: release when a merge to main changes an image
+  # ----------------------------------------------------------
+  release-check:
+    name: Release check
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: test
+    runs-on: ubuntu-latest
+    outputs:
+      release: ${{ steps.check.outputs.release }}
+      bump: ${{ steps.check.outputs.bump }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 2
+
+      - name: Decide
+        id: check
+        run: |
+          CHANGED="$(git diff --name-only HEAD~1 HEAD)"
+          SUBJECT="$(git log -1 --format=%s)"
+          BODY="$(git log -1 --format=%b)"
+          echo "Subject: ${SUBJECT}"
+          echo "Changed files:"; echo "${CHANGED}"
+          # Anything that ends up in an image, except docs and tests
+          if grep -E '^(backend|frontend)/' <<< "$CHANGED" \
+              | grep -qvE '(\.md$|_test\.go$|\.test\.tsx?$|^frontend/(e2e|tests)/)'; then
+            echo "release=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "release=false" >> "$GITHUB_OUTPUT"
+          fi
+          # Conventional commit subject decides the bump; anything else (e.g. Renovate) is a patch
+          if [[ "$SUBJECT" =~ ^[a-z]+(\([^\)]*\))?!: ]] || grep -q '^BREAKING CHANGE' <<< "$BODY"; then
+            echo "bump=major" >> "$GITHUB_OUTPUT"
+          elif [[ "$SUBJECT" =~ ^feat(\([^\)]*\))?: ]]; then
+            echo "bump=minor" >> "$GITHUB_OUTPUT"
+          else
+            echo "bump=patch" >> "$GITHUB_OUTPUT"
+          fi
+
+  # ----------------------------------------------------------
+  # Release: tag the exact images published above and create a GitHub release.
+  # Both images share one version.
   # ----------------------------------------------------------
   release:
-    name: Release ${{ matrix.service }} as ${{ github.event.inputs.release_tag }}
-    if: github.event_name == 'workflow_dispatch' && github.event.inputs.release_tag != ''
+    name: Release
+    if: >-
+      !cancelled() && needs.publish.result == 'success' && (
+        (github.event_name == 'workflow_dispatch' && github.event.inputs.release_tag != '') ||
+        needs.release-check.outputs.release == 'true'
+      )
+    needs: [publish, release-check]
     runs-on: ubuntu-latest
+    concurrency:
+      group: release
+      cancel-in-progress: false
     permissions:
       contents: write
       packages: write
 
-    strategy:
-      fail-fast: false
-      matrix:
-        service: [contacts-backend, contacts-frontend]
-
     steps:
-      - name: Verify main branch
-        run: |
-          if [[ "$GITHUB_REF" != "refs/heads/main" ]]; then
-            echo "::error::Release can only be triggered from the main branch (got $GITHUB_REF)"
-            exit 1
-          fi
-
-      - name: Validate version tag format
-        run: |
-          VERSION_TAG="${{ github.event.inputs.release_tag }}"
-          if [[ ! "$VERSION_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "::error::release_tag must be semantic version vX.Y.Z (got '$VERSION_TAG')"
-            exit 1
-          fi
-
       - name: Checkout repository
-        uses: actions/checkout@v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
 
-      - name: Fail if tag already exists
+      - name: Determine version
+        id: version
+        env:
+          VERSION_TAG: ${{ github.event.inputs.release_tag }}
+          BUMP: ${{ needs.release-check.outputs.bump }}
         run: |
-          VERSION_TAG="${{ github.event.inputs.release_tag }}"
-          if git rev-parse "refs/tags/${VERSION_TAG}" >/dev/null 2>&1; then
-            echo "::error::Tag ${VERSION_TAG} already exists. Bump the version to release again."
+          if [[ -z "$VERSION_TAG" ]]; then
+            LATEST=$(git tag --list 'v*' | sed 's/^v//' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1)
+            IFS=. read -r MAJ MIN PAT <<< "${LATEST:-0.0.0}"
+            case "$BUMP" in
+              major) VERSION_TAG="v$((MAJ + 1)).0.0" ;;
+              minor) VERSION_TAG="v${MAJ}.$((MIN + 1)).0" ;;
+              *)     VERSION_TAG="v${MAJ}.${MIN}.$((PAT + 1))" ;;
+            esac
+            echo "Auto release (${BUMP}): v${LATEST} -> ${VERSION_TAG}"
+          elif [[ ! "$VERSION_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::release_tag must look like v1.2.3 (got ${VERSION_TAG})"
             exit 1
           fi
+          if git rev-parse -q --verify "refs/tags/${VERSION_TAG}" >/dev/null; then
+            echo "::error::Tag ${VERSION_TAG} already exists"
+            exit 1
+          fi
+          echo "tag=${VERSION_TAG}" >> "$GITHUB_OUTPUT"
 
-      - name: Install crane
-        uses: imjasonh/setup-crane@v0.7
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
 
       - name: Log in to GHCR
-        run: echo "${{ secrets.GITHUB_TOKEN }}" | crane auth login ${{ env.REGISTRY }} -u ${{ github.actor }} --password-stdin
-
-      - name: Promote image
-        run: |
-          IMAGE="${{ env.REGISTRY }}/${{ env.OWNER }}/${{ matrix.service }}"
-          VERSION_TAG="${{ github.event.inputs.release_tag }}"
-          VERSION_NO_V="${VERSION_TAG#v}"
-
-          # Ensure the source (main) image exists before promoting.
-          if ! crane manifest "${IMAGE}:main" >/dev/null 2>&1; then
-            echo "::error::${IMAGE}:main not found. Push to main to build it before releasing."
-            exit 1
-          fi
-
-          echo "Promoting ${IMAGE}:main → ${VERSION_TAG}, ${VERSION_NO_V}, latest"
-          crane copy "${IMAGE}:main" "${IMAGE}:${VERSION_TAG}"
-          crane copy "${IMAGE}:main" "${IMAGE}:${VERSION_NO_V}"
-          crane copy "${IMAGE}:main" "${IMAGE}:latest"
-
-  # ----------------------------------------------------------
-  # Tag + release notes: create the git tag and GitHub Release
-  # once all images are promoted.
-  # ----------------------------------------------------------
-  release-notes:
-    name: Create GitHub Release
-    needs: release
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v7.0.1
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
         with:
-          fetch-depth: 0
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Tag images
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          VERSION="${TAG#v}"
+          : > "${RUNNER_TEMP}/digests.md"
+          for IMAGE in contacts-backend contacts-frontend; do
+            REF="${REGISTRY}/${IMAGE}"
+            DIGEST=$(docker buildx imagetools inspect "${REF}:sha-${GITHUB_SHA::7}" --format '{{json .Manifest.Digest}}' | tr -d '"')
+            docker buildx imagetools create \
+              -t "${REF}:${VERSION}" \
+              -t "${REF}:${VERSION%.*}" \
+              -t "${REF}:${VERSION%%.*}" \
+              -t "${REF}:latest" \
+              "${REF}@${DIGEST}"
+            echo "| \`${IMAGE}\` | \`docker pull ${REF}:${VERSION}\` | \`${DIGEST}\` |" >> "${RUNNER_TEMP}/digests.md"
+          done
 
       - name: Create git tag
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
         run: |
-          VERSION_TAG="${{ github.event.inputs.release_tag }}"
-          git tag "$VERSION_TAG"
-          git push origin "$VERSION_TAG"
+          git tag "$TAG"
+          git push origin "$TAG"
 
-      - name: Generate release notes
+      - name: Write release notes header
         run: |
-          VERSION_TAG="${{ github.event.inputs.release_tag }}"
-          PREV_TAG=$(git tag --sort=-version:refname | grep '^v' | grep -v "^${VERSION_TAG}$" | head -1)
-          if [ -n "$PREV_TAG" ]; then
-            NOTES=$(git log --pretty=format:"- %s (%h)" "${PREV_TAG}..HEAD" | head -50)
-          else
-            NOTES="Initial release"
-          fi
           {
-            echo "$NOTES"
-            echo ""
-            echo "## Docker Images"
-            echo ""
-            echo '```'
-            echo "docker pull ${{ env.REGISTRY }}/${{ env.OWNER }}/contacts-backend:${VERSION_TAG}"
-            echo "docker pull ${{ env.REGISTRY }}/${{ env.OWNER }}/contacts-frontend:${VERSION_TAG}"
-            echo '```'
-          } > /tmp/release-notes.md
+            echo '| Image | Pull | Digest |'
+            echo '| --- | --- | --- |'
+            cat "${RUNNER_TEMP}/digests.md"
+          } > "${RUNNER_TEMP}/notes.md"
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v3
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3
         with:
-          tag_name: ${{ github.event.inputs.release_tag }}
-          body_path: /tmp/release-notes.md
-          generate_release_notes: false
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: ${{ steps.version.outputs.tag }}
+          body_path: ${{ runner.temp }}/notes.md
+          generate_release_notes: true
+          make_latest: true
+
+  # ----------------------------------------------------------
+  # Notify: bot-triggered runs on main email nobody, so open an issue
+  # ----------------------------------------------------------
+  notify-failure:
+    name: Notify failure
+    if: failure() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [lint, test, integration, e2e, publish, release-check, release]
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+
+    steps:
+      - name: Open or update CI failure issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          OWNER: ${{ github.repository_owner }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          COMMIT_MSG: ${{ github.event.head_commit.message }}
+        run: |
+          TITLE="CI failed on main"
+          BODY="Run: ${RUN_URL}
+          Commit: ${GITHUB_SHA::7} $(head -1 <<< "$COMMIT_MSG")"
+          EXISTING=$(gh issue list --state open --search "in:title \"${TITLE}\"" --json number --jq '.[0].number')
+          if [[ -n "$EXISTING" ]]; then
+            gh issue comment "$EXISTING" --body "$BODY"
+          else
+            gh issue create --title "$TITLE" --body "$BODY" --assignee "$OWNER"
+          fi

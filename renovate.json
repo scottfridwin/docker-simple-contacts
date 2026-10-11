@@ -2,56 +2,50 @@
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": [
     "config:recommended",
-    ":dependencyDashboard",
-    ":semanticCommits",
-    ":prConcurrentLimit10"
+    "helpers:pinGitHubActionDigests"
   ],
-  "labels": [
-    "dependencies"
+  "prCreation": "immediate",
+  "automerge": true,
+  "automergeType": "pr",
+  "minimumReleaseAge": "3 days",
+  "internalChecksFilter": "strict",
+  "osvVulnerabilityAlerts": true,
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "Images pinned in workflows with a '# renovate:' comment",
+      "managerFilePatterns": [
+        "/^\\.github/workflows/[^/]+\\.ya?ml$/"
+      ],
+      "matchStrings": [
+        "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)\\s+\\w+:\\s*[^:\\s]+:(?<currentValue>[^@\\s]+)(@(?<currentDigest>sha256:[a-f0-9]+))?"
+      ]
+    },
+    {
+      "customType": "regex",
+      "description": "Tool versions pinned in workflows with a '# renovate:' comment",
+      "managerFilePatterns": [
+        "/^\\.github/workflows/[^/]+\\.ya?ml$/"
+      ],
+      "matchStrings": [
+        "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)\\s+[A-Z_]+:\\s*(?<currentValue>[^\\s:@]+)\\s"
+      ]
+    }
+  ],
+  "assignees": [
+    "scottfridwin"
   ],
   "postUpdateOptions": [
     "gomodTidy"
   ],
   "packageRules": [
     {
-      "matchManagers": [
-        "gomod"
-      ],
-      "addLabels": [
-        "go"
+      "description": "Go toolchain in workflows and Dockerfile moves together",
+      "groupName": "Go",
+      "matchPackageNames": [
+        "go",
+        "golang"
       ]
-    },
-    {
-      "matchManagers": [
-        "npm"
-      ],
-      "addLabels": [
-        "frontend"
-      ]
-    },
-    {
-      "matchManagers": [
-        "github-actions"
-      ],
-      "addLabels": [
-        "ci"
-      ]
-    },
-    {
-      "matchUpdateTypes": [
-        "minor",
-        "patch"
-      ],
-      "matchCurrentVersion": "!/^0/",
-      "automerge": false
     }
-  ],
-  "vulnerabilityAlerts": {
-    "labels": [
-      "security"
-    ]
-  },
-  "assignees": [
-    "scottfridwin"
   ]
 }

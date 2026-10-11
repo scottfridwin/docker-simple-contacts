@@ -1,8 +1,20 @@
 # Contacts
 
+[![Build](https://img.shields.io/github/actions/workflow/status/scottfridwin/docker-simple-contacts/build.yml?branch=main&label=build)](https://github.com/scottfridwin/docker-simple-contacts/actions/workflows/build.yml)
+[![Release](https://img.shields.io/github/v/release/scottfridwin/docker-simple-contacts)](https://github.com/scottfridwin/docker-simple-contacts/releases/latest)
+[![License](https://img.shields.io/github/license/scottfridwin/docker-simple-contacts)](LICENSE)
+
 A self-hosted contact management system. It exposes a RESTful Go API backed by
 PostgreSQL and ships an installable React PWA for managing contacts. The primary
 deployment artifact is a set of container images.
+
+> [!NOTE]
+> **AI disclosure:** This project is built and maintained with substantial help
+> from AI coding assistants (GitHub Copilot); nearly all of the code was written by
+> AI. AI is used to write and modify the code, tests, documentation and CI
+> configuration, and to manage the repository. Dependency updates are merged and
+> released automatically, without human review, when the automated tests pass.
+> Review the code and test it in your own environment before relying on it.
 
 > v2 scope: a single `Person` entity with standard fields plus user-defined
 > custom fields, full CRUD via API and UI, and optional Authentik OIDC SSO.
@@ -336,25 +348,45 @@ Run `make help` for the full list.
 - **Frontend:** Vitest component and validation tests; a Playwright end-to-end
   create → edit flow.
 
+Every pull request must pass four checks (`.github/workflows/build.yml`):
+**Lint** (golangci-lint, `go vet`, ESLint, Prettier, OpenAPI), **Test** (backend
+unit tests with the coverage gate, frontend unit tests and build),
+**Integration** (migrations down and up again, PostgreSQL integration tests) and
+**E2E** (Playwright against the stack built from source). Both images are also
+built for `amd64` and `arm64`.
+
 ## Release process
 
-Versioning follows [Semantic Versioning](https://semver.org/). The pipeline uses
-a **build-once, promote** model (workflow: `.github/workflows/build.yml`):
+Versioning follows [Semantic Versioning](https://semver.org/); both images share
+one version.
 
-1. **Every push to `main`** builds multi-arch images and publishes them to GitHub
-   Container Registry tagged `main` and `sha-<shortsha>`:
+1. **Every merge to `main`** publishes both images tagged `main` and
+   `sha-<shortsha>`, with an SBOM, BuildKit provenance and a GitHub build
+   provenance attestation:
    - `ghcr.io/scottfridwin/contacts-backend`
    - `ghcr.io/scottfridwin/contacts-frontend`
-2. **To cut a release**, run the *Build and Publish Docker Images* workflow
-   manually (Actions → Run workflow) from `main` with a `release_tag` like
-   `v1.0.0`. This **promotes the current `main` image** (re-tags the existing
-   manifest with `crane` — no rebuild) to `vX.Y.Z`, `X.Y.Z`, and `latest`, then
-   creates the matching git tag and a GitHub Release.
+2. **Releases are automatic** when a merge changes anything under `backend/` or
+   `frontend/` other than documentation and tests. The commit subject decides
+   the version: `feat:` bumps the minor version, `<type>!:` or a
+   `BREAKING CHANGE` footer bumps the major version, anything else (including
+   Renovate updates) bumps the patch version. The release tags the images that
+   were just published as `X.Y.Z`, `X.Y`, `X` and `latest` (no rebuild), and
+   creates the git tag and a GitHub Release. To release manually, run the
+   *Build, Test & Publish* workflow with a `release_tag` such as `v2.1.0`.
 
-Releases are intentionally decoupled from rebuilds so the exact artifact tested
-on `main` is the one shipped. Pull requests run tests only; images are never
-published from a PR.
+Trivy scans each new `main` image and the released `latest` images weekly;
+findings appear under **Security → Code scanning**. Renovate keeps the Go and
+npm dependencies, base images (pinned by digest) and GitHub Actions (pinned to
+commit SHAs) up to date: updates wait 3 days, then merge automatically once the
+checks pass. If an unattended run on `main` fails, an issue titled **CI failed
+on main** is opened.
 
+Releases up to 2.0.0 also had a `vX.Y.Z` image tag; from 2.0.1 on, use `X.Y.Z`.
+
+## Security
+
+See [SECURITY.md](SECURITY.md) for reporting vulnerabilities and verifying
+images.
 
 ## License
 
