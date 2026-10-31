@@ -31,7 +31,7 @@ env:
   # renovate: datasource=github-releases depName=golang-migrate/migrate
   MIGRATE_VERSION: v4.20.1
   # renovate: datasource=npm depName=@redocly/cli
-  REDOCLY_VERSION: 2.71.2
+  REDOCLY_VERSION: 2.72.0
 
 jobs:
   # ----------------------------------------------------------
